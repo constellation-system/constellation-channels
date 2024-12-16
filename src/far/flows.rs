@@ -525,7 +525,7 @@ where
     /// Table holding existing flows.
     flows: Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry>>>,
     /// Table of negotiator threads.
-    // XXX this should eventually get replaced with some kind of
+    // ISSUE #9: this should eventually get replaced with some kind of
     // thread pool mechanism.
     negotiators:
         Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowsNegotiateEntry>>>
@@ -975,7 +975,7 @@ where
                 let id =
                     StreamID::new(addr.clone(), channel.clone(), param.clone());
 
-                // XXX authentication should be done in its own
+                // ISSUE #10: authentication should be done in its own
                 // thread, unless it succeeds immediately, similar to
                 // how negotiation is done.
 
@@ -1596,7 +1596,7 @@ where
             None => HashMap::new()
         };
         let channel_param = xfrm.param(&socket)?;
-        // XXX Need to manage the size of the negotiators map.
+        // ISSUE #11: Need to manage the size of the negotiators map.
         let negotiators = Arc::new(Mutex::new(HashMap::new()));
         let xfrm = Arc::new(Mutex::new(xfrm));
         let flows = Arc::new(Mutex::new(flows));

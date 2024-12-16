@@ -56,7 +56,7 @@ pub trait NSNameCachesCtx {
 
 /// Trait for name resolution caches.
 pub trait NSNameCaches {
-    // XXX we will want to make the error an associated type here
+    // ISSUE #6: we will want to make the error an associated type here
     // eventually.
 
     /// Create an [NSName] for `name` and `port`.
@@ -88,7 +88,7 @@ pub(crate) struct NSNameCache {
     nretries: usize
 }
 
-// XXX NSName is messy and should be refactored.
+// ISSUE #3: NSName is messy and should be refactored.
 //
 // 1) Parameterize it on the name cache type
 // 2) Move it back into resolve

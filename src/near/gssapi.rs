@@ -302,7 +302,7 @@ where
     }
 }
 
-// XXX We may need to check the time on the context and kill the
+// ISSUE #8: We may need to check the time on the context and kill the
 // connection if it's expired.
 
 impl<Stream, Ctx> Read for GSSAPIStream<Stream, Ctx>

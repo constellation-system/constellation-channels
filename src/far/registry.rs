@@ -108,9 +108,6 @@ where
     ) -> Arc<FarChannelRegistry<Channel, F, AuthN, Xfrm>>;
 }
 
-// XXX this all needs to get wrapped up in traits, so that we don't
-// make the use of threading structures mandatory
-
 /// Newtype wrapper for IDs created to refer to specific channels.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FarChannelRegistryID(usize);
@@ -1748,7 +1745,7 @@ where
             Err(_) => Err(FarChannelRegistryFlowError::MutexPoison)
         }?;
 
-        // XXX questionable whether authentication should be done
+        // ISSUE #14: questionable whether authentication should be done
         // here, or whether it should be pushed down into Flows.
         //
         // Notably, doing it here requires two type constraints for AuthN.
@@ -1900,7 +1897,7 @@ where
         ctx: &mut NameCtx
     ) -> Result<RetryResult<(Self::ParamIter, Option<Instant>)>, Self::ParamError>
     {
-        // XXX this is probably not the most efficient way to do this,
+        // ISSUE #15: this is probably not the most efficient way to do this,
         // because we're creating arrays.
         let mut iters = Vec::with_capacity(self.ids.len());
         let mut refresh_when: Option<Instant> = None;
