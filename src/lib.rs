@@ -43,17 +43,16 @@
 //!
 //! Channels provided by this package come in two varieties:
 //!
-//!  - **Far**: "Far" channels represent unreliable datagram
-//!    communications over an uncooperative network.  The common
-//!    example is UDP commuincations.  Far channels are intended for
-//!    general network communications.  See the [far] module for more
-//!    details.
+//!  - **Far**: "Far" channels represent unreliable datagram communications over
+//!    an uncooperative network.  The common example is UDP commuincations.  Far
+//!    channels are intended for general network communications.  See the [far]
+//!    module for more details.
 //!
-//!  - **Near**: "Near" channels represent reliable, connection-based
-//!    stream protocols over generally reliable networks.  The common
-//!    example is TCP commuincations.  Near channels are intended for
-//!    "local" connections, or for a friendly network environment.
-//!    See the [near] module for more details.
+//!  - **Near**: "Near" channels represent reliable, connection-based stream
+//!    protocols over generally reliable networks.  The common example is TCP
+//!    commuincations.  Near channels are intended for "local" connections, or
+//!    for a friendly network environment. See the [near] module for more
+//!    details.
 pub mod addrs;
 pub mod config;
 pub mod far;

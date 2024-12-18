@@ -22,14 +22,14 @@
 //! converted into TLS contexts for establishing and running TLS
 //! sessions.  The primary structures are as follows:
 //!
-//! - [TLSClientConfig] represents configuration information for
-//!   client-side TLS contexts.
+//! - [TLSClientConfig] represents configuration information for client-side TLS
+//!   contexts.
 //!
-//! - [TLSServerConfig] represents configuration information for
-//!   server-side TLS contexts.
+//! - [TLSServerConfig] represents configuration information for server-side TLS
+//!   contexts.
 //!
-//! - [TLSPeerConfig] represents configuration information for
-//!   peer-to-peer TLS contexts.
+//! - [TLSPeerConfig] represents configuration information for peer-to-peer TLS
+//!   contexts.
 //!
 //! Each of these structures has a YAML format, which can be parsed
 //! using `serde_yaml` to load configurations from plaintext.  See the
@@ -151,7 +151,7 @@ pub enum TLSLoadConfigError {
     OpenSSL {
         /// The OpenSSL [ErrorStack].
         error: ErrorStack
-    },
+    }
 }
 
 /// Client authentication mode.
@@ -1847,7 +1847,7 @@ impl Display for TLSLoadConfigError {
             TLSLoadConfigError::PKITrustRoot { error } => error.fmt(f),
             TLSLoadConfigError::IO { error } => error.fmt(f),
             #[cfg(feature = "openssl")]
-            TLSLoadConfigError::OpenSSL { error } => error.fmt(f),
+            TLSLoadConfigError::OpenSSL { error } => error.fmt(f)
         }
     }
 }

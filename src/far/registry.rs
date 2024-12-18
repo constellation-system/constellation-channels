@@ -187,13 +187,11 @@ where
 ///
 /// This structure provides two primary functions:
 ///
-///  - Associating [FarChannel](crate::far::FarChannel)s with a common
-///    name, and a [FarChannelRegistryID] that can be used to reference
-///    it.
+///  - Associating [FarChannel](crate::far::FarChannel)s with a common name, and
+///    a [FarChannelRegistryID] that can be used to reference it.
 ///
 ///  - Manaching most of the process of creating flows from a
-///    [FarChannel](crate::far::FarChannel) (see documentation for
-///    details).
+///    [FarChannel](crate::far::FarChannel) (see documentation for details).
 ///
 /// This trait provides access to the names and IDs.  For flow
 /// creation, see [FarChannelRegistryChannels].

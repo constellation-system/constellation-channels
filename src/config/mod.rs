@@ -144,14 +144,12 @@ pub struct AddrsConfig {
 ///
 /// The YAML format has four fields, all of which are optional:
 ///
-///  - `flow-buf-size`: Size of ring buffers that will be created for
-///    each flow.
+///  - `flow-buf-size`: Size of ring buffers that will be created for each flow.
 ///
-///  - `backlog-size`: Size of the ring buffer for storing new
-///    incoming flows.
+///  - `backlog-size`: Size of the ring buffer for storing new incoming flows.
 ///
-///  - `flows-size-hint`: Size hint, should be roughly equal to the
-///    maximum number of live flows.
+///  - `flows-size-hint`: Size hint, should be roughly equal to the maximum
+///    number of live flows.
 ///
 ///  - `packet-size`: Maximum size of incoming messages.
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
@@ -246,8 +244,8 @@ pub struct ChannelRegistryConfig<
 /// The YAML format has one field:
 ///
 ///  - `codec`: Parameters used to create the
-///    [DatagramCodec](constellation_common::codec::DatagramCodec)
-///    instances used to encode and decode messages.
+///    [DatagramCodec](constellation_common::codec::DatagramCodec) instances
+///    used to encode and decode messages.
 #[derive(
     Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
 )]
@@ -319,12 +317,12 @@ pub struct ChannelRegistryEntryConfig<Channel> {
 /// The YAML format has two fields, both of which have default values:
 ///
 ///  - `unix`: Creation parameters for the
-///    [DatagramXfrm](constellation_common::net::DatagramXfrm) instance
-///    used for Unix socket channels.
+///    [DatagramXfrm](constellation_common::net::DatagramXfrm) instance used for
+///    Unix socket channels.
 ///
 ///  - `udp`: Creation parameters for the
-///    [DatagramXfrm](constellation_common::net::DatagramXfrm) instance
-///    used for UDP socket channels.
+///    [DatagramXfrm](constellation_common::net::DatagramXfrm) instance used for
+///    UDP socket channels.
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "xfrm-params")]
 #[serde(rename_all = "kebab-case")]
@@ -1440,12 +1438,11 @@ pub struct ThreadedFlowsParams {
 ///
 /// The YAML format has three fields, all of which are optional:
 ///
-///  - `size-hint`: Estimate of the number of live names to be
-///    resolved.  This does not need to be completely accurate, and
-///    will only affect the number of allocations performed.
+///  - `size-hint`: Estimate of the number of live names to be resolved.  This
+///    does not need to be completely accurate, and will only affect the number
+///    of allocations performed.
 ///
-///  - `renewal`: Period of time at which name resolutions should be
-///    renewed.
+///  - `renewal`: Period of time at which name resolutions should be renewed.
 ///
 ///  - `retry`: [Retry] configuration for retrying failed resolutions.
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
@@ -1471,9 +1468,8 @@ pub struct ThreadedNSNameCachesConfig {
 ///
 /// The YAML format has one parameter:
 ///
-/// - `unsafe-allow-ip-addr-creds`: Allow IP addresses to be harvested
-///   as credentials.  This is unsafe as IP addresses can be easily
-///   spoofed.
+/// - `unsafe-allow-ip-addr-creds`: Allow IP addresses to be harvested as
+///   credentials.  This is unsafe as IP addresses can be easily spoofed.
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "udp-channel-unsafe")]
 #[serde(rename_all = "kebab-case")]
@@ -1760,9 +1756,8 @@ pub type TLSNearConnectorConfig<Endpoint> =
 ///
 /// The YAML format has one parameter:
 ///
-/// - `unsafe-allow-ip-addr-creds`: Allow IP addresses to be harvested
-///   as credentials.  This is unsafe as IP addresses can be easily
-///   spoofed.
+/// - `unsafe-allow-ip-addr-creds`: Allow IP addresses to be harvested as
+///   credentials.  This is unsafe as IP addresses can be easily spoofed.
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "udp-channel-unsafe")]
 #[serde(rename_all = "kebab-case")]
