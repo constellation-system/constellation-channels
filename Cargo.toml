@@ -19,6 +19,7 @@
 [package]
 name = "constellation-channels"
 description = "Low-level communications for the Constellation distributed systems platform"
+repository = "https://github.com/constellation-system/constellation-socks5"
 version = "0.0.0"
 authors = [ "Eric McCorkle <eric.mccorkle@jhuapl.edu>" ]
 rust-version = "1.81"
@@ -74,7 +75,7 @@ constellation-auth = { git = "https://github.com/constellation-system/constellat
 constellation-common = { git = "https://github.com/constellation-system/constellation-common.git", branch = "import", default-features = false }
 constellation-socks5 = { git = "https://github.com/constellation-system/constellation-socks5.git", branch = "import", default-features = false, optional = true }
 constellation-streams = { git = "https://github.com/constellation-system/constellation-streams.git", branch = "import", default-features = false }
-libgssapi = { version = "0.7", optional = true }
+libgssapi = { version = "0.8", optional = true }
 log = { version = "0.4", optional = true }
 openssl = { version = "0.10", optional = true }
 serde = { version = "1.0", features = ["derive"] }

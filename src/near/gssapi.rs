@@ -627,7 +627,7 @@ impl<A: NearChannel> GSSAPINearAcceptor<A> {
             )?
         };
 
-        Ok(ServerCtx::new(cred))
+        Ok(ServerCtx::new(Some(cred)))
     }
 
     fn gssapi_negotiate(
