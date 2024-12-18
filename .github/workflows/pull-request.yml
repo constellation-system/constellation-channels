@@ -280,7 +280,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --no-default-features --features log,openssl,unix
+          args: --no-default-features --features log,openssl,socks5,unix
         env:
           RUSTFLAGS: '-Cinstrument-coverage -Ccodegen-units=1 -Clink-dead-code --remap-path-prefix=${{ github.workspace }}='
           LLVM_PROFILE_FILE: 'target/coverage/${{ runner.os }}_%m_%p.profraw'
@@ -366,7 +366,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --release --no-default-features --features log,openssl,unix
+          args: --release --no-default-features --features log,openssl,socks5,unix
 
   coverage-report:
     name: Generate coverage report
