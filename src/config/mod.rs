@@ -2695,7 +2695,7 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     /// let target = IPEndpoint::new(target, 443);
     /// let auth = SOCKS5AuthNConfig::Password {
     ///     username: String::from("user"),
-    ///     password: String::from("password")
+    ///     password: String::from("pass")
     /// };
     ///
     /// assert_eq!(
@@ -2792,7 +2792,7 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     /// let bind = UDPFarChannelConfig::new(addr.ip(), addr.port());
     /// let auth = SOCKS5AuthNConfig::Password {
     ///     username: String::from("user"),
-    ///     password: String::from("password")
+    ///     password: String::from("pass")
     /// };
     ///
     /// assert_eq!(
