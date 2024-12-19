@@ -2683,7 +2683,9 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     ///                    "target:\n",
     ///                    "  addr: en.wikipedia.org\n",
     ///                    "  port: 443\n",
-    ///                    "auth: gssapi");
+    ///                    "auth:\n",
+    ///                    "  username: user\n",
+    ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
     /// let proxy = TCPNearConnectorConfig::new(proxy,
@@ -2691,8 +2693,9 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     ///                                         Retry::default());
     /// let target = IPEndpointAddr::name(String::from("en.wikipedia.org"));
     /// let target = IPEndpoint::new(target, 443);
-    /// let auth = SOCKS5AuthNConfig::GSSAPI {
-    ///     gssapi: ClientGSSAPIConfig::default()
+    /// let auth = SOCKS5AuthNConfig::Password {
+    ///     username: String::from("user"),
+    ///     password: String::from("password")
     /// };
     ///
     /// assert_eq!(
@@ -2777,7 +2780,9 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     ///                    "proxy:\n",
     ///                    "  addr: test.example.com\n",
     ///                    "  port: 9050\n",
-    ///                    "auth: gssapi");
+    ///                    "auth:\n",
+    ///                    "  username: user\n",
+    ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
     /// let proxy = TCPNearConnectorConfig::new(proxy,
@@ -2785,8 +2790,9 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     ///                                         Retry::default());
     /// let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
     /// let bind = UDPFarChannelConfig::new(addr.ip(), addr.port());
-    /// let auth = SOCKS5AuthNConfig::GSSAPI {
-    ///     gssapi: ClientGSSAPIConfig::default()
+    /// let auth = SOCKS5AuthNConfig::Password {
+    ///     username: String::from("user"),
+    ///     password: String::from("password")
     /// };
     ///
     /// assert_eq!(
