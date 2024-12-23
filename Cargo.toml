@@ -71,10 +71,10 @@ unix = [
 ]
 
 [dependencies]
-constellation-auth = { git = "https://github.com/constellation-system/constellation-auth.git", branch = "devel", default-features = false }
-constellation-common = { git = "https://github.com/constellation-system/constellation-common.git", branch = "devel", default-features = false }
-constellation-socks5 = { git = "https://github.com/constellation-system/constellation-socks5.git", branch = "devel", default-features = false, optional = true }
-constellation-streams = { git = "https://github.com/constellation-system/constellation-streams.git", branch = "devel", default-features = false }
+constellation-auth = { path = "../constellation-auth/", default-features = false }
+constellation-common = { path = "../constellation-common/", default-features = false }
+constellation-socks5 = { path = "../constellation-socks5/", default-features = false, optional = true }
+constellation-streams = { path = "../constellation-streams/", default-features = false }
 libgssapi = { version = "0.8", optional = true }
 log = { version = "0.4", optional = true }
 openssl = { version = "0.10", optional = true }
