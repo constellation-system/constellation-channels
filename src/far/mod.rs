@@ -167,11 +167,11 @@ use constellation_common::sched::SelectError;
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
 use crate::far::flows::BorrowedFlows;
-use crate::far::flows::CreateFlows;
+use crate::far::flows::CreateBorrowedFlows;
 use crate::far::flows::CreateOwnedFlows;
 use crate::far::flows::Flows;
+use crate::far::flows::Negotiator;
 use crate::far::flows::OwnedFlows;
-use crate::far::flows::OwnedFlowsNegotiator;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
@@ -427,7 +427,7 @@ pub trait FarChannelBorrowFlows<F, InnerXfrm>: FarChannel
 where
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Xfrm: From<Self::Xfrm>,
     F::Socket: From<Self::Socket> {
     /// Type of borrowed flows created by this channel.
@@ -539,7 +539,7 @@ where
 /// implementation (as well as the associated types).
 pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>: FarChannel
 where
-    AuthN: SessionAuthN<<Self::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: SessionAuthN<<Self::Nego as Negotiator>::Flow>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
     F: Flows + CreateOwnedFlows<Self::Nego, AuthN> + OwnedFlows,
@@ -557,7 +557,7 @@ where
     /// Type of errors that can be returned from
     /// [wrap_xfrm](FarChannelOwnedFlows::wrap_xfrm).
     type XfrmError: Display + ScopedError;
-    type Nego: OwnedFlowsNegotiator<Inner = F::Flow>;
+    type Nego: Negotiator<Inner = F::Flow>;
 
     /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
     fn negotiator(&self) -> Self::Nego;

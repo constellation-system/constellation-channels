@@ -34,7 +34,7 @@
 //! # use constellation_channels::far::FarChannelCreate;
 //! # use constellation_channels::far::FarChannelBorrowFlows;
 //! # use constellation_channels::far::flows::BorrowedFlows;
-//! # use constellation_channels::far::flows::CreateFlows;
+//! # use constellation_channels::far::flows::CreateBorrowedFlows;
 //! # use constellation_channels::far::flows::MultiFlows;
 //! # use constellation_channels::far::flows::SingleFlow;
 //! # use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -157,7 +157,7 @@ use crate::config::UDPFarChannelConfig;
 use crate::far::flows::OwnedFlows;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::BorrowedFlows;
-use crate::far::CreateFlows;
+use crate::far::CreateBorrowedFlows;
 use crate::far::CreateOwnedFlows;
 use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
@@ -371,7 +371,7 @@ impl FarChannelCreate for UDPFarChannel {
 
 impl<F, Xfrm> FarChannelBorrowFlows<F, Xfrm> for UDPFarChannel
 where
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<UDPFarSocket>,
     F::Xfrm: From<Xfrm>,
     Xfrm: DatagramXfrm,

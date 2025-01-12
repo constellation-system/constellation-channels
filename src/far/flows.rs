@@ -135,6 +135,7 @@ use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::nonblock::NonblockResult;
 use constellation_common::retry::RetryResult;
 use constellation_common::retry::RetryWhen;
 use constellation_common::shutdown::ShutdownFlag;
@@ -169,7 +170,7 @@ pub trait Flows: Sized {
 /// [owned_flows](crate::far::FarChannelOwnedFlows::owned_flows) and
 /// [borrowed_flows](crate::far::FarChannelBorrowFlows::borrowed_flows).
 /// It is not intended to be used directly.
-pub trait CreateFlows: Flows {
+pub trait CreateBorrowedFlows: Flows {
     /// Additional parameter used to create this type.
     type CreateParam;
     /// Errors that can occur when creating this type.
@@ -229,7 +230,7 @@ pub trait OwnedFlows: Flows {
 ///
 /// This allows the details of session negotiation to be abstracted
 /// over.
-pub trait OwnedFlowsNegotiator: Send + Sync {
+pub trait Negotiator: Send + Sync {
     type Inner: Credentials + Flow + Read + Write + Send;
     /// Resulting [Flow] type.
     ///
@@ -241,29 +242,45 @@ pub trait OwnedFlowsNegotiator: Send + Sync {
     /// Type of addresses.
     type Addr: Clone + Display;
 
-    /// Attempt to negotiate a session without blocking.
-    ///
-    /// This means that no additional messages need to be sent.  This
-    /// will return a [NonblockResult] indicating success or failure;
-    /// if failure is indicated, then
-    /// [negotiate](OwnedFlowsNegotiator::negotiate) should be called
-    /// with the same parameters.
-    ///
-    /// Errors returned indicate "hard" errors.
-    fn negotiate_nonblock(
+    fn negotiate_outbound_nonblock(
         &mut self,
         inner: Self::Inner,
         addr: Self::Addr
     ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>;
 
-    /// Negotiate a session.
+    fn negotiate_outbound(
+        &mut self,
+        inner: Self::Inner,
+        addr: Self::Addr,
+        endpoint: Option<&IPEndpointAddr>
+    ) -> Result<
+        RetryResult<Self::Flow, NegotiateRetry<Self::Inner>>,
+        Self::NegotiateError
+    >;
+
+    /// Attempt to negotiate an inbound session without blocking.
+    ///
+    /// This means that no additional messages need to be sent.  This
+    /// will return a [NonblockResult] indicating success or failure;
+    /// if failure is indicated, then
+    /// [negotiate](Negotiator::negotiate) should be called
+    /// with the same parameters.
+    ///
+    /// Errors returned indicate "hard" errors.
+    fn negotiate_inbound_nonblock(
+        &mut self,
+        inner: Self::Inner,
+        addr: Self::Addr
+    ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>;
+
+    /// Negotiate an inbound session.
     ///
     /// This may block for a a long time; users should generally use
-    /// [negotiate_nonblock](OwnedFlowsNegotiator::negotiate_nonblock)
+    /// [negotiate_nonblock](Negotiator::negotiate_nonblock)
     /// to try to negotiate without blocking, then set up the
     /// necessary machinery to handle a potentially stalled
     /// negotiation before calling this function.
-    fn negotiate(
+    fn negotiate_inbound(
         &mut self,
         inner: Self::Inner,
         addr: Self::Addr
@@ -298,7 +315,7 @@ pub trait OwnedFlowsListener<Addr, Prin, Flow> {
 pub trait CreateOwnedFlows<Nego, AuthN>: OwnedFlows
 where
     AuthN: SessionAuthN<Nego::Flow>,
-    Nego: OwnedFlowsNegotiator<Inner = Self::Flow> {
+    Nego: Negotiator<Inner = Self::Flow> {
     /// Channel identifier for the created [Flows].
     type ChannelID: Clone + Display + Eq + Hash;
     type CreateParam;
@@ -403,16 +420,7 @@ pub trait Flow: Credentials + Read + Write {
     fn peer_addr(&self) -> Self::PeerAddr;
 }
 
-/// Results that can be returned from an attempt at a non-blocking
-/// operation.
-pub enum NonblockResult<S, F> {
-    /// The operation was successful.
-    Success(S),
-    /// The operation failed because it needed to block.
-    Fail(F)
-}
-
-/// Retry information for [OwnedFlowsNegotiator].
+/// Retry information for [Negotiator].
 pub struct NegotiateRetry<Flow> {
     when: Instant,
     flow: Flow
@@ -531,6 +539,28 @@ where
         Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowsNegotiateEntry>>>
 }
 
+struct ThreadedFlowsAuthNThread<Flow, AuthN, Addr, Param, ID>
+where
+    Flow: Credentials + Read + Write,
+    AuthN: SessionAuthN<Flow>,
+    Param: Clone + Display + Send,
+    Addr: Clone + Display + Send,
+    ID: Clone + Display + Eq + Hash + Send {
+    /// Authenticator to use.
+    authn: AuthN,
+    /// Flow to use for authentication.
+    flow: Flow,
+    /// Sender for the backlog queue.  This should only be used by
+    /// listener threads.
+    backlog_send: mpsc::Sender<(StreamID<Addr, ID, Param>, AuthN::Prin, Flow)>,
+    /// ID of the channel for which this is being negotiated.
+    id: StreamID<Addr, ID, Param>,
+    /// Whether the negotiator is still live.
+    shutdown: ShutdownFlag,
+    /// Table of all pending negotiators
+    negotiators: Arc<Mutex<HashMap<Addr, ThreadedFlowsNegotiateEntry>>>
+}
+
 /// Thread information to use to negotiate an individual session.
 struct ThreadedFlowsNegotiateThread<Channel, AuthN, Xfrm, Nego, ChannelID>
 where
@@ -538,8 +568,7 @@ where
     Channel: FarChannel,
     Xfrm: DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
-    Nego:
-        OwnedFlowsNegotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
+    Nego: Negotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
     Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ChannelID: Clone + Display + Eq + Hash + Send {
     authn: AuthN,
@@ -558,7 +587,7 @@ where
     shutdown: ShutdownFlag,
     /// Negotiator for new flows.
     negotiator: Nego,
-    /// Table from which to remove this negotiator when done.
+    /// Table of all pending negotiators
     negotiators:
         Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowsNegotiateEntry>>>
 }
@@ -574,8 +603,7 @@ where
     Channel: FarChannel,
     Xfrm: DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
-    Nego:
-        OwnedFlowsNegotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
+    Nego: Negotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
     Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ChannelID: Clone + Display + Eq + Hash + Send {
     /// Maximum size of messages.
@@ -622,7 +650,7 @@ pub struct ThreadedFlow<Channel: FarChannel, Xfrm: DatagramXfrm + Send> {
     cond: Arc<Condvar>
 }
 
-/// An [OwnedFlowsNegotiator] instance that simply passes the
+/// An [Negotiator] instance that simply passes the
 /// underlying [OwnedFlows] instance through.
 ///
 /// This is used for channel types that do not need to perform any
@@ -724,7 +752,7 @@ where
     }
 }
 
-impl<Addr, F> OwnedFlowsNegotiator for PassthruNegotiator<Addr, F>
+impl<Addr, F> Negotiator for PassthruNegotiator<Addr, F>
 where
     F: OwnedFlows,
     F::Flow: Send,
@@ -736,7 +764,30 @@ where
     type NegotiateError = Infallible;
 
     #[inline]
-    fn negotiate_nonblock(
+    fn negotiate_outbound_nonblock(
+        &mut self,
+        inner: Self::Inner,
+        _addr: Self::Addr
+    ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
+    {
+        Ok(NonblockResult::Success(inner))
+    }
+
+    #[inline]
+    fn negotiate_outbound(
+        &mut self,
+        inner: F::Flow,
+        _addr: Addr,
+        _endpoint: Option<&IPEndpointAddr>
+    ) -> Result<
+        RetryResult<Self::Flow, NegotiateRetry<Self::Flow>>,
+        Self::NegotiateError
+    > {
+        Ok(RetryResult::Success(inner))
+    }
+
+    #[inline]
+    fn negotiate_inbound_nonblock(
         &mut self,
         inner: F::Flow,
         _addr: Addr
@@ -746,7 +797,7 @@ where
     }
 
     #[inline]
-    fn negotiate(
+    fn negotiate_inbound(
         &mut self,
         inner: F::Flow,
         _addr: Addr
@@ -758,6 +809,105 @@ where
     }
 }
 
+impl<Flow, AuthN, Addr, Param, ID>
+    ThreadedFlowsAuthNThread<Flow, AuthN, Addr, Param, ID>
+where
+    Flow: Credentials + Read + Write,
+    AuthN: SessionAuthN<Flow>,
+    Param: Clone + Display + Send,
+    Addr: Clone + Display + Eq + Hash + Send,
+    ID: Clone + Display + Eq + Hash + Send
+{
+    fn authn(
+        id: &StreamID<Addr, ID, Param>,
+        authn: AuthN,
+        shutdown: ShutdownFlag,
+        mut flow: Flow,
+        backlog_send: mpsc::Sender<(
+            StreamID<Addr, ID, Param>,
+            AuthN::Prin,
+            Flow
+        )>
+    ) -> Result<(), Error> {
+        if shutdown.is_live() {
+            trace!(target: "flows-threaded-authn",
+                   "trying authentication for {}",
+                   id);
+
+            // The negotiation succeeded; do authentication.
+            match authn.session_authn(&mut flow) {
+                Ok(AuthNResult::Accept(prin)) => {
+                    info!(target: "flows-threaded-authn",
+                          "stream {} authenticated as {}",
+                          id, prin);
+
+                    // Add it to the backlog.
+                    backlog_send.send((id.clone(), prin, flow)).map_err(|_| {
+                        Error::new(ErrorKind::Other, "listen channel closed")
+                    })
+                }
+                Ok(AuthNResult::Reject) => {
+                    info!(target: "flows-threaded-authn",
+                          "stream {} failed authentication",
+                          id);
+
+                    Ok(())
+                }
+                Err(err) => {
+                    error!(target: "flows-threaded-authn",
+                           "error during authentication: {}",
+                           err);
+
+                    Err(Error::new(ErrorKind::Other, "error in authentication"))
+                }
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn run(self) {
+        let ThreadedFlowsAuthNThread {
+            id,
+            flow,
+            authn,
+            shutdown,
+            backlog_send,
+            negotiators
+        } = self;
+
+        debug!(target: "flows-threaded-authn",
+               "threaded flows authenticator for {} starting",
+               id);
+
+        if let Err(err) = Self::authn(&id, authn, shutdown, flow, backlog_send)
+        {
+            error!(target: "flows-threaded-negotiate",
+                   "threaded flows negotiator for {} failed with error: {}",
+                   id, err);
+        } else {
+            debug!(target: "flows-threaded-negotiate",
+                   "threaded flows negotiator for {} exiting",
+                   id);
+        }
+
+        // Remove ourselves from the negotiator pool.
+        match negotiators.lock() {
+            Ok(mut guard) => {
+                trace!(target: "flows-threaded-negotiate",
+                       "removing negotiator for {}",
+                       id);
+
+                guard.remove(id.party_addr());
+            }
+            Err(_) => {
+                error!(target: "flows-threaded-negotiate",
+                       "mutex poisoned");
+            }
+        };
+    }
+}
+
 impl<Channel, AuthN, Xfrm, Nego, ID>
     ThreadedFlowsNegotiateThread<Channel, AuthN, Xfrm, Nego, ID>
 where
@@ -766,8 +916,7 @@ where
     Channel::Param: Clone + Display + Eq + Hash + Send,
     Xfrm: DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
-    Nego:
-        OwnedFlowsNegotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
+    Nego: Negotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
     Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ID: Clone + Display + Eq + Hash + Send
 {
@@ -792,48 +941,20 @@ where
                 |_| Error::new(ErrorKind::Other, "bad address conversion")
             )?;
 
-            match negotiator.negotiate(flow, addr) {
+            match negotiator.negotiate_inbound(flow, addr) {
                 // Negotiation successful.
-                Ok(RetryResult::Success(mut flow)) => {
+                Ok(RetryResult::Success(flow)) => {
                     trace!(target: "flows-threaded-negotiate",
                            "negotiatons for {} successful",
                            id);
 
-                    // The negotiation succeeded; do authentication.
-                    match authn.session_authn(&mut flow) {
-                        Ok(AuthNResult::Accept(prin)) => {
-                            info!(target: "far-channel-registry",
-                                  "stream {} authenticated as {}",
-                                  id, prin);
-
-                            // Add it to the backlog.
-                            backlog_send.send((id.clone(), prin, flow)).map_err(
-                                |_| {
-                                    Error::new(
-                                        ErrorKind::Other,
-                                        "listen channel closed"
-                                    )
-                                }
-                            )
-                        }
-                        Ok(AuthNResult::Reject) => {
-                            info!(target: "far-channel-registry",
-                                  "stream {} failed authentication",
-                                  id);
-
-                            Ok(())
-                        }
-                        Err(err) => {
-                            error!(target: "flows-threaded-negotiate",
-                                   "error during authentication: {}",
-                                   err);
-
-                            Err(Error::new(
-                                ErrorKind::Other,
-                                "error in authentication"
-                            ))
-                        }
-                    }
+                    ThreadedFlowsAuthNThread::authn(
+                        id,
+                        authn,
+                        shutdown,
+                        flow,
+                        backlog_send
+                    )
                 }
                 // Wait and retry.
                 Ok(RetryResult::Retry(retry)) => {
@@ -875,7 +996,7 @@ where
         }
     }
 
-    pub fn run(self) {
+    fn run(self) {
         let ThreadedFlowsNegotiateThread {
             backlog_send,
             authn,
@@ -936,7 +1057,7 @@ where
     Channel: 'static + FarChannel,
     Channel::Param: Clone + Display + Eq + Hash + Send,
     Nego: 'static
-        + OwnedFlowsNegotiator<Inner = ThreadedFlow<Channel, Xfrm>>
+        + Negotiator<Inner = ThreadedFlow<Channel, Xfrm>>
         + Clone
         + Send
         + Sync,
@@ -966,7 +1087,7 @@ where
             Error::new(ErrorKind::Other, "bad address conversion")
         })?;
 
-        match negotiator.negotiate_nonblock(flow, nego_addr) {
+        match negotiator.negotiate_inbound_nonblock(flow, nego_addr) {
             // Nonblocking negotiation succeeded.
             Ok(NonblockResult::Success(mut flow)) => {
                 trace!(target: "flows-threaded-listen",
@@ -975,13 +1096,8 @@ where
                 let id =
                     StreamID::new(addr.clone(), channel.clone(), param.clone());
 
-                // ISSUE #10: authentication should be done in its own
-                // thread, unless it succeeds immediately, similar to
-                // how negotiation is done.
-
-                // The negotiation succeeded; do authentication.
-                match authn.session_authn(&mut flow) {
-                    Ok(AuthNResult::Accept(prin)) => {
+                match authn.session_authn_nonblock(&mut flow) {
+                    Ok(NonblockResult::Success(AuthNResult::Accept(prin))) => {
                         info!(target: "far-channel-registry",
                               "stream {} authenticated as {}",
                               id, prin);
@@ -996,10 +1112,40 @@ where
                             }
                         )
                     }
-                    Ok(AuthNResult::Reject) => {
+                    Ok(NonblockResult::Success(AuthNResult::Reject)) => {
                         info!(target: "far-channel-registry",
                               "stream {} failed authentication",
                               id);
+
+                        Ok(())
+                    }
+                    Ok(NonblockResult::Fail(())) => {
+                        trace!(target: "flows-threaded-listen",
+                               "session authentication requires blocking");
+
+                        let shutdown = ShutdownFlag::new();
+                        let thread = ThreadedFlowsAuthNThread {
+                            backlog_send: backlog_send.clone(),
+                            negotiators: negotiators.clone(),
+                            authn: authn.clone(),
+                            id: id,
+                            shutdown: shutdown.clone(),
+                            flow: flow
+                        };
+                        let mut guard = negotiators.lock().map_err(|_| {
+                            Error::new(ErrorKind::Other, "mutex poisoned")
+                        })?;
+
+                        debug!(target: "flows-threaded-listen",
+                               "launching authenticator thread");
+
+                        let join = spawn(|| thread.run());
+                        let entry = ThreadedFlowsNegotiateEntry {
+                            shutdown: shutdown,
+                            join: join
+                        };
+
+                        guard.insert(addr.clone(), entry);
 
                         Ok(())
                     }
@@ -1503,11 +1649,7 @@ impl<Channel, AuthN, Xfrm, Nego, ID> CreateOwnedFlows<Nego, AuthN>
 where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send,
     AuthN::Prin: 'static + Send,
-    Nego: 'static
-        + OwnedFlowsNegotiator<Inner = Self::Flow>
-        + Clone
-        + Send
-        + Sync,
+    Nego: 'static + Negotiator<Inner = Self::Flow> + Clone + Send + Sync,
     Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     Xfrm: 'static
         + DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr>
@@ -1554,11 +1696,7 @@ impl<Channel, AuthN, Xfrm, Nego, ID> CreateOwnedFlows<Nego, AuthN>
 where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send,
     AuthN::Prin: 'static + Send,
-    Nego: 'static
-        + OwnedFlowsNegotiator<Inner = Self::Flow>
-        + Clone
-        + Send
-        + Sync,
+    Nego: 'static + Negotiator<Inner = Self::Flow> + Clone + Send + Sync,
     Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     Xfrm: 'static
         + DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr>
@@ -1636,7 +1774,7 @@ where
     }
 }
 
-impl<Channel, Xfrm> CreateFlows for MultiFlows<Channel, Xfrm>
+impl<Channel, Xfrm> CreateBorrowedFlows for MultiFlows<Channel, Xfrm>
 where
     Xfrm: DatagramXfrm,
     Channel: FarChannel
@@ -1657,7 +1795,7 @@ where
     }
 }
 
-impl<Channel, Xfrm> CreateFlows for SingleFlow<Channel, Xfrm>
+impl<Channel, Xfrm> CreateBorrowedFlows for SingleFlow<Channel, Xfrm>
 where
     Xfrm: DatagramXfrm,
     Channel: FarChannel

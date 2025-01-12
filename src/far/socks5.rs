@@ -164,11 +164,11 @@ use crate::config::ResolverConfig;
 use crate::config::SOCKS5AssocConfig;
 use crate::config::SOCKS5AuthNConfig;
 use crate::far::flows::BorrowedFlows;
-use crate::far::flows::CreateFlows;
+use crate::far::flows::CreateBorrowedFlows;
 use crate::far::flows::CreateOwnedFlows;
 use crate::far::flows::Flows;
+use crate::far::flows::Negotiator;
 use crate::far::flows::OwnedFlows;
-use crate::far::flows::OwnedFlowsNegotiator;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
@@ -695,7 +695,7 @@ where
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     Datagram::Borrowed: BorrowedFlows,
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<Datagram::Socket>,
     F::Xfrm: From<Datagram::Xfrm>,
     F::Xfrm: From<Xfrm>
@@ -753,8 +753,8 @@ where
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     Datagram::Owned: OwnedFlows,
-    Datagram::Nego: OwnedFlowsNegotiator<Inner = F::Flow>,
-    AuthN: SessionAuthN<<Datagram::Nego as OwnedFlowsNegotiator>::Flow>,
+    Datagram::Nego: Negotiator<Inner = F::Flow>,
+    AuthN: SessionAuthN<<Datagram::Nego as Negotiator>::Flow>,
     F: Flows + CreateOwnedFlows<Datagram::Nego, AuthN> + OwnedFlows,
     F::Socket: From<Datagram::Socket>,
     F::Xfrm: From<Datagram::Xfrm>,
