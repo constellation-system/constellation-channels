@@ -51,6 +51,7 @@ use constellation_common::net::Socket;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::Policy;
+use constellation_common::shutdown::ShutdownFlag;
 use constellation_streams::addrs::Addrs;
 use constellation_streams::channels::ChannelParam;
 use constellation_streams::channels::Channels;
@@ -71,8 +72,8 @@ use crate::config::ChannelRegistryChannelsConfig;
 use crate::config::ChannelRegistryConfig;
 use crate::far::flows::CreateOwnedFlows;
 use crate::far::flows::Flows;
+use crate::far::flows::Negotiator;
 use crate::far::flows::OwnedFlows;
-use crate::far::flows::OwnedFlowsNegotiator;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -85,7 +86,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// Trait for context objects that provide access to a [FarChannelRegistry].
 pub trait FarChannelRegistryCtx<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: Flows
@@ -135,7 +136,7 @@ struct RegistryFlowsRetry {
 /// addresses, and keep that updated.
 struct RegistryAcquired<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm>,
     F: Flows
@@ -160,7 +161,7 @@ where
 /// Entry in the registry for a single channel.
 struct RegistryEntry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm>,
     F: Flows
@@ -197,7 +198,7 @@ where
 /// creation, see [FarChannelRegistryChannels].
 pub struct FarChannelRegistry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: Flows
@@ -242,7 +243,7 @@ pub struct FarChannelRegistryChannels<
     AuthN,
     Xfrm
 > where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
@@ -281,6 +282,7 @@ pub struct FarChannelRegistryChannels<
     msg: PhantomData<Msg>,
     /// Reference to the registry.
     registry: Arc<FarChannelRegistry<Channel, F, AuthN, Xfrm>>,
+    shutdown: ShutdownFlag,
     /// List of channel names to get.
     ids: Vec<FarChannelRegistryID>,
     reporter: Reporter,
@@ -411,7 +413,7 @@ where
 impl<Channel, F, AuthN, Xfrm> RegistryAcquired<Channel, F, AuthN, Xfrm>
 where
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm>,
     F: Flows
         + CreateOwnedFlows<Channel::Nego, AuthN, ChannelID = FarChannelRegistryID>
@@ -1030,7 +1032,7 @@ where
 
 impl<Channel, F, AuthN, Xfrm> RegistryEntry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: Flows
@@ -1313,7 +1315,7 @@ where
 
 impl<Channel, F, AuthN, Xfrm> FarChannelRegistry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: Flows
@@ -1807,7 +1809,7 @@ impl<Msg, Codec, Reporter, Channel, F, AuthN, Xfrm, NameCtx> Channels<NameCtx>
         Xfrm
     >
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     NameCtx: NSNameCachesCtx,
@@ -1957,8 +1959,7 @@ where
             .map_ok(|(prin, flow)| {
                 let stream =
                     DatagramCodecStream::create(self.codec.clone(), flow);
-                let stream = ThreadedStream::new(stream);
-
+                let stream = ThreadedStream::new(self.shutdown.clone(), stream);
                 let id = StreamID::new(addr.clone(), *id, param.clone());
 
                 match self.reporter.report(id, prin, stream.clone()) {
@@ -1984,7 +1985,7 @@ impl<Msg, Codec, Reporter, Channel, F, AuthN, Xfrm, RegistryCtx>
         Xfrm
     >
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowsNegotiator>::Flow>,
+    AuthN: Clone + SessionAuthN<<Channel::Nego as Negotiator>::Flow>,
     AuthN: Clone + SessionAuthN<<Channel::Owned as OwnedFlows>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     Codec::Param: Default,
@@ -2037,6 +2038,7 @@ where
 
     fn create(
         ctx: &mut RegistryCtx,
+        shutdown: ShutdownFlag,
         reporter: Self::Reporter,
         config: Self::Config,
         mut names: Vec<String>
@@ -2068,6 +2070,7 @@ where
 
         Ok(FarChannelRegistryChannels {
             msg: PhantomData,
+            shutdown: shutdown,
             codec: codec,
             reporter: reporter,
             registry: registry,

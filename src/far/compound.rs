@@ -243,6 +243,7 @@ use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::nonblock::NonblockResult;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
 #[cfg(feature = "socks5")]
@@ -272,9 +273,8 @@ use crate::far::flows::Flow;
 use crate::far::flows::Flows;
 use crate::far::flows::MultiFlows;
 use crate::far::flows::NegotiateRetry;
-use crate::far::flows::NonblockResult;
+use crate::far::flows::Negotiator;
 use crate::far::flows::OwnedFlows;
-use crate::far::flows::OwnedFlowsNegotiator;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::flows::SingleFlow;
 use crate::far::flows::ThreadedFlows;
@@ -298,7 +298,7 @@ use crate::far::unix::UnixDatagramSocket;
 use crate::far::unix::UnixFarChannel;
 use crate::far::AcquiredResolveStaticError;
 use crate::far::AcquiredResolver;
-use crate::far::CreateFlows;
+use crate::far::CreateBorrowedFlows;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -685,7 +685,7 @@ where
     }
 }
 
-/// [OwnedFlowsNegotiator] instance for [CompoundFarChannel]s.
+/// [Negotiator] instance for [CompoundFarChannel]s.
 #[derive(Clone)]
 pub enum CompoundNegotiator<F>
 where
@@ -2259,7 +2259,7 @@ impl FarChannelCreate for Box<CompoundFarChannel> {
 impl<F, Unix, UDP> FarChannelBorrowFlows<F, CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<CompoundFarChannelSocket>
         + From<UnixDatagramSocket>
         + From<CompoundFarIPChannelSocket>
@@ -2345,7 +2345,7 @@ where
 impl<F, Unix, UDP> FarChannelBorrowFlows<F, CompoundFarChannelXfrm<Unix, UDP>>
     for Box<CompoundFarChannel>
 where
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<CompoundFarChannelSocket>
         + From<UnixDatagramSocket>
         + From<CompoundFarIPChannelSocket>
@@ -2388,7 +2388,7 @@ where
 impl<F, UDP> FarChannelBorrowFlows<F, CompoundFarIPChannelXfrm<UDP>>
     for CompoundFarIPChannel
 where
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<CompoundFarIPChannelSocket> + From<UDPFarSocket>,
     F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
@@ -2465,7 +2465,7 @@ where
 impl<F, UDP> FarChannelBorrowFlows<F, CompoundFarIPChannelXfrm<UDP>>
     for Box<CompoundFarIPChannel>
 where
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<CompoundFarIPChannelSocket> + From<UDPFarSocket>,
     F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
@@ -3168,9 +3168,9 @@ where
     }
 }
 
-impl<F, Xfrm> CreateFlows for CompoundIPFlows<F, Xfrm>
+impl<F, Xfrm> CreateBorrowedFlows for CompoundIPFlows<F, Xfrm>
 where
-    F: Flows<Socket = CompoundFarIPChannelSocket> + CreateFlows,
+    F: Flows<Socket = CompoundFarIPChannelSocket> + CreateBorrowedFlows,
     F::Xfrm: From<Xfrm>,
     Xfrm: DatagramXfrm,
     SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
@@ -3190,9 +3190,9 @@ where
     }
 }
 
-impl<F, Xfrm> CreateFlows for CompoundFlows<F, Xfrm>
+impl<F, Xfrm> CreateBorrowedFlows for CompoundFlows<F, Xfrm>
 where
-    F: Flows<Socket = CompoundFarChannelSocket> + CreateFlows,
+    F: Flows<Socket = CompoundFarChannelSocket> + CreateBorrowedFlows,
     F::Xfrm: From<Xfrm>,
     Xfrm: DatagramXfrm,
     SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
@@ -3292,7 +3292,7 @@ where
     }
 }
 
-impl<F> OwnedFlowsNegotiator for CompoundNegotiator<F>
+impl<F> Negotiator for CompoundNegotiator<F>
 where
     F: OwnedFlows,
     F::Flow: Send
@@ -3303,7 +3303,7 @@ where
     type NegotiateError = CompoundOwnedFlowsNegotiateError;
 
     #[inline]
-    fn negotiate_nonblock(
+    fn negotiate_outbound_nonblock(
         &mut self,
         inner: F::Flow,
         _addr: CompoundFarChannelXfrmPeerAddr
@@ -3313,11 +3313,48 @@ where
             CompoundNegotiator::Basic { .. } => {
                 Ok(NonblockResult::Success(CompoundFlow::Basic { flow: inner }))
             }
-            _ => Ok(NonblockResult::Fail(inner))
+            CompoundNegotiator::DTLS { .. } => Ok(NonblockResult::Fail(inner))
         }
     }
 
-    fn negotiate(
+    fn negotiate_outbound(
+        &mut self,
+        inner: F::Flow,
+        addr: CompoundFarChannelXfrmPeerAddr,
+        endpoint: Option<&IPEndpointAddr>
+    ) -> Result<
+        RetryResult<Self::Flow, NegotiateRetry<F::Flow>>,
+        Self::NegotiateError
+    > {
+        match (self, addr) {
+            (CompoundNegotiator::Basic { .. }, _) => {
+                Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
+            }
+            (CompoundNegotiator::DTLS { dtls }, addr) => Ok(dtls
+                .negotiate_outbound(inner, addr, endpoint)
+                .map_err(|err| CompoundOwnedFlowsNegotiateError::DTLS {
+                    error: Box::new(err)
+                })?
+                .map(|flow| CompoundFlow::DTLS { flow: flow }))
+        }
+    }
+
+    #[inline]
+    fn negotiate_inbound_nonblock(
+        &mut self,
+        inner: F::Flow,
+        _addr: CompoundFarChannelXfrmPeerAddr
+    ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
+    {
+        match self {
+            CompoundNegotiator::Basic { .. } => {
+                Ok(NonblockResult::Success(CompoundFlow::Basic { flow: inner }))
+            }
+            CompoundNegotiator::DTLS { .. } => Ok(NonblockResult::Fail(inner))
+        }
+    }
+
+    fn negotiate_inbound(
         &mut self,
         inner: F::Flow,
         addr: CompoundFarChannelXfrmPeerAddr
@@ -3330,7 +3367,7 @@ where
                 Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
             }
             (CompoundNegotiator::DTLS { dtls }, addr) => Ok(dtls
-                .negotiate(inner, addr)
+                .negotiate_inbound(inner, addr)
                 .map_err(|err| CompoundOwnedFlowsNegotiateError::DTLS {
                     error: Box::new(err)
                 })?
@@ -3339,7 +3376,7 @@ where
     }
 }
 
-impl<F> OwnedFlowsNegotiator for Box<CompoundNegotiator<F>>
+impl<F> Negotiator for Box<CompoundNegotiator<F>>
 where
     F: OwnedFlows,
     F::Flow: Send
@@ -3350,14 +3387,14 @@ where
     type NegotiateError = CompoundOwnedFlowsNegotiateError;
 
     #[inline]
-    fn negotiate_nonblock(
+    fn negotiate_outbound_nonblock(
         &mut self,
         inner: F::Flow,
         addr: CompoundFarChannelXfrmPeerAddr
     ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
     {
         self.as_mut()
-            .negotiate_nonblock(inner, addr)
+            .negotiate_inbound_nonblock(inner, addr)
             .map(|out| match out {
                 NonblockResult::Success(out) => {
                     NonblockResult::Success(Box::new(out))
@@ -3367,7 +3404,39 @@ where
     }
 
     #[inline]
-    fn negotiate(
+    fn negotiate_outbound(
+        &mut self,
+        inner: F::Flow,
+        addr: CompoundFarChannelXfrmPeerAddr,
+        endpoint: Option<&IPEndpointAddr>
+    ) -> Result<
+        RetryResult<Self::Flow, NegotiateRetry<F::Flow>>,
+        Self::NegotiateError
+    > {
+        self.as_mut()
+            .negotiate_outbound(inner, addr, endpoint)
+            .map(|out| out.map(Box::new))
+    }
+
+    #[inline]
+    fn negotiate_inbound_nonblock(
+        &mut self,
+        inner: F::Flow,
+        addr: CompoundFarChannelXfrmPeerAddr
+    ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
+    {
+        self.as_mut()
+            .negotiate_inbound_nonblock(inner, addr)
+            .map(|out| match out {
+                NonblockResult::Success(out) => {
+                    NonblockResult::Success(Box::new(out))
+                }
+                NonblockResult::Fail(out) => NonblockResult::Fail(out)
+            })
+    }
+
+    #[inline]
+    fn negotiate_inbound(
         &mut self,
         inner: F::Flow,
         addr: CompoundFarChannelXfrmPeerAddr
@@ -3376,7 +3445,7 @@ where
         Self::NegotiateError
     > {
         self.as_mut()
-            .negotiate(inner, addr)
+            .negotiate_inbound(inner, addr)
             .map(|out| out.map(Box::new))
     }
 }

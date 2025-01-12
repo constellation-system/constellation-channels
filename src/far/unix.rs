@@ -64,7 +64,7 @@
 //! # use constellation_channels::far::FarChannelCreate;
 //! # use constellation_channels::far::FarChannelBorrowFlows;
 //! # use constellation_channels::far::flows::BorrowedFlows;
-//! # use constellation_channels::far::flows::CreateFlows;
+//! # use constellation_channels::far::flows::CreateBorrowedFlows;
 //! # use constellation_channels::far::flows::MultiFlows;
 //! # use constellation_channels::far::flows::SingleFlow;
 //! # use constellation_channels::far::unix::UnixDatagramSocket;
@@ -191,7 +191,7 @@ use crate::far::flows::Flows;
 use crate::far::flows::OwnedFlows;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::BorrowedFlows;
-use crate::far::CreateFlows;
+use crate::far::CreateBorrowedFlows;
 use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
@@ -385,7 +385,7 @@ impl FarChannelCreate for UnixFarChannel {
 
 impl<F, Xfrm> FarChannelBorrowFlows<F, Xfrm> for UnixFarChannel
 where
-    F: Flows + CreateFlows + BorrowedFlows,
+    F: Flows + CreateBorrowedFlows + BorrowedFlows,
     F::Socket: From<UnixDatagramSocket>,
     F::Xfrm: From<Xfrm>,
     Xfrm: DatagramXfrm,
