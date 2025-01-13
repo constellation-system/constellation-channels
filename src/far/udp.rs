@@ -403,7 +403,7 @@ where
 impl<F, AuthN, Xfrm> FarChannelOwnedFlows<F, AuthN, Xfrm> for UDPFarChannel
 where
     F: Flows
-        + CreateOwnedFlows<PassthruNegotiator<Xfrm::PeerAddr, F>, AuthN>
+        + CreateOwnedFlows<PassthruNegotiator<F>, AuthN>
         + OwnedFlows,
     F::Xfrm: From<Xfrm>,
     F::Socket: From<UDPFarSocket>,
@@ -412,7 +412,7 @@ where
     Xfrm: DatagramXfrm,
     Xfrm::LocalAddr: From<SocketAddr>
 {
-    type Nego = PassthruNegotiator<Xfrm::PeerAddr, F>;
+    type Nego = PassthruNegotiator<F>;
     type Owned = F;
     type OwnedFlowsError = Infallible;
     type Xfrm = Xfrm;

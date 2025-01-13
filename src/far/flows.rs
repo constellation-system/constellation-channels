@@ -104,7 +104,6 @@ use std::collections::hash_map::OccupiedEntry;
 use std::collections::hash_map::VacantEntry;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -239,19 +238,15 @@ pub trait Negotiator: Send + Sync {
     type Flow: Credentials + Flow + Read + Write + Send;
     /// errors that can occur during negotiations.
     type NegotiateError: Display;
-    /// Type of addresses.
-    type Addr: Clone + Display;
 
     fn negotiate_outbound_nonblock(
         &mut self,
         inner: Self::Inner,
-        addr: Self::Addr
     ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>;
 
     fn negotiate_outbound(
         &mut self,
         inner: Self::Inner,
-        addr: Self::Addr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Self::Inner>>,
@@ -270,7 +265,6 @@ pub trait Negotiator: Send + Sync {
     fn negotiate_inbound_nonblock(
         &mut self,
         inner: Self::Inner,
-        addr: Self::Addr
     ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>;
 
     /// Negotiate an inbound session.
@@ -283,7 +277,6 @@ pub trait Negotiator: Send + Sync {
     fn negotiate_inbound(
         &mut self,
         inner: Self::Inner,
-        addr: Self::Addr
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Self::Inner>>,
         Self::NegotiateError
@@ -569,7 +562,6 @@ where
     Xfrm: DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Nego: Negotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
-    Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ChannelID: Clone + Display + Eq + Hash + Send {
     authn: AuthN,
     /// Sender for the backlog queue.  This should only be used by
@@ -604,7 +596,6 @@ where
     Xfrm: DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Nego: Negotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
-    Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ChannelID: Clone + Display + Eq + Hash + Send {
     /// Maximum size of messages.
     msgsize: usize,
@@ -655,8 +646,7 @@ pub struct ThreadedFlow<Channel: FarChannel, Xfrm: DatagramXfrm + Send> {
 ///
 /// This is used for channel types that do not need to perform any
 /// actual negotiation.
-pub struct PassthruNegotiator<Addr: Clone + Display, F: OwnedFlows> {
-    addr: PhantomData<Addr>,
+pub struct PassthruNegotiator<F: OwnedFlows> {
     flow: PhantomData<F>
 }
 
@@ -714,23 +704,20 @@ impl<Flow> NegotiateRetry<Flow> {
     }
 }
 
-unsafe impl<Addr, F> Send for PassthruNegotiator<Addr, F>
+unsafe impl<F> Send for PassthruNegotiator<F>
 where
-    F: OwnedFlows,
-    Addr: Clone + Display
+    F: OwnedFlows
 {
 }
-unsafe impl<Addr, F> Sync for PassthruNegotiator<Addr, F>
+unsafe impl<F> Sync for PassthruNegotiator<F>
 where
     F: OwnedFlows,
-    Addr: Clone + Display
 {
 }
 
-impl<Addr, F> Clone for PassthruNegotiator<Addr, F>
+impl<F> Clone for PassthruNegotiator<F>
 where
     F: OwnedFlows,
-    Addr: Clone + Display
 {
     #[inline]
     fn clone(&self) -> Self {
@@ -738,27 +725,23 @@ where
     }
 }
 
-impl<Addr, F> Default for PassthruNegotiator<Addr, F>
+impl<F> Default for PassthruNegotiator<F>
 where
     F: OwnedFlows,
-    Addr: Clone + Display
 {
     #[inline]
-    fn default() -> PassthruNegotiator<Addr, F> {
+    fn default() -> PassthruNegotiator<F> {
         PassthruNegotiator {
             flow: PhantomData,
-            addr: PhantomData
         }
     }
 }
 
-impl<Addr, F> Negotiator for PassthruNegotiator<Addr, F>
+impl<F> Negotiator for PassthruNegotiator<F>
 where
     F: OwnedFlows,
     F::Flow: Send,
-    Addr: Clone + Display
 {
-    type Addr = Addr;
     type Flow = F::Flow;
     type Inner = F::Flow;
     type NegotiateError = Infallible;
@@ -767,7 +750,6 @@ where
     fn negotiate_outbound_nonblock(
         &mut self,
         inner: Self::Inner,
-        _addr: Self::Addr
     ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
     {
         Ok(NonblockResult::Success(inner))
@@ -777,7 +759,6 @@ where
     fn negotiate_outbound(
         &mut self,
         inner: F::Flow,
-        _addr: Addr,
         _endpoint: Option<&IPEndpointAddr>
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Self::Flow>>,
@@ -790,7 +771,6 @@ where
     fn negotiate_inbound_nonblock(
         &mut self,
         inner: F::Flow,
-        _addr: Addr
     ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
     {
         Ok(NonblockResult::Success(inner))
@@ -800,7 +780,6 @@ where
     fn negotiate_inbound(
         &mut self,
         inner: F::Flow,
-        _addr: Addr
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Self::Flow>>,
         Self::NegotiateError
@@ -917,7 +896,6 @@ where
     Xfrm: DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Nego: Negotiator<Inner = ThreadedFlow<Channel, Xfrm>> + Send + Sync,
-    Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ID: Clone + Display + Eq + Hash + Send
 {
     fn negotiate(
@@ -937,11 +915,7 @@ where
                    "trying negotiatons for {}",
                    id);
 
-            let addr = Nego::Addr::try_from(id.party_addr().clone()).map_err(
-                |_| Error::new(ErrorKind::Other, "bad address conversion")
-            )?;
-
-            match negotiator.negotiate_inbound(flow, addr) {
+            match negotiator.negotiate_inbound(flow) {
                 // Negotiation successful.
                 Ok(RetryResult::Success(flow)) => {
                     trace!(target: "flows-threaded-negotiate",
@@ -1061,7 +1035,6 @@ where
         + Clone
         + Send
         + Sync,
-    Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     ID: 'static + Clone + Display + Eq + Hash + Send
 {
     fn negotiate(
@@ -1083,11 +1056,7 @@ where
         debug!(target: "flows-threaded-listen",
                "negotiating new session");
 
-        let nego_addr = Nego::Addr::try_from(addr.clone()).map_err(|_| {
-            Error::new(ErrorKind::Other, "bad address conversion")
-        })?;
-
-        match negotiator.negotiate_inbound_nonblock(flow, nego_addr) {
+        match negotiator.negotiate_inbound_nonblock(flow) {
             // Nonblocking negotiation succeeded.
             Ok(NonblockResult::Success(mut flow)) => {
                 trace!(target: "flows-threaded-listen",
@@ -1650,7 +1619,6 @@ where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send,
     AuthN::Prin: 'static + Send,
     Nego: 'static + Negotiator<Inner = Self::Flow> + Clone + Send + Sync,
-    Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     Xfrm: 'static
         + DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr>
         + DatagramXfrmCreateParam<
@@ -1697,7 +1665,6 @@ where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send,
     AuthN::Prin: 'static + Send,
     Nego: 'static + Negotiator<Inner = Self::Flow> + Clone + Send + Sync,
-    Nego::Addr: TryFrom<Xfrm::PeerAddr>,
     Xfrm: 'static
         + DatagramXfrm<LocalAddr = <Channel::Socket as Socket>::Addr>
         + DatagramXfrmCreateParam<

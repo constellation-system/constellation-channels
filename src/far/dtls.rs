@@ -731,7 +731,6 @@ impl<Inner> Negotiator for DTLSNegotiator<Inner>
 where
     Inner: Negotiator
 {
-    type Addr = Inner::Addr;
     type Flow = DTLSFlow<Inner::Flow>;
     type Inner = Inner::Inner;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
@@ -740,7 +739,6 @@ where
     fn negotiate_outbound_nonblock(
         &mut self,
         inner: Inner::Inner,
-        _addr: Inner::Addr
     ) -> Result<NonblockResult<Self::Flow, Inner::Inner>, Self::NegotiateError>
     {
         Ok(NonblockResult::Fail(inner))
@@ -749,7 +747,6 @@ where
     fn negotiate_outbound(
         &mut self,
         inner: Inner::Inner,
-        addr: Inner::Addr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Inner::Inner>>,
@@ -771,9 +768,10 @@ where
             },
             IPEndpointAddr::Addr(_) => String::new()
         };
+        let addr = inner.peer_addr();
         let flow = match self
             .inner
-            .negotiate_outbound(inner, addr.clone(), endpoint)
+            .negotiate_outbound(inner, endpoint)
             .map_err(|e| DTLSNegotiateError::Inner { inner: e })?
         {
             RetryResult::Success(flow) => flow,
@@ -781,12 +779,14 @@ where
         };
 
         debug!(target: "far-dtls",
-               "establishing DTLS session with {}", addr);
+               "establishing DTLS session with {}",
+               addr);
 
         match connector.connect(domain.as_str(), flow) {
             Ok(stream) => {
                 info!(target: "far-dtls",
-                      "established DTLS session with {}", addr);
+                      "established DTLS session with {}",
+                      addr);
 
                 Ok(RetryResult::Success(DTLSFlow { ssl: stream }))
             }
@@ -812,7 +812,6 @@ where
     fn negotiate_inbound_nonblock(
         &mut self,
         inner: Inner::Inner,
-        _addr: Inner::Addr
     ) -> Result<NonblockResult<Self::Flow, Inner::Inner>, Self::NegotiateError>
     {
         Ok(NonblockResult::Fail(inner))
@@ -821,14 +820,14 @@ where
     fn negotiate_inbound(
         &mut self,
         inner: Inner::Inner,
-        addr: Inner::Addr
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Inner::Inner>>,
         Self::NegotiateError
     > {
+        let addr = inner.peer_addr();
         let flow = match self
             .inner
-            .negotiate_inbound(inner, addr.clone())
+            .negotiate_inbound(inner)
             .map_err(|e| DTLSNegotiateError::Inner { inner: e })?
         {
             RetryResult::Success(flow) => flow,

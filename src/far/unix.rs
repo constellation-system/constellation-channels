@@ -418,7 +418,7 @@ impl<F, AuthN, Xfrm> FarChannelOwnedFlows<F, AuthN, Xfrm> for UnixFarChannel
 where
     AuthN: SessionAuthN<F::Flow>,
     F: Flows
-        + CreateOwnedFlows<PassthruNegotiator<Xfrm::PeerAddr, F>, AuthN>
+        + CreateOwnedFlows<PassthruNegotiator<F>, AuthN>
         + OwnedFlows,
     F::Socket: From<UnixDatagramSocket>,
     F::Xfrm: From<Xfrm>,
@@ -426,7 +426,7 @@ where
     Xfrm: DatagramXfrm,
     Xfrm::LocalAddr: From<UnixSocketAddr>
 {
-    type Nego = PassthruNegotiator<Xfrm::PeerAddr, F>;
+    type Nego = PassthruNegotiator<F>;
     type Owned = F;
     type OwnedFlowsError = Infallible;
     type Xfrm = Xfrm;
@@ -552,8 +552,6 @@ use std::sync::Arc;
 use std::sync::Barrier;
 #[cfg(test)]
 use std::thread::spawn;
-#[cfg(test)]
-use std::time::Duration;
 
 #[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
