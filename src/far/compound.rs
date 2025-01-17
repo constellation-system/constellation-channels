@@ -267,14 +267,14 @@ use crate::far::dtls::DTLSFlow;
 use crate::far::dtls::DTLSFlows;
 use crate::far::dtls::DTLSNegotiateError;
 use crate::far::dtls::DTLSNegotiator;
-use crate::far::flows::BorrowedFlows;
-use crate::far::flows::CreateOwnedFlows;
+use crate::far::flows::BorrowedFlowNegotiator;
+use crate::far::flows::BorrowedFlowsCreate;
 use crate::far::flows::Flow;
 use crate::far::flows::Flows;
 use crate::far::flows::MultiFlows;
 use crate::far::flows::NegotiateRetry;
-use crate::far::flows::Negotiator;
-use crate::far::flows::OwnedFlows;
+use crate::far::flows::OwnedFlowNegotiator;
+use crate::far::flows::OwnedFlowsCreate;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::flows::SingleFlow;
 use crate::far::flows::ThreadedFlows;
@@ -298,7 +298,6 @@ use crate::far::unix::UnixDatagramSocket;
 use crate::far::unix::UnixFarChannel;
 use crate::far::AcquiredResolveStaticError;
 use crate::far::AcquiredResolver;
-use crate::far::CreateBorrowedFlows;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -689,8 +688,7 @@ where
 #[derive(Clone)]
 pub enum CompoundNegotiator<F>
 where
-    F: OwnedFlows,
-    F::Flow: Send {
+    F: Flow + Read + Write {
     Basic {
         flow: PhantomData<F>
     },
@@ -2256,25 +2254,19 @@ impl FarChannelCreate for Box<CompoundFarChannel> {
     }
 }
 
-impl<F, Unix, UDP> FarChannelBorrowFlows<F, CompoundFarChannelXfrm<Unix, UDP>>
+impl<'a, F, AuthN, Unix, UDP>
+    FarChannelBorrowFlows<'a, F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
-    F: Flows + CreateBorrowedFlows + BorrowedFlows,
-    F::Socket: From<CompoundFarChannelSocket>
-        + From<UnixDatagramSocket>
-        + From<CompoundFarIPChannelSocket>
-        + From<UDPFarSocket>,
-    F::Xfrm: From<CompoundFarChannelXfrm<Unix, UDP>>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
+    AuthN: SessionAuthN<CompoundNegotiator<F>::Flow<'a>>,
+    F: BorrowedFlowsCreate<'a, CompoundFarChannelSocket, CompoundNegotiator<F>, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Borrowed = CompoundFlows<F, F::Xfrm>;
     type BorrowedFlowsError = Infallible;
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type Nego = CompoundNegotiator<F>;
 
     #[inline]
     fn wrap_xfrm(
@@ -2311,33 +2303,6 @@ where
                 Ok(CompoundFarChannelXfrm::IP { ip: xfrm })
             }
             _ => Err(CompoundFarChannelXfrmError::Mismatch),
-        }
-    }
-
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Borrowed, Self::BorrowedFlowsError> {
-        match self {
-            CompoundFarChannel::Unix { .. } => {
-                Ok(CompoundFlows::Basic { flows: flows })
-            }
-            CompoundFarChannel::DTLS { dtls } => {
-                let dtls = <DTLSFarChannel<Box<CompoundFarChannel>> as FarChannelBorrowFlows<
-                    F,
-                    CompoundFarChannelXfrm<Unix, UDP>,
-                >>::wrap_borrowed_flows(dtls, flows)?;
-
-                Ok(CompoundFlows::DTLS { flows: dtls })
-            }
-            CompoundFarChannel::IP { ip } => {
-                let ip = <CompoundFarIPChannel as FarChannelBorrowFlows<
-                    F,
-                    CompoundFarIPChannelXfrm<UDP>
-                >>::wrap_borrowed_flows(ip, flows)?;
-
-                Ok(CompoundFlows::IP { flows: ip })
-            }
         }
     }
 }
@@ -2511,6 +2476,7 @@ where
     F::Flow: Send
 {
 }
+
 unsafe impl<F> Sync for CompoundNegotiator<F>
 where
     F: OwnedFlows,
@@ -2520,9 +2486,7 @@ where
 
 impl<F> Default for CompoundNegotiator<F>
 where
-    F: OwnedFlows,
-    F::Flow: Send
-{
+    F: Flow + Read + Write {
     #[inline]
     fn default() -> Self {
         CompoundNegotiator::Basic { flow: PhantomData }
@@ -3292,13 +3256,11 @@ where
     }
 }
 
-impl<F> Negotiator for CompoundNegotiator<F>
+impl<F> OwnedFlowNegotiator<F> for CompoundNegotiator<F>
 where
-    F: OwnedFlows,
-    F::Flow: Send
+    F: Credentials + Flow + Read + Write
 {
-    type Flow = CompoundFlow<F::Flow>;
-    type Inner = F::Flow;
+    type Flow = CompoundFlow<F>;
     type NegotiateError = CompoundOwnedFlowsNegotiateError;
 
     #[inline]
@@ -3371,13 +3333,11 @@ where
     }
 }
 
-impl<F> Negotiator for Box<CompoundNegotiator<F>>
+impl<F> OwnedFlowNegotiator<F> for Box<CompoundNegotiator<F>>
 where
-    F: OwnedFlows,
-    F::Flow: Send
+    F: Credentials + Flow + Read + Write
 {
-    type Flow = Box<CompoundFlow<F::Flow>>;
-    type Inner = F::Flow;
+    type Flow = Box<CompoundFlow<F>>;
     type NegotiateError = CompoundOwnedFlowsNegotiateError;
 
     #[inline]

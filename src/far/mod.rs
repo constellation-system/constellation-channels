@@ -152,6 +152,7 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
+use std::io::Write;
 use std::net::SocketAddr;
 
 use constellation_auth::authn::SessionAuthN;
@@ -166,12 +167,10 @@ use constellation_common::sched::SelectError;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
-use crate::far::flows::BorrowedFlows;
-use crate::far::flows::CreateBorrowedFlows;
-use crate::far::flows::CreateOwnedFlows;
-use crate::far::flows::Flows;
-use crate::far::flows::Negotiator;
-use crate::far::flows::OwnedFlows;
+use crate::far::flows::BorrowedFlowNegotiator;
+use crate::far::flows::BorrowedFlowsCreate;
+use crate::far::flows::OwnedFlowNegotiator;
+use crate::far::flows::OwnedFlowsCreate;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
@@ -423,18 +422,12 @@ pub trait FarChannelCreate: FarChannel {
 /// Most implementations will only need to provide the
 /// [wrap_borrowed_flows](FarChannelBorrowFlows::wrap_borrowed_flows)
 /// implementation (as well as the associated types).
-pub trait FarChannelBorrowFlows<F, InnerXfrm>: FarChannel
+pub trait FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>: FarChannel
 where
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
-    F: Flows + CreateBorrowedFlows + BorrowedFlows,
-    F::Xfrm: From<Self::Xfrm>,
-    F::Socket: From<Self::Socket> {
-    /// Type of borrowed flows created by this channel.
-    ///
-    /// This will be an instance of [BorrowedFlows] derived from `F`.
-    /// In most cases, this will be `F` itself.
-    type Borrowed: Flows<Xfrm = F::Xfrm> + BorrowedFlows<Xfrm = F::Xfrm>;
+    AuthN: SessionAuthN<<Self::Nego as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
+    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
     /// Type of errors that can occur when creating borrowed flows.
     type BorrowedFlowsError: Display + ScopedError;
     /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
@@ -445,17 +438,7 @@ where
     /// Type of errors that can be returned from
     /// [wrap_xfrm](FarChannelBorrowFlows::wrap_xfrm).
     type XfrmError: Display + ScopedError;
-
-    /// Internal function to wrap a basic flows instance.
-    ///
-    /// This should wrap the type `F` to obtain a
-    /// [FarChannelBorrowFlows::Borrowed] instance.  This is not
-    /// intended to be used directly, but should be provided by any
-    /// implementation.
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Borrowed, Self::BorrowedFlowsError>;
+    type Nego: 'a + BorrowedFlowNegotiator<F::Flow>;
 
     /// Create an instance of
     /// [Xfrm](FarChannelBorrowFlows::Xfrm) from `xfrm`.
@@ -483,7 +466,7 @@ where
         xfrm: InnerXfrm,
         flow: F::CreateParam
     ) -> Result<
-        Self::Borrowed,
+        F,
         FarChannelFlowsError<
             Self::SocketError,
             F::CreateError,
@@ -498,7 +481,6 @@ where
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let xfrm = F::Xfrm::from(xfrm);
         let flows = F::create(socket, xfrm, flow)
             .map_err(|e| FarChannelFlowsError::Flows { flows: e })?;
 
@@ -539,39 +521,24 @@ where
 /// implementation (as well as the associated types).
 pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>: FarChannel
 where
-    AuthN: SessionAuthN<<Self::Nego as Negotiator>::Flow>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
-    F: Flows + CreateOwnedFlows<Self::Nego, AuthN> + OwnedFlows,
-    F::Xfrm: From<Self::Xfrm>,
-    F::Socket: From<Self::Socket> {
-    /// Type of owned flows created by this channel.
-    type Owned: Flows<Xfrm = F::Xfrm> + OwnedFlows<Xfrm = F::Xfrm>;
-    /// Type of errors that can occur when creating owned flows.
+    AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    F: OwnedFlowsCreate<Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
+    /// Type of errors that can occur when creating borrowed flows.
     type OwnedFlowsError: Display + ScopedError;
     /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
     ///
     /// This can be the same as `InnerXfrm`, or it can be its own
-    /// type derived from `InnerXfrm`
+    /// type derived from `InnerXfrme`
     type Xfrm: DatagramXfrm;
     /// Type of errors that can be returned from
-    /// [wrap_xfrm](FarChannelOwnedFlows::wrap_xfrm).
+    /// [wrap_xfrm](FarChannelBorrowFlows::wrap_xfrm).
     type XfrmError: Display + ScopedError;
-    type Nego: Negotiator<Inner = F::Flow>;
+    type Nego: OwnedFlowNegotiator<F::Flow>;
 
     /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
     fn negotiator(&self) -> Self::Nego;
-
-    /// Internal function to wrap a basic flows instance.
-    ///
-    /// This should wrap the type `F` to obtain a
-    /// [FarChannelOwnedFlows::Owned] instance.  This is not
-    /// intended to be used directly, but should be provided by any
-    /// implementation.
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError>;
 
     /// Create an instance of
     /// [Xfrm](FarChannelOwnedFlows::Xfrm) from `xfrm`.
@@ -602,7 +569,7 @@ where
         reporter: F::Reporter,
         flow: F::CreateParam
     ) -> Result<
-        Self::Owned,
+        F,
         FarChannelFlowsError<
             Self::SocketError,
             F::CreateError,
@@ -619,13 +586,11 @@ where
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
         let xfrm = F::Xfrm::from(xfrm);
         let negotiator = self.negotiator();
-        let flows = F::create_with_reporter(
+
+        F::create_with_reporter(
             channel_id, socket, authn, negotiator, reporter, xfrm, flow
         )
         .map_err(|e| FarChannelFlowsError::Flows { flows: e })?;
-
-        self.wrap_owned_flows(flows)
-            .map_err(|e| FarChannelFlowsError::Wrap { wrap: e })
     }
 }
 
