@@ -264,19 +264,15 @@ use crate::config::CompoundXfrmCreateParam;
 use crate::config::ResolverConfig;
 use crate::far::dtls::DTLSFarChannel;
 use crate::far::dtls::DTLSFlow;
-use crate::far::dtls::DTLSFlows;
 use crate::far::dtls::DTLSNegotiateError;
 use crate::far::dtls::DTLSNegotiator;
 use crate::far::flows::BorrowedFlowNegotiator;
 use crate::far::flows::BorrowedFlowsCreate;
 use crate::far::flows::Flow;
-use crate::far::flows::Flows;
-use crate::far::flows::MultiFlows;
 use crate::far::flows::NegotiateRetry;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;
 use crate::far::flows::PassthruNegotiator;
-use crate::far::flows::SingleFlow;
 use crate::far::flows::ThreadedFlows;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquireError;
@@ -651,64 +647,12 @@ pub enum CompoundFarChannelXfrmWrapError<Unix, UDP> {
 pub type CompoundFarChannelThreadedFlows<Unix, UDP, ID> =
     ThreadedFlows<CompoundFarChannel, CompoundFarChannelXfrm<Unix, UDP>, ID>;
 
-/// [MultiFlows] using [CompoundFarChannel]s.
-pub type CompoundFarChannelMultiFlows<Unix, UDP> = CompoundFlows<
-    MultiFlows<CompoundFarChannel, CompoundFarChannelXfrm<Unix, UDP>>,
-    CompoundFarChannelXfrm<Unix, UDP>
->;
-
-/// [SingleFlow] using [CompoundFarChannel]s.
-pub type CompoundFarChannelSingleFlow<Unix, UDP> = CompoundFlows<
-    SingleFlow<CompoundFarChannel, CompoundFarChannelXfrm<Unix, UDP>>,
-    CompoundFarChannelXfrm<Unix, UDP>
->;
-
-/// Multiplexer for [Flows] for [CompoundFarChannel].
-pub enum CompoundFlows<F, Xfrm>
-where
-    F: Flows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error> {
-    Basic {
-        flows: F
-    },
-    // We need this redundancy, because we can wrap non-IP flows in
-    // DTLS.
-    DTLS {
-        flows: DTLSFlows<Xfrm, Box<CompoundFlows<F, Xfrm>>>
-    },
-    IP {
-        flows: CompoundIPFlows<F, Xfrm>
-    }
-}
-
 /// [Negotiator] instance for [CompoundFarChannel]s.
 #[derive(Clone)]
-pub enum CompoundNegotiator<F>
-where
-    F: Flow + Read + Write {
-    Basic {
-        flow: PhantomData<F>
-    },
+pub enum CompoundNegotiator {
+    Basic,
     DTLS {
-        dtls: DTLSNegotiator<Box<CompoundNegotiator<F>>>
-    }
-}
-
-/// Multiplexer for [Flows] for [CompoundFarIPChannel].
-pub enum CompoundIPFlows<F, Xfrm>
-where
-    F: Flows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error> {
-    Basic {
-        flows: F
-    },
-    DTLS {
-        flows: DTLSFlows<Xfrm, Box<CompoundIPFlows<F, Xfrm>>>
+        dtls: DTLSNegotiator<Box<CompoundNegotiator>>
     }
 }
 
@@ -744,54 +688,6 @@ pub enum CompoundFarCredentialError<Cred> {
     Basic { error: Cred }
 }
 
-/// Multiplexer for [FlowError](BorrowedFlows::FlowError)s for
-/// [CompoundFarChannel].
-pub enum CompoundBorrowedFlowsFlowError<F>
-where
-    F: BorrowedFlows {
-    Basic {
-        error: F::FlowError
-    },
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundBorrowedFlowsFlowError<F>>>
-    },
-    IP {
-        error: CompoundBorrowedIPFlowsFlowError<F>
-    }
-}
-
-/// Multiplexer for [FlowError](OwnedFlows::FlowError)s for
-/// [CompoundFarChannel].
-pub enum CompoundOwnedFlowsFlowError<F>
-where
-    F: OwnedFlows {
-    Basic {
-        error: F::FlowError
-    },
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundOwnedFlowsFlowError<F>>>
-    },
-    IP {
-        error: CompoundOwnedIPFlowsFlowError<F>
-    }
-}
-
-/// Multiplexer for [ListenError](BorrowedFlows::ListenError)s for
-/// [CompoundFarChannel].
-pub enum CompoundBorrowedFlowsListenError<F>
-where
-    F: BorrowedFlows {
-    Basic {
-        error: F::ListenError
-    },
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundBorrowedFlowsListenError<F>>>
-    },
-    IP {
-        error: CompoundBorrowedIPFlowsListenError<F>
-    }
-}
-
 /// Multiplexer for
 /// [ListenError](crate::far::flows::OwnedFlowsListener::ListenError)s
 /// for [CompoundFarChannel].
@@ -800,45 +696,6 @@ pub enum CompoundOwnedFlowsNegotiateError {
         error: Box<DTLSNegotiateError<CompoundOwnedFlowsNegotiateError>>
     },
     Mismatch
-}
-
-/// Multiplexer for [FlowError](BorrowedFlows::FlowError)s for
-/// [CompoundFarIPChannel].
-pub enum CompoundBorrowedIPFlowsFlowError<F>
-where
-    F: BorrowedFlows {
-    Basic {
-        error: F::FlowError
-    },
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundBorrowedIPFlowsFlowError<F>>>
-    }
-}
-
-/// Multiplexer for [FlowError](OwnedFlows::FlowError)s for
-/// [CompoundFarIPChannel].
-pub enum CompoundOwnedIPFlowsFlowError<F>
-where
-    F: OwnedFlows {
-    Basic {
-        error: F::FlowError
-    },
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundOwnedIPFlowsFlowError<F>>>
-    }
-}
-
-/// Multiplexer for [ListenError](BorrowedFlows::ListenError)s for
-/// [CompoundFarIPChannel].
-pub enum CompoundBorrowedIPFlowsListenError<F>
-where
-    F: BorrowedFlows {
-    Basic {
-        error: F::ListenError
-    },
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundBorrowedIPFlowsListenError<F>>>
-    }
 }
 
 /// Multiplexer for [ListenError](
@@ -2258,15 +2115,16 @@ impl<'a, F, AuthN, Unix, UDP>
     FarChannelBorrowFlows<'a, F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
-    AuthN: SessionAuthN<CompoundNegotiator<F>::Flow<'a>>,
-    F: BorrowedFlowsCreate<'a, CompoundFarChannelSocket, CompoundNegotiator<F>, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
+    AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
+    F: BorrowedFlowsCreate<'a, CompoundFarChannelSocket, CompoundNegotiator, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
 {
     type BorrowedFlowsError = Infallible;
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
-    type Nego = CompoundNegotiator<F>;
+    type Nego = CompoundNegotiator;
 
     #[inline]
     fn wrap_xfrm(
@@ -2307,25 +2165,20 @@ where
     }
 }
 
-impl<F, Unix, UDP> FarChannelBorrowFlows<F, CompoundFarChannelXfrm<Unix, UDP>>
+impl<'a, F, AuthN, Unix, UDP>
+    FarChannelBorrowFlows<'a, F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for Box<CompoundFarChannel>
 where
-    F: Flows + CreateBorrowedFlows + BorrowedFlows,
-    F::Socket: From<CompoundFarChannelSocket>
-        + From<UnixDatagramSocket>
-        + From<CompoundFarIPChannelSocket>
-        + From<UDPFarSocket>,
-    F::Xfrm: From<CompoundFarChannelXfrm<Unix, UDP>>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
+    AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
+    F: BorrowedFlowsCreate<'a, CompoundFarChannelSocket, CompoundNegotiator, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Borrowed = Box<CompoundFlows<F, F::Xfrm>>;
     type BorrowedFlowsError = Infallible;
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type Nego = CompoundNegotiator;
 
     #[inline]
     fn wrap_xfrm(
@@ -2340,30 +2193,21 @@ where
 
         Ok(out)
     }
-
-    #[inline]
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Borrowed, Self::BorrowedFlowsError> {
-        Ok(Box::new(self.as_ref().wrap_borrowed_flows(flows)?))
-    }
 }
 
-impl<F, UDP> FarChannelBorrowFlows<F, CompoundFarIPChannelXfrm<UDP>>
+impl<'a, F, AuthN, UDP>
+    FarChannelBorrowFlows<'a, F, AuthN, CompoundFarIPChannelXfrm<UDP>>
     for CompoundFarIPChannel
 where
-    F: Flows + CreateBorrowedFlows + BorrowedFlows,
-    F::Socket: From<CompoundFarIPChannelSocket> + From<UDPFarSocket>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
+    AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
+    F: BorrowedFlowsCreate<'a, CompoundFarIPChannelSocket, CompoundNegotiator, AuthN, CompoundFarIPChannelXfrm<UDP>>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    UDP::LocalAddr: From<SocketAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Borrowed = CompoundIPFlows<F, F::Xfrm>;
     type BorrowedFlowsError = Infallible;
     type Xfrm = CompoundFarIPChannelXfrm<UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type Nego = CompoundNegotiator;
 
     #[inline]
     fn wrap_xfrm(
@@ -2403,44 +2247,21 @@ where
             _ => Err(CompoundFarChannelXfrmError::Mismatch),
         }
     }
-
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Borrowed, Self::BorrowedFlowsError> {
-        match self {
-            CompoundFarIPChannel::UDP { .. } => {
-                Ok(CompoundIPFlows::Basic { flows: flows })
-            }
-            CompoundFarIPChannel::DTLS { dtls } => {
-                let dtls = <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelBorrowFlows<
-                    F,
-                    CompoundFarIPChannelXfrm<UDP>,
-                >>::wrap_borrowed_flows(dtls, flows)?;
-
-                Ok(CompoundIPFlows::DTLS { flows: dtls })
-            }
-            CompoundFarIPChannel::SOCKS5 { .. } => {
-                Ok(CompoundIPFlows::Basic { flows: flows })
-            }
-        }
-    }
 }
 
-impl<F, UDP> FarChannelBorrowFlows<F, CompoundFarIPChannelXfrm<UDP>>
+impl<'a, F, AuthN, UDP>
+    FarChannelBorrowFlows<'a, F, AuthN, CompoundFarIPChannelXfrm<UDP>>
     for Box<CompoundFarIPChannel>
 where
-    F: Flows + CreateBorrowedFlows + BorrowedFlows,
-    F::Socket: From<CompoundFarIPChannelSocket> + From<UDPFarSocket>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
+    AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
+    F: BorrowedFlowsCreate<'a, CompoundFarIPChannelSocket, CompoundNegotiator, AuthN, CompoundFarIPChannelXfrm<UDP>>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    UDP::LocalAddr: From<SocketAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Borrowed = Box<CompoundIPFlows<F, F::Xfrm>>;
     type BorrowedFlowsError = Infallible;
     type Xfrm = CompoundFarIPChannelXfrm<UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type Nego = CompoundNegotiator;
 
     #[inline]
     fn wrap_xfrm(
@@ -2455,80 +2276,22 @@ where
 
         Ok(out)
     }
-
-    #[inline]
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Borrowed, Self::BorrowedFlowsError> {
-        let out = <CompoundFarIPChannel as FarChannelBorrowFlows<
-            F,
-            CompoundFarIPChannelXfrm<UDP>
-        >>::wrap_borrowed_flows(self.as_ref(), flows)?;
-
-        Ok(Box::new(out))
-    }
-}
-
-unsafe impl<F> Send for CompoundNegotiator<F>
-where
-    F: OwnedFlows,
-    F::Flow: Send
-{
-}
-
-unsafe impl<F> Sync for CompoundNegotiator<F>
-where
-    F: OwnedFlows,
-    F::Flow: Send
-{
-}
-
-impl<F> Default for CompoundNegotiator<F>
-where
-    F: Flow + Read + Write {
-    #[inline]
-    fn default() -> Self {
-        CompoundNegotiator::Basic { flow: PhantomData }
-    }
 }
 
 impl<F, AuthN, Unix, UDP>
     FarChannelOwnedFlows<F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
-    F: Flows
-        + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<DTLSNegotiator<Box<CompoundNegotiator<F>>>, AuthN>
-        + CreateOwnedFlows<Box<CompoundNegotiator<F>>, AuthN>
-        + CreateOwnedFlows<CompoundNegotiator<F>, AuthN>
-        + OwnedFlows,
-    AuthN: SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>,
-    AuthN: SessionAuthN<Box<CompoundFlow<F::Flow>>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow>,
     AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
-    AuthN: SessionAuthN<F::Flow>,
-    F::Socket: From<CompoundFarChannelSocket>
-        + From<UnixDatagramSocket>
-        + From<CompoundFarIPChannelSocket>
-        + From<UDPFarSocket>,
-    F::Xfrm: From<CompoundFarChannelXfrm<Unix, UDP>>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
-    F::Flow: Send,
+    F: OwnedFlowsCreate<CompoundFarChannelSocket, CompoundNegotiator, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Nego = CompoundNegotiator<F>;
-    type Owned = CompoundFlows<F, F::Xfrm>;
     type OwnedFlowsError = Infallible;
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type Nego = CompoundNegotiator;
 
     fn negotiator(&self) -> CompoundNegotiator<F> {
         match self {
@@ -2583,72 +2346,22 @@ where
             _ => Err(CompoundFarChannelXfrmError::Mismatch),
         }
     }
-
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError> {
-        match self {
-            CompoundFarChannel::Unix { .. } => {
-                Ok(CompoundFlows::Basic { flows: flows })
-            }
-            CompoundFarChannel::DTLS { dtls } => {
-                let dtls = <DTLSFarChannel<Box<CompoundFarChannel>> as FarChannelOwnedFlows<
-                    F, AuthN,
-                    CompoundFarChannelXfrm<Unix, UDP>,
-                >>::wrap_owned_flows(dtls, flows)?;
-
-                Ok(CompoundFlows::DTLS { flows: dtls })
-            }
-            CompoundFarChannel::IP { ip } => {
-                let ip = <CompoundFarIPChannel as FarChannelOwnedFlows<
-                    F,
-                    AuthN,
-                    CompoundFarIPChannelXfrm<UDP>
-                >>::wrap_owned_flows(ip, flows)?;
-
-                Ok(CompoundFlows::IP { flows: ip })
-            }
-        }
-    }
 }
 
 impl<F, AuthN, Unix, UDP>
     FarChannelOwnedFlows<F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for Box<CompoundFarChannel>
 where
-    F: Flows
-        + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<DTLSNegotiator<Box<CompoundNegotiator<F>>>, AuthN>
-        + CreateOwnedFlows<Box<CompoundNegotiator<F>>, AuthN>
-        + CreateOwnedFlows<CompoundNegotiator<F>, AuthN>
-        + OwnedFlows,
-    AuthN: SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>,
-    AuthN: SessionAuthN<Box<CompoundFlow<F::Flow>>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow>,
     AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
-    AuthN: SessionAuthN<F::Flow>,
-    F::Socket: From<CompoundFarChannelSocket>
-        + From<UnixDatagramSocket>
-        + From<CompoundFarIPChannelSocket>
-        + From<UDPFarSocket>,
-    F::Xfrm: From<CompoundFarChannelXfrm<Unix, UDP>>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
-    F::Flow: Send,
+    F: OwnedFlowsCreate<CompoundFarChannelSocket, CompoundNegotiator, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Nego = Box<CompoundNegotiator<F>>;
-    type Owned = Box<CompoundFlows<F, F::Xfrm>>;
     type OwnedFlowsError = Infallible;
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type Nego = Box<CompoundNegotiator>;
 
     fn negotiator(&self) -> Box<CompoundNegotiator<F>> {
         match self.as_ref() {
@@ -2689,47 +2402,22 @@ where
 
         Ok(out)
     }
-
-    #[inline]
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError> {
-        Ok(Box::new(self.as_ref().wrap_owned_flows(flows)?))
-    }
 }
 
-impl<F, AuthN, UDP>
-    FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>
+impl<F, AuthN, Unix, UDP>
+    FarChannelOwnedFlows<F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarIPChannel
 where
-    F: Flows
-        + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<DTLSNegotiator<Box<CompoundNegotiator<F>>>, AuthN>
-        + CreateOwnedFlows<Box<CompoundNegotiator<F>>, AuthN>
-        + CreateOwnedFlows<CompoundNegotiator<F>, AuthN>
-        + OwnedFlows,
-    AuthN: SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>,
-    AuthN: SessionAuthN<Box<CompoundFlow<F::Flow>>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow>,
     AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
-    AuthN: SessionAuthN<F::Flow>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
-    F::Socket: From<CompoundFarIPChannelSocket> + From<UDPFarSocket>,
-    F::Flow: Send,
+    F: OwnedFlowsCreate<CompoundFarChannelSocket, CompoundNegotiator, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    UDP::LocalAddr: From<SocketAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Nego = CompoundNegotiator<F>;
-    type Owned = CompoundIPFlows<F, F::Xfrm>;
-    type OwnedFlowsError = Infallible;
     type Xfrm = CompoundFarIPChannelXfrm<UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type OwnedFlowsError = Infallible;
+    type Nego = CompoundNegotiator;
 
     fn negotiator(&self) -> CompoundNegotiator<F> {
         match self {
@@ -2783,61 +2471,22 @@ where
             _ => Err(CompoundFarChannelXfrmError::Mismatch),
         }
     }
-
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError> {
-        match self {
-            CompoundFarIPChannel::UDP { .. } => {
-                Ok(CompoundIPFlows::Basic { flows: flows })
-            }
-            CompoundFarIPChannel::DTLS { dtls } => {
-                let dtls = <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelOwnedFlows<
-                    F, AuthN,
-                    CompoundFarIPChannelXfrm<UDP>,
-                >>::wrap_owned_flows(dtls, flows)?;
-
-                Ok(CompoundIPFlows::DTLS { flows: dtls })
-            }
-            CompoundFarIPChannel::SOCKS5 { .. } => {
-                Ok(CompoundIPFlows::Basic { flows: flows })
-            }
-        }
-    }
 }
 
-impl<F, AuthN, UDP>
-    FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>
+impl<F, AuthN, Unix, UDP>
+    FarChannelOwnedFlows<F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
     for Box<CompoundFarIPChannel>
 where
-    F: Flows
-        + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<
-            PassthruNegotiator<F>,
-            AuthN
-        > + CreateOwnedFlows<DTLSNegotiator<Box<CompoundNegotiator<F>>>, AuthN>
-        + CreateOwnedFlows<Box<CompoundNegotiator<F>>, AuthN>
-        + CreateOwnedFlows<CompoundNegotiator<F>, AuthN>
-        + OwnedFlows,
-    AuthN: SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>,
-    AuthN: SessionAuthN<Box<CompoundFlow<F::Flow>>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow>,
     AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
-    AuthN: SessionAuthN<F::Flow>,
-    F::Xfrm: From<CompoundFarIPChannelXfrm<UDP>>,
-    F::Socket: From<CompoundFarIPChannelSocket> + From<UDPFarSocket>,
-    F::Flow: Send,
+    F: OwnedFlowsCreate<CompoundFarChannelSocket, CompoundNegotiator, AuthN, CompoundFarChannelXfrm<Unix, UDP>>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>,
-    UDP::LocalAddr: From<SocketAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
 {
-    type Nego = Box<CompoundNegotiator<F>>;
-    type Owned = Box<CompoundIPFlows<F, F::Xfrm>>;
-    type OwnedFlowsError = Infallible;
     type Xfrm = CompoundFarIPChannelXfrm<UDP>;
     type XfrmError = CompoundFarChannelXfrmError;
+    type OwnedFlowsError = Infallible;
+    type Nego = Box<CompoundNegotiator>;
 
     fn negotiator(&self) -> Box<CompoundNegotiator<F>> {
         match self.as_ref() {
@@ -2870,393 +2519,58 @@ where
 
         Ok(out)
     }
-
-    #[inline]
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError> {
-        let out = <CompoundFarIPChannel as FarChannelOwnedFlows<
-            F,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        >>::wrap_owned_flows(self.as_ref(), flows)?;
-
-        Ok(Box::new(out))
-    }
 }
 
-impl<F, Xfrm> Flows for CompoundFlows<F, Xfrm>
+impl<'a, F> BorrowedFlowNegotiator<F> for CompoundNegotiator
 where
-    F: Flows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
+    F: 'a + Credentials + Flow + Read + Write
 {
-    type Socket = CompoundFarChannelSocket;
-    type Xfrm = Xfrm;
+    type Flow<'b> = CompoundFlow<F>;
+    type NegotiateError = CompoundOwnedFlowsNegotiateError;
 
-    #[inline]
-    fn local_addr(&self) -> Result<CompoundFarChannelAddr, Error> {
-        match self {
-            CompoundFlows::Basic { flows } => {
-                let addr = flows.local_addr()?;
-
-                Ok(CompoundFarChannelAddr::from(addr))
-            }
-            CompoundFlows::DTLS { flows } => flows.local_addr(),
-            CompoundFlows::IP { flows } => {
-                let addr =
-                    <CompoundIPFlows<F, Xfrm> as Flows>::local_addr(flows)?;
-
-                Ok(CompoundFarChannelAddr::IP { ip: addr })
-            }
-        }
-    }
-}
-
-impl<F, Xfrm> Flows for Box<CompoundFlows<F, Xfrm>>
-where
-    F: Flows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Socket = CompoundFarChannelSocket;
-    type Xfrm = Xfrm;
-
-    #[inline]
-    fn local_addr(&self) -> Result<CompoundFarChannelAddr, Error> {
-        self.as_ref().local_addr()
-    }
-}
-
-impl<F, Xfrm> OwnedFlows for CompoundFlows<F, Xfrm>
-where
-    F: Flows + OwnedFlows,
-    F::Xfrm: From<Xfrm>,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    Xfrm: DatagramXfrm,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow = CompoundFlow<F::Flow>;
-    type FlowError = CompoundOwnedFlowsFlowError<F>;
-
-    #[inline]
-    fn flow(
+    fn negotiate_outbound(
         &mut self,
-        addr: Xfrm::PeerAddr,
+        inner: F::Flow,
         endpoint: Option<&IPEndpointAddr>
-    ) -> Result<CompoundFlow<F::Flow>, Self::FlowError> {
-        match self {
-            CompoundFlows::Basic { flows } => {
-                let addr = <F::Xfrm as DatagramXfrm>::PeerAddr::from(addr);
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundOwnedFlowsFlowError::Basic { error: e }
-                })?;
-
-                Ok(CompoundFlow::Basic { flow: flow })
-            }
-            CompoundFlows::DTLS { flows } => {
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundOwnedFlowsFlowError::DTLS { error: Box::new(e) }
-                })?;
-
-                Ok(CompoundFlow::DTLS { flow: flow })
-            }
-            CompoundFlows::IP { flows } => flows
-                .flow(addr, endpoint)
-                .map_err(|e| CompoundOwnedFlowsFlowError::IP { error: e })
-        }
-    }
-}
-
-impl<F, Xfrm> OwnedFlows for Box<CompoundFlows<F, Xfrm>>
-where
-    F: Flows + OwnedFlows,
-    F::Xfrm: From<Xfrm>,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    Xfrm: DatagramXfrm,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow = Box<CompoundFlow<F::Flow>>;
-    type FlowError = CompoundOwnedFlowsFlowError<F>;
-
-    #[inline]
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<Box<CompoundFlow<F::Flow>>, Self::FlowError> {
-        Ok(Box::new(self.as_mut().flow(addr, endpoint)?))
-    }
-}
-
-impl<F, Xfrm> BorrowedFlows for CompoundFlows<F, Xfrm>
-where
-    F: Flows + BorrowedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    Xfrm::PeerAddr: From<<F::Xfrm as DatagramXfrm>::PeerAddr>,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow<'a> = CompoundFlow<F::Flow<'a>>
-    where Xfrm: 'a,
-          F: 'a;
-    type FlowError = CompoundBorrowedFlowsFlowError<F>;
-    type ListenError = CompoundBorrowedFlowsListenError<F>;
-
-    #[inline]
-    fn listen(
-        &mut self
-    ) -> Result<(Xfrm::PeerAddr, CompoundFlow<F::Flow<'_>>), Self::ListenError>
-    {
-        match self {
-            CompoundFlows::Basic { flows } => {
-                let (addr, flow) = flows.listen().map_err(|e| {
-                    CompoundBorrowedFlowsListenError::Basic { error: e }
-                })?;
-                let addr = Xfrm::PeerAddr::from(addr);
-
-                Ok((addr, CompoundFlow::Basic { flow: flow }))
-            }
-            CompoundFlows::DTLS { flows } => {
-                let (addr, flow) = flows.listen().map_err(|e| {
-                    CompoundBorrowedFlowsListenError::DTLS {
-                        error: Box::new(e)
-                    }
-                })?;
-
-                Ok((addr, CompoundFlow::DTLS { flow: flow }))
-            }
-            CompoundFlows::IP { flows } => flows
-                .listen()
-                .map_err(|e| CompoundBorrowedFlowsListenError::IP { error: e })
-        }
-    }
-
-    #[inline]
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<CompoundFlow<F::Flow<'_>>, Self::FlowError> {
-        match self {
-            CompoundFlows::Basic { flows } => {
-                let addr = <F::Xfrm as DatagramXfrm>::PeerAddr::from(addr);
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundBorrowedFlowsFlowError::Basic { error: e }
-                })?;
-
-                Ok(CompoundFlow::Basic { flow: flow })
-            }
-            CompoundFlows::DTLS { flows } => {
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundBorrowedFlowsFlowError::DTLS { error: Box::new(e) }
-                })?;
-
-                Ok(CompoundFlow::DTLS { flow: flow })
-            }
-            CompoundFlows::IP { flows } => flows
-                .flow(addr, endpoint)
-                .map_err(|e| CompoundBorrowedFlowsFlowError::IP { error: e })
-        }
-    }
-}
-
-impl<F, Xfrm> BorrowedFlows for Box<CompoundFlows<F, Xfrm>>
-where
-    F: Flows + BorrowedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    Xfrm::PeerAddr: From<<F::Xfrm as DatagramXfrm>::PeerAddr>,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    CompoundFarChannelAddr: From<<F::Socket as Socket>::Addr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow<'a> = Box<CompoundFlow<F::Flow<'a>>>
-    where Xfrm: 'a,
-          F: 'a;
-    type FlowError = CompoundBorrowedFlowsFlowError<F>;
-    type ListenError = CompoundBorrowedFlowsListenError<F>;
-
-    #[inline]
-    fn listen(
-        &mut self
     ) -> Result<
-        (Xfrm::PeerAddr, Box<CompoundFlow<F::Flow<'_>>>),
-        Self::ListenError
+        RetryResult<Self::Flow, NegotiateRetry<F::Flow>>,
+        Self::NegotiateError
     > {
-        let (addr, flow) = self.as_mut().listen()?;
-
-        Ok((addr, Box::new(flow)))
-    }
-
-    #[inline]
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<Box<CompoundFlow<F::Flow<'_>>>, Self::FlowError> {
-        Ok(Box::new(self.as_mut().flow(addr, endpoint)?))
-    }
-}
-
-impl<F, Xfrm> Flows for CompoundIPFlows<F, Xfrm>
-where
-    F: Flows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Socket = CompoundFarIPChannelSocket;
-    type Xfrm = Xfrm;
-
-    #[inline]
-    fn local_addr(&self) -> Result<SocketAddr, Error> {
         match self {
-            CompoundIPFlows::Basic { flows } => {
-                let addr = flows.local_addr()?;
-                let addr = SocketAddr::try_from(addr)?;
-
-                Ok(addr)
+            CompoundNegotiator::Basic { .. } => {
+                Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
             }
-            CompoundIPFlows::DTLS { flows } => flows.local_addr()
+            CompoundNegotiator::DTLS { dtls } => Ok(dtls
+                .negotiate_outbound(inner, endpoint)
+                .map_err(|err| CompoundOwnedFlowsNegotiateError::DTLS {
+                    error: Box::new(err)
+                })?
+                .map(|flow| CompoundFlow::DTLS { flow: flow }))
+        }
+    }
+
+    fn negotiate_inbound(
+        &mut self,
+        inner: F::Flow,
+    ) -> Result<
+        RetryResult<Self::Flow, NegotiateRetry<F::Flow>>,
+        Self::NegotiateError
+    > {
+        match self {
+            CompoundNegotiator::Basic { .. } => {
+                Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
+            }
+            CompoundNegotiator::DTLS { dtls } => Ok(dtls
+                .negotiate_inbound(inner)
+                .map_err(|err| CompoundOwnedFlowsNegotiateError::DTLS {
+                    error: Box::new(err)
+                })?
+                .map(|flow| CompoundFlow::DTLS { flow: flow }))
         }
     }
 }
 
-impl<F, Xfrm> CreateBorrowedFlows for CompoundIPFlows<F, Xfrm>
-where
-    F: Flows<Socket = CompoundFarIPChannelSocket> + CreateBorrowedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type CreateError = F::CreateError;
-    type CreateParam = F::CreateParam;
-
-    #[inline]
-    fn create(
-        socket: CompoundFarIPChannelSocket,
-        xfrm: Xfrm,
-        param: Self::CreateParam
-    ) -> Result<Self, Self::CreateError> {
-        let flows = F::create(socket, F::Xfrm::from(xfrm), param)?;
-
-        Ok(CompoundIPFlows::Basic { flows: flows })
-    }
-}
-
-impl<F, Xfrm> CreateBorrowedFlows for CompoundFlows<F, Xfrm>
-where
-    F: Flows<Socket = CompoundFarChannelSocket> + CreateBorrowedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type CreateError = F::CreateError;
-    type CreateParam = F::CreateParam;
-
-    #[inline]
-    fn create(
-        socket: CompoundFarChannelSocket,
-        xfrm: Xfrm,
-        param: Self::CreateParam
-    ) -> Result<Self, Self::CreateError> {
-        let flows = F::create(socket, F::Xfrm::from(xfrm), param)?;
-
-        Ok(CompoundFlows::Basic { flows: flows })
-    }
-}
-
-impl<F, Xfrm> Flows for Box<CompoundIPFlows<F, Xfrm>>
-where
-    F: Flows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Socket = CompoundFarIPChannelSocket;
-    type Xfrm = Xfrm;
-
-    #[inline]
-    fn local_addr(&self) -> Result<SocketAddr, Error> {
-        <CompoundIPFlows<F, Xfrm> as Flows>::local_addr(self.as_ref())
-    }
-}
-
-impl<F, Xfrm> OwnedFlows for CompoundIPFlows<F, Xfrm>
-where
-    F: Flows + OwnedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow = CompoundFlow<F::Flow>;
-    type FlowError = CompoundOwnedIPFlowsFlowError<F>;
-
-    #[inline]
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<CompoundFlow<F::Flow>, Self::FlowError> {
-        match self {
-            CompoundIPFlows::Basic { flows } => {
-                let addr = <F::Xfrm as DatagramXfrm>::PeerAddr::from(addr);
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundOwnedIPFlowsFlowError::Basic { error: e }
-                })?;
-
-                Ok(CompoundFlow::Basic { flow: flow })
-            }
-            CompoundIPFlows::DTLS { flows } => {
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundOwnedIPFlowsFlowError::DTLS { error: Box::new(e) }
-                })?;
-
-                Ok(CompoundFlow::DTLS { flow: flow })
-            }
-        }
-    }
-}
-
-impl<F, Xfrm> OwnedFlows for Box<CompoundIPFlows<F, Xfrm>>
-where
-    F: Flows + OwnedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow = Box<CompoundFlow<F::Flow>>;
-    type FlowError = CompoundOwnedIPFlowsFlowError<F>;
-
-    #[inline]
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<Box<CompoundFlow<F::Flow>>, Self::FlowError> {
-        let out = <CompoundIPFlows<F, Xfrm> as OwnedFlows>::flow(
-            self.as_mut(),
-            addr,
-            endpoint
-        )?;
-
-        Ok(Box::new(out))
-    }
-}
-
-impl<F> OwnedFlowNegotiator<F> for CompoundNegotiator<F>
+impl<F> OwnedFlowNegotiator<F> for CompoundNegotiator
 where
     F: Credentials + Flow + Read + Write
 {
@@ -3333,7 +2647,7 @@ where
     }
 }
 
-impl<F> OwnedFlowNegotiator<F> for Box<CompoundNegotiator<F>>
+impl<F> OwnedFlowNegotiator<F> for Box<CompoundNegotiator>
 where
     F: Credentials + Flow + Read + Write
 {
@@ -3397,117 +2711,6 @@ where
         self.as_mut()
             .negotiate_inbound(inner)
             .map(|out| out.map(Box::new))
-    }
-}
-
-impl<F, Xfrm> BorrowedFlows for CompoundIPFlows<F, Xfrm>
-where
-    F: Flows + BorrowedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    Xfrm::PeerAddr: From<<F::Xfrm as DatagramXfrm>::PeerAddr>,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow<'a> = CompoundFlow<F::Flow<'a>>
-    where Xfrm: 'a,
-          F: 'a;
-    type FlowError = CompoundBorrowedIPFlowsFlowError<F>;
-    type ListenError = CompoundBorrowedIPFlowsListenError<F>;
-
-    fn listen(
-        &mut self
-    ) -> Result<(Xfrm::PeerAddr, CompoundFlow<F::Flow<'_>>), Self::ListenError>
-    {
-        match self {
-            CompoundIPFlows::Basic { flows } => {
-                let (addr, flow) = flows.listen().map_err(|e| {
-                    CompoundBorrowedIPFlowsListenError::Basic { error: e }
-                })?;
-                let addr = Xfrm::PeerAddr::from(addr);
-
-                Ok((addr, CompoundFlow::Basic { flow: flow }))
-            }
-            CompoundIPFlows::DTLS { flows } => {
-                let (addr, flow) = flows.listen().map_err(|e| {
-                    CompoundBorrowedIPFlowsListenError::DTLS {
-                        error: Box::new(e)
-                    }
-                })?;
-
-                Ok((addr, CompoundFlow::DTLS { flow: flow }))
-            }
-        }
-    }
-
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<CompoundFlow<F::Flow<'_>>, Self::FlowError> {
-        match self {
-            CompoundIPFlows::Basic { flows } => {
-                let addr = <F::Xfrm as DatagramXfrm>::PeerAddr::from(addr);
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundBorrowedIPFlowsFlowError::Basic { error: e }
-                })?;
-
-                Ok(CompoundFlow::Basic { flow: flow })
-            }
-            CompoundIPFlows::DTLS { flows } => {
-                let flow = flows.flow(addr, endpoint).map_err(|e| {
-                    CompoundBorrowedIPFlowsFlowError::DTLS {
-                        error: Box::new(e)
-                    }
-                })?;
-
-                Ok(CompoundFlow::DTLS { flow: flow })
-            }
-        }
-    }
-}
-
-impl<F, Xfrm> BorrowedFlows for Box<CompoundIPFlows<F, Xfrm>>
-where
-    F: Flows + BorrowedFlows,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    Xfrm::PeerAddr: From<<F::Xfrm as DatagramXfrm>::PeerAddr>,
-    <F::Xfrm as DatagramXfrm>::PeerAddr: From<Xfrm::PeerAddr>,
-    SocketAddr: TryFrom<<F::Socket as Socket>::Addr, Error = Error>
-{
-    type Flow<'a> = Box<CompoundFlow<F::Flow<'a>>>
-    where F: 'a,
-          Xfrm: 'a;
-    type FlowError = CompoundBorrowedIPFlowsFlowError<F>;
-    type ListenError = CompoundBorrowedIPFlowsListenError<F>;
-
-    #[inline]
-    fn listen(
-        &mut self
-    ) -> Result<
-        (Xfrm::PeerAddr, Box<CompoundFlow<F::Flow<'_>>>),
-        Self::ListenError
-    > {
-        let (addr, flow) =
-            <CompoundIPFlows<F, Xfrm> as BorrowedFlows>::listen(self.as_mut())?;
-
-        Ok((addr, Box::new(flow)))
-    }
-
-    #[inline]
-    fn flow(
-        &mut self,
-        addr: Xfrm::PeerAddr,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<Box<CompoundFlow<F::Flow<'_>>>, Self::FlowError> {
-        let flow = <CompoundIPFlows<F, Xfrm> as BorrowedFlows>::flow(
-            self.as_mut(),
-            addr,
-            endpoint
-        )?;
-
-        Ok(Box::new(flow))
     }
 }
 
@@ -4028,147 +3231,6 @@ where
     }
 }
 
-impl<F> Debug for CompoundBorrowedFlowsFlowError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundBorrowedFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-            CompoundBorrowedFlowsFlowError::IP { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> Display for CompoundBorrowedFlowsFlowError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundBorrowedFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-            CompoundBorrowedFlowsFlowError::IP { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> ScopedError for CompoundOwnedFlowsFlowError<F>
-where
-    F: OwnedFlows
-{
-    fn scope(&self) -> ErrorScope {
-        match self {
-            CompoundOwnedFlowsFlowError::Basic { error } => error.scope(),
-            CompoundOwnedFlowsFlowError::DTLS { error } => error.scope(),
-            CompoundOwnedFlowsFlowError::IP { error } => error.scope()
-        }
-    }
-}
-
-impl<F> ScopedError for CompoundOwnedIPFlowsFlowError<F>
-where
-    F: OwnedFlows
-{
-    fn scope(&self) -> ErrorScope {
-        match self {
-            CompoundOwnedIPFlowsFlowError::Basic { error } => error.scope(),
-            CompoundOwnedIPFlowsFlowError::DTLS { error } => error.scope()
-        }
-    }
-}
-
-impl<F> Debug for CompoundOwnedFlowsFlowError<F>
-where
-    F: OwnedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundOwnedFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundOwnedFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-            CompoundOwnedFlowsFlowError::IP { error } => write!(f, "{}", error)
-        }
-    }
-}
-
-impl<F> Display for CompoundOwnedFlowsFlowError<F>
-where
-    F: OwnedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundOwnedFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundOwnedFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-            CompoundOwnedFlowsFlowError::IP { error } => write!(f, "{}", error)
-        }
-    }
-}
-
-impl<F> Debug for CompoundBorrowedFlowsListenError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedFlowsListenError::Basic { error } => error.fmt(f),
-            CompoundBorrowedFlowsListenError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-            CompoundBorrowedFlowsListenError::IP { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> Display for CompoundBorrowedFlowsListenError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedFlowsListenError::Basic { error } => error.fmt(f),
-            CompoundBorrowedFlowsListenError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-            CompoundBorrowedFlowsListenError::IP { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
 impl Debug for CompoundOwnedFlowsNegotiateError {
     fn fmt(
         &self,
@@ -4263,23 +3325,6 @@ impl Display for CompoundFarChannelAcquiredResolverError {
     }
 }
 
-impl<F> Debug for CompoundBorrowedIPFlowsFlowError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedIPFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundBorrowedIPFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
 impl<F> Display for CompoundFarCredentialError<F>
 where
     F: Display
@@ -4304,91 +3349,6 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             CompoundFarCredentialError::Basic { error } => error.fmt(f)
-        }
-    }
-}
-
-impl<F> Display for CompoundBorrowedIPFlowsFlowError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedIPFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundBorrowedIPFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> Debug for CompoundOwnedIPFlowsFlowError<F>
-where
-    F: OwnedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundOwnedIPFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundOwnedIPFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> Display for CompoundOwnedIPFlowsFlowError<F>
-where
-    F: OwnedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundOwnedIPFlowsFlowError::Basic { error } => error.fmt(f),
-            CompoundOwnedIPFlowsFlowError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> Debug for CompoundBorrowedIPFlowsListenError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedIPFlowsListenError::Basic { error } => error.fmt(f),
-            CompoundBorrowedIPFlowsListenError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
-        }
-    }
-}
-
-impl<F> Display for CompoundBorrowedIPFlowsListenError<F>
-where
-    F: BorrowedFlows
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundBorrowedIPFlowsListenError::Basic { error } => error.fmt(f),
-            CompoundBorrowedIPFlowsListenError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
         }
     }
 }
