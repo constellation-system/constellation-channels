@@ -192,6 +192,7 @@ use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelXfrm;
 use crate::far::OwnedFlowsCreate;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::unix::UnixSocketAddr;
@@ -380,6 +381,24 @@ impl FarChannelCreate for UnixFarChannel {
     }
 }
 
+impl<Xfrm> FarChannelXfrm<Xfrm> for UnixFarChannel
+where
+    Xfrm: DatagramXfrm,
+{
+    type Xfrm = Xfrm;
+    type XfrmError = Infallible;
+
+    #[inline]
+    fn wrap_xfrm(
+        &self,
+        _param: Self::Param,
+        xfrm: Xfrm
+    ) -> Result<Xfrm, Self::XfrmError> {
+        Ok(xfrm)
+    }
+}
+
+
 impl<'a, F, AuthN, InnerXfrm> FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>
     for UnixFarChannel
 where
@@ -388,21 +407,15 @@ where
     F: BorrowedFlowsCreate<'a, UnixDatagramSocket, PassthruNegotiator, AuthN, InnerXfrm>,
 {
     type BorrowedFlowsError = Infallible;
-    type Xfrm = InnerXfrm;
-    type XfrmError = Infallible;
     type Nego = PassthruNegotiator;
 
     #[inline]
-    fn wrap_xfrm(
-        &self,
-        _param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
-        Ok(xfrm)
+    fn negotiator(&self) -> Self::Nego {
+        PassthruNegotiator
     }
 }
 
-impl<'a, F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
+impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
     for UnixFarChannel
 where
     InnerXfrm: DatagramXfrm,
@@ -411,17 +424,11 @@ where
     F::Flow: Send
 {
     type OwnedFlowsError = Infallible;
-    type Xfrm = InnerXfrm;
-    type XfrmError = Infallible;
     type Nego = PassthruNegotiator;
 
     #[inline]
-    fn wrap_xfrm(
-        &self,
-        _param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
-        Ok(xfrm)
+    fn negotiator(&self) -> Self::Nego {
+        PassthruNegotiator
     }
 }
 

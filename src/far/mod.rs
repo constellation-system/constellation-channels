@@ -152,7 +152,6 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
-use std::io::Write;
 use std::net::SocketAddr;
 
 use constellation_auth::authn::SessionAuthN;
@@ -392,6 +391,31 @@ pub trait FarChannelCreate: FarChannel {
         Ctx: NSNameCachesCtx;
 }
 
+pub trait FarChannelXfrm<InnerXfrm>: FarChannel
+where
+    InnerXfrm: DatagramXfrm {
+    /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
+    ///
+    /// This can be the same as `InnerXfrm`, or it can be its own
+    /// type derived from `InnerXfrme`
+    type Xfrm: DatagramXfrm;
+    /// Type of errors that can be returned from
+    /// [wrap_xfrm](FarChannelBorrowFlows::wrap_xfrm).
+    type XfrmError: Display + ScopedError;
+
+    /// Create an instance of
+    /// [Xfrm](FarChannelBorrowFlows::Xfrm) from `xfrm`.
+    ///
+    /// This should wrap the type `InnerXfrm` to obtain an instance
+    /// of `Xfrm`.  If `Xfrm` is the same as `InnerXfrm`,
+    /// this can be a simple passthrough function.
+    fn wrap_xfrm(
+        &self,
+        param: Self::Param,
+        xfrm: InnerXfrm
+    ) -> Result<Self::Xfrm, Self::XfrmError>;
+}
+
 /// Trait for [FarChannel]s that can construct [BorrowedFlows] instances.
 ///
 /// This trait represents channels that can construct a
@@ -422,35 +446,18 @@ pub trait FarChannelCreate: FarChannel {
 /// Most implementations will only need to provide the
 /// [wrap_borrowed_flows](FarChannelBorrowFlows::wrap_borrowed_flows)
 /// implementation (as well as the associated types).
-pub trait FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>: FarChannel
+pub trait FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>:
+    FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
-    InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
     AuthN: SessionAuthN<<Self::Nego as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
     F: BorrowedFlowsCreate<'a, Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
     /// Type of errors that can occur when creating borrowed flows.
     type BorrowedFlowsError: Display + ScopedError;
-    /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
-    ///
-    /// This can be the same as `InnerXfrm`, or it can be its own
-    /// type derived from `InnerXfrme`
-    type Xfrm: DatagramXfrm;
-    /// Type of errors that can be returned from
-    /// [wrap_xfrm](FarChannelBorrowFlows::wrap_xfrm).
-    type XfrmError: Display + ScopedError;
     type Nego: 'a + BorrowedFlowNegotiator<F::Flow>;
 
-    /// Create an instance of
-    /// [Xfrm](FarChannelBorrowFlows::Xfrm) from `xfrm`.
-    ///
-    /// This should wrap the type `InnerXfrm` to obtain an instance
-    /// of `Xfrm`.  If `Xfrm` is the same as `InnerXfrm`,
-    /// this can be a simple passthrough function.
-    fn wrap_xfrm(
-        &self,
-        param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError>;
+    /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
+    fn negotiator(&self) -> Self::Nego;
 
     /// Create a [BorrowedFlows] instance around a socket created by
     /// this channel.
@@ -464,6 +471,7 @@ where
         &self,
         param: Self::Param,
         xfrm: InnerXfrm,
+        authn: AuthN,
         flow: F::CreateParam
     ) -> Result<
         F,
@@ -477,15 +485,13 @@ where
         let socket = self
             .socket(&param)
             .map_err(|e| FarChannelFlowsError::Socket { socket: e })?;
-        let socket = F::Socket::from(socket);
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let flows = F::create(socket, xfrm, flow)
-            .map_err(|e| FarChannelFlowsError::Flows { flows: e })?;
+        let negotiator = self.negotiator();
 
-        self.wrap_borrowed_flows(flows)
-            .map_err(|e| FarChannelFlowsError::Wrap { wrap: e })
+        F::create(socket, authn, negotiator, xfrm, flow)
+            .map_err(|e| FarChannelFlowsError::Flows { flows: e })
     }
 }
 
@@ -519,38 +525,17 @@ where
 /// Most implementations will only need to provide the
 /// [wrap_owned_flows](FarChannelOwnedFlows::wrap_owned_flows)
 /// implementation (as well as the associated types).
-pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>: FarChannel
+pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>: FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
-    InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
     AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     F: OwnedFlowsCreate<Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
     /// Type of errors that can occur when creating borrowed flows.
     type OwnedFlowsError: Display + ScopedError;
-    /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
-    ///
-    /// This can be the same as `InnerXfrm`, or it can be its own
-    /// type derived from `InnerXfrme`
-    type Xfrm: DatagramXfrm;
-    /// Type of errors that can be returned from
-    /// [wrap_xfrm](FarChannelBorrowFlows::wrap_xfrm).
-    type XfrmError: Display + ScopedError;
     type Nego: OwnedFlowNegotiator<F::Flow>;
 
     /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
     fn negotiator(&self) -> Self::Nego;
-
-    /// Create an instance of
-    /// [Xfrm](FarChannelOwnedFlows::Xfrm) from `xfrm`.
-    ///
-    /// This should wrap the type `InnerXfrm` to obtain an instance
-    /// of `Xfrm`.  If `Xfrm` is the same as `InnerXfrm`,
-    /// this can be a simple passthrough function.
-    fn wrap_xfrm(
-        &self,
-        param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError>;
 
     /// Create an [OwnedFlows] instance around a socket created by
     /// this channel.
@@ -580,17 +565,15 @@ where
         let socket = self
             .socket(&param)
             .map_err(|e| FarChannelFlowsError::Socket { socket: e })?;
-        let socket = F::Socket::from(socket);
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let xfrm = F::Xfrm::from(xfrm);
         let negotiator = self.negotiator();
 
         F::create_with_reporter(
             channel_id, socket, authn, negotiator, reporter, xfrm, flow
         )
-        .map_err(|e| FarChannelFlowsError::Flows { flows: e })?;
+        .map_err(|e| FarChannelFlowsError::Flows { flows: e })
     }
 }
 

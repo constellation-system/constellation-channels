@@ -272,7 +272,6 @@ use crate::far::flows::Flow;
 use crate::far::flows::NegotiateRetry;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;
-use crate::far::flows::PassthruNegotiator;
 use crate::far::flows::ThreadedFlows;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquireError;
@@ -644,8 +643,8 @@ pub enum CompoundFarChannelXfrmWrapError<Unix, UDP> {
 }
 
 /// [ThreadedFlows] using [CompoundFarChannel]s.
-pub type CompoundFarChannelThreadedFlows<Unix, UDP, ID> =
-    ThreadedFlows<CompoundFarChannel, CompoundFarChannelXfrm<Unix, UDP>, ID>;
+pub type CompoundFarChannelThreadedFlows<AuthN, Unix, UDP, ID> =
+    ThreadedFlows<CompoundFarChannel, AuthN, CompoundNegotiator, CompoundFarChannelXfrm<Unix, UDP>, ID>;
 
 /// [Negotiator] instance for [CompoundFarChannel]s.
 #[derive(Clone)]

@@ -165,6 +165,8 @@ use crate::config::SOCKS5AssocConfig;
 use crate::config::SOCKS5AuthNConfig;
 use crate::far::flows::BorrowedFlowNegotiator;
 use crate::far::flows::BorrowedFlowsCreate;
+use crate::far::flows::BorrowedFlowsInbound;
+use crate::far::flows::BorrowedFlowsOutbound;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;
 use crate::far::AcquiredResolver;
@@ -174,6 +176,7 @@ use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelXfrm;
 use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCacheError;
@@ -277,10 +280,10 @@ use crate::resolve::Resolver;
 ///   extended to any number of layered proxy connections.
 pub struct SOCKS5FarChannel<
     Proxy: NearConnector + NearChannelCreate,
-    ProxyAddr,
-    Datagram: FarChannel
+    Datagram: FarChannel,
+    InnerXfrm: DatagramXfrm
 > {
-    addr: PhantomData<ProxyAddr>,
+    xfrm: PhantomData<InnerXfrm>,
     /// The TCP connection, which must be kept alive.
     #[allow(dead_code)]
     keepalive: Arc<Mutex<Option<Proxy>>>,
@@ -503,19 +506,23 @@ where
     }
 }
 
-impl<Proxy, PeerAddr, Datagram> FarChannel
-    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
+impl<Proxy, Datagram, InnerXfrm> FarChannel
+    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
 where
     Proxy: NearChannelCreate + NearConnector,
-    Datagram: FarChannel,
+    Datagram: FarChannelXfrm<InnerXfrm>,
     Datagram::Socket: Socket,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
+    InnerXfrm: DatagramXfrm
 {
     type AcquireError =
         SOCKS5AcquireError<Proxy::TakeConnectError, Datagram::AcquireError>;
     type Acquired = SOCKS5Acquired<Datagram::Acquired, IPEndpoint>;
     type Config = SOCKS5AssocConfig<Proxy::Config, Datagram::Config>;
-    type Param = SOCKS5Param<Datagram::Param, PeerAddr>;
+    type Param = SOCKS5Param<
+        Datagram::Param,
+        <Datagram::Xfrm as DatagramXfrm>::PeerAddr
+    >;
     type Socket = Datagram::Socket;
     type SocketError = SOCKS5SocketError<Datagram::SocketError>;
 
@@ -645,13 +652,54 @@ where
     }
 }
 
-impl<Proxy, PeerAddr, Datagram> FarChannelCreate
-    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
+impl<Proxy, Datagram, InnerXfrm> FarChannelXfrm<InnerXfrm>
+    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
 where
     Proxy: NearChannelCreate + NearConnector,
-    Datagram: FarChannelCreate,
+    Datagram: FarChannelXfrm<InnerXfrm>,
     Datagram::Socket: Socket,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
+    InnerXfrm: DatagramXfrm
+{
+    type Xfrm = SOCKS5UDPXfrm<Datagram::Xfrm>;
+    type XfrmError = SOCKS5XfrmError<Datagram::XfrmError>;
+
+    #[inline]
+    fn wrap_xfrm(
+        &self,
+        param: Self::Param,
+        xfrm: InnerXfrm
+    ) -> Result<Self::Xfrm, Self::XfrmError> {
+        match self.session.lock() {
+            Ok(guard) => match &*guard {
+                Some(session) => {
+                    let (datagram, proxy) = param.take();
+                    let xfrm = self.datagram
+                        .wrap_xfrm(datagram, InnerXfrm::from(xfrm))
+                        .map_err(|e| SOCKS5XfrmError::Datagram {
+                            datagram: e
+                        })?;
+                    let proxy_addr = <Datagram::Xfrm as DatagramXfrm>::PeerAddr::from(proxy);
+
+                    Ok(session.udp_xfrm(proxy_addr, xfrm))
+                }
+                // Keepalive connection was lost
+                None => Err(SOCKS5XfrmError::LostConn)
+            },
+            // Mutex was poisoned.
+            Err(_) => Err(SOCKS5XfrmError::MutexPoison)
+        }
+    }
+}
+
+impl<Proxy, Datagram, InnerXfrm> FarChannelCreate
+    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
+where
+    Proxy: NearChannelCreate + NearConnector,
+    Datagram: FarChannelCreate + FarChannelXfrm<InnerXfrm>,
+    Datagram::Socket: Socket,
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
+    InnerXfrm: DatagramXfrm
 {
     type CreateError =
         SOCKS5CreateError<Proxy::CreateError, Datagram::CreateError>;
@@ -675,92 +723,51 @@ where
             proxy: proxy,
             nretries: 0,
             datagram: datagram,
-            addr: PhantomData
+            xfrm: PhantomData
         })
     }
 }
 
-impl<'a, F, Proxy, ProxyAddr, Datagram, AuthN, InnerXfrm>
+impl<'a, F, Proxy, Datagram, AuthN, InnerXfrm>
     FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>
-    for SOCKS5FarChannel<Proxy, ProxyAddr, Datagram>
+    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
 where
-    Proxy: NearConnector + NearChannelCreate,
     InnerXfrm: DatagramXfrm,
+    Proxy: NearConnector + NearChannelCreate,
     Datagram: FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>,
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
-    AuthN: SessionAuthN<<Datagram::Nego as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
-    F: BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm> {
+    AuthN: SessionAuthN<<Datagram::Nego as BorrowedFlowNegotiator<<F as BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm>>::Flow>>::Flow<'a>>,
+    F: BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, SOCKS5UDPXfrm<Datagram::Xfrm>>
+    + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm>
+    + BorrowedFlowsOutbound<'a, F, <Datagram::Xfrm as DatagramXfrm>::PeerAddr, AuthN::Prin>
+    + BorrowedFlowsInbound<'a, F, <Datagram::Xfrm as DatagramXfrm>::PeerAddr, AuthN::Prin> {
     type BorrowedFlowsError = Datagram::BorrowedFlowsError;
-    type Xfrm = SOCKS5UDPXfrm<Datagram::Xfrm>;
-    type XfrmError = SOCKS5XfrmError<Datagram::XfrmError>;
     type Nego = Datagram::Nego;
 
     #[inline]
-    fn wrap_xfrm(
-        &self,
-        param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
-        match self.session.lock() {
-            Ok(guard) => match &*guard {
-                Some(session) => {
-                    let (datagram, proxy) = param.take();
-                    let xfrm =
-                        session.udp_xfrm(InnerXfrm::PeerAddr::from(proxy), xfrm);
-
-                    self.datagram
-                        .wrap_xfrm(datagram, InnerXfrm::from(xfrm))
-                        .map_err(|e| SOCKS5XfrmError::Datagram { datagram: e })
-                }
-                // Keepalive connection was lost
-                None => Err(SOCKS5XfrmError::LostConn)
-            },
-            // Mutex was poisoned.
-            Err(_) => Err(SOCKS5XfrmError::MutexPoison)
-        }
+    fn negotiator(&self) -> Self::Nego {
+        self.datagram.negotiator()
     }
 }
 
-impl<F, Proxy, ProxyAddr, Datagram, AuthN, InnerXfrm>
+impl<F, Proxy, Datagram, AuthN, InnerXfrm>
     FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for SOCKS5FarChannel<Proxy, ProxyAddr, Datagram>
+    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
 where
-    Proxy: NearConnector + NearChannelCreate,
     InnerXfrm: DatagramXfrm,
+    Proxy: NearConnector + NearChannelCreate,
     Datagram: FarChannelOwnedFlows<F, AuthN, InnerXfrm>,
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     AuthN: SessionAuthN<<Datagram::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     F: OwnedFlowsCreate<Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm> {
     type OwnedFlowsError = Datagram::OwnedFlowsError;
-    type Xfrm = SOCKS5UDPXfrm<Datagram::Xfrm>;
-    type XfrmError = SOCKS5XfrmError<Datagram::XfrmError>;
     type Nego = Datagram::Nego;
 
     #[inline]
-    fn wrap_xfrm(
-        &self,
-        param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
-        match self.session.lock() {
-            Ok(guard) => match &*guard {
-                Some(session) => {
-                    let (datagram, proxy) = param.take();
-                    let xfrm =
-                        session.udp_xfrm(InnerXfrm::PeerAddr::from(proxy), xfrm);
-
-                    self.datagram
-                        .wrap_xfrm(datagram, InnerXfrm::from(xfrm))
-                        .map_err(|e| SOCKS5XfrmError::Datagram { datagram: e })
-                }
-                // Keepalive connection was lost
-                None => Err(SOCKS5XfrmError::LostConn)
-            },
-            // Mutex was poisoned.
-            Err(_) => Err(SOCKS5XfrmError::MutexPoison)
-        }
+    fn negotiator(&self) -> Self::Nego {
+        self.datagram.negotiator()
     }
 }
 

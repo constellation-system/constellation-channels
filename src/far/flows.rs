@@ -149,7 +149,6 @@ use log::trace;
 use log::warn;
 
 use crate::config::ThreadedFlowsParams;
-use crate::far::FarChannel;
 
 /// Trait for traffic flows from an individual peer address.
 ///
@@ -465,9 +464,10 @@ pub struct NegotiateRetry<Flow> {
 pub struct SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
 where
     Sock: Socket,
-    Nego: BorrowedFlowNegotiator<&'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
+    Nego: BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm {
+    lifetime: PhantomData<&'a ()>,
     /// The underlying socket.
     socket: Sock,
     /// Authenticator to use.
@@ -488,9 +488,10 @@ where
 pub struct MultiFlows<'a, Sock, Nego, AuthN, Xfrm>
 where
     Sock: Socket,
-    Nego: BorrowedFlowNegotiator<&'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
+    Nego: BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm {
+    lifetime: PhantomData<&'a ()>,
     /// The underlying socket.
     socket: Sock,
     /// Authenticator to use.
@@ -778,7 +779,7 @@ where
     fn negotiate_outbound_nonblock(
         &mut self,
         inner: F,
-    ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
         Ok(NonblockResult::Success(inner))
     }
@@ -799,7 +800,7 @@ where
     fn negotiate_inbound_nonblock(
         &mut self,
         inner: F,
-    ) -> Result<NonblockResult<Self::Flow, Self::Inner>, Self::NegotiateError>
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
         Ok(NonblockResult::Success(inner))
     }
@@ -820,7 +821,7 @@ impl<F> BorrowedFlowNegotiator<F> for PassthruNegotiator
 where
     F: Flow,
 {
-    type Flow = F;
+    type Flow<'a> = F;
     type NegotiateError = Infallible;
 
     #[inline]
@@ -829,7 +830,7 @@ where
         inner: F,
         _endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<Self::Flow>>,
+        RetryResult<Self::Flow<'_>, NegotiateRetry<Self::Flow<'_>>>,
         Self::NegotiateError
     > {
         Ok(RetryResult::Success(inner))
@@ -840,7 +841,7 @@ where
         &mut self,
         inner: F,
     ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<Self::Flow>>,
+        RetryResult<Self::Flow<'_>, NegotiateRetry<Self::Flow<'_>>>,
         Self::NegotiateError
     > {
         Ok(RetryResult::Success(inner))
@@ -1088,7 +1089,7 @@ where
         + Send,
     Xfrm::PeerAddr: 'static + Eq + Hash,
     Sock: 'static + Socket,
-    Param: Clone + Display + Eq + Hash + Send,
+    Param: 'static + Clone + Display + Eq + Hash + Send,
     Nego: 'static
         + OwnedFlowNegotiator<ThreadedFlow<Sock, Xfrm>>
         + Clone
@@ -1725,6 +1726,7 @@ where
         param: Self::CreateParam
     ) -> Result<Self, Self::CreateError> {
         Ok(SingleFlow {
+            lifetime: PhantomData,
             socket: socket,
             authn: authn,
             addr: param,
@@ -2455,7 +2457,7 @@ impl<'a, Sock, Nego, AuthN, Xfrm> Credentials
     for &'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
 where
     Sock: Socket,
-    Nego: BorrowedFlowNegotiator<&'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
+    Nego: BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm {
     type Cred<'b> = Xfrm::PeerAddr
@@ -2476,7 +2478,7 @@ impl<'a, Sock, Nego, AuthN, Xfrm> Flow
     for &'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
 where
     Sock: Socket,
-    Nego: BorrowedFlowNegotiator<&'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
+    Nego: BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm {
     type LocalAddr = Xfrm::LocalAddr;
@@ -2490,6 +2492,72 @@ where
     #[inline]
     fn peer_addr(&self) -> Self::PeerAddr {
         self.addr.clone()
+    }
+}
+
+impl<'a, Sock, Nego, AuthN, Xfrm> Read
+    for &'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
+where
+    Sock: Socket,
+    Nego: BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
+    AuthN: SessionAuthN<Nego::Flow<'a>>,
+    Xfrm: DatagramXfrm {
+    #[inline]
+    fn read(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<usize, Error> {
+        let mut nbytes;
+
+        while {
+            let (n, addr) = self.socket.recv_from(buf)?;
+
+            match self.xfrm.unwrap(&mut buf[..n], addr) {
+                Ok((n, peer)) => {
+                    nbytes = n;
+
+                    if self.addr != peer {
+                        warn!(target: "far-multi-flow",
+                              "discarding {} bytes from {} (expected {})",
+                              nbytes, peer, self.addr);
+
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Err(err) => {
+                    return Err(Error::new(ErrorKind::Other, err.to_string()))
+                }
+            }
+        } {}
+
+        Ok(nbytes)
+    }
+}
+
+impl<'a, Sock, Nego, AuthN, Xfrm> Write
+    for &'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
+where
+    Sock: Socket,
+    Nego: BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
+    AuthN: SessionAuthN<Nego::Flow<'a>>,
+    Xfrm: DatagramXfrm {
+    #[inline]
+    fn write(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<usize, Error> {
+        match self.xfrm.wrap(buf, self.addr.clone()) {
+            Ok((Some(buf), addr)) => self.socket.send_to(&addr, &buf),
+            Ok((None, addr)) => self.socket.send_to(&addr, buf),
+            Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
+        }
+    }
+
+    #[inline]
+    fn flush(&mut self) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -2562,78 +2630,12 @@ where
     }
 }
 
-impl<'a, Sock, Nego, AuthN, Xfrm> Read
-    for &'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
-where
-    Sock: Socket,
-    Nego: BorrowedFlowNegotiator<&'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
-    AuthN: SessionAuthN<Nego::Flow<'a>>,
-    Xfrm: DatagramXfrm {
-    #[inline]
-    fn read(
-        &mut self,
-        buf: &mut [u8]
-    ) -> Result<usize, Error> {
-        let mut nbytes;
-
-        while {
-            let (n, addr) = self.socket.recv_from(buf)?;
-
-            match self.xfrm.unwrap(&mut buf[..n], addr) {
-                Ok((n, peer)) => {
-                    nbytes = n;
-
-                    if self.addr != peer {
-                        warn!(target: "far-multi-flow",
-                              "discarding {} bytes from {} (expected {})",
-                              nbytes, peer, self.addr);
-
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Err(err) => {
-                    return Err(Error::new(ErrorKind::Other, err.to_string()))
-                }
-            }
-        } {}
-
-        Ok(nbytes)
-    }
-}
-
 impl<'a, Sock, Xfrm> Write for MultiFlow<'a, Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Sock::Addr: Clone + Eq,
     Sock: Sender
 {
-    #[inline]
-    fn write(
-        &mut self,
-        buf: &[u8]
-    ) -> Result<usize, Error> {
-        match self.xfrm.wrap(buf, self.addr.clone()) {
-            Ok((Some(buf), addr)) => self.socket.send_to(&addr, &buf),
-            Ok((None, addr)) => self.socket.send_to(&addr, buf),
-            Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
-        }
-    }
-
-    #[inline]
-    fn flush(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<'a, Sock, Nego, AuthN, Xfrm> Write
-    for &'a mut SingleFlow<'a, Sock, Nego, AuthN, Xfrm>
-where
-    Sock: Socket,
-    Nego: BorrowedFlowNegotiator<&'a SingleFlow<'a, Sock, Nego, AuthN, Xfrm>>,
-    AuthN: SessionAuthN<Nego::Flow<'a>>,
-    Xfrm: DatagramXfrm {
     #[inline]
     fn write(
         &mut self,
