@@ -240,6 +240,7 @@ use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Errors that can occur when creating a [DTLSFarChannel].
@@ -471,21 +472,14 @@ where
     }
 }
 
-impl<'a, F, Inner, AuthN, InnerXfrm>
-    FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>
+impl<Inner, InnerXfrm>
+    FarChannelXfrm<InnerXfrm>
     for DTLSFarChannel<Inner>
 where
-    Inner: FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>,
-    InnerXfrm: DatagramXfrm,
-    InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    AuthN: SessionAuthN<<Inner::Nego as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
-    AuthN: SessionAuthN<DTLSFlow<F::Flow>>,
-    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Nego,
-                           AuthN, Inner::Xfrm> {
-    type BorrowedFlowsError = Inner::BorrowedFlowsError;
+    Inner: FarChannelXfrm<InnerXfrm>,
+    InnerXfrm: DatagramXfrm {
     type Xfrm = Inner::Xfrm;
     type XfrmError = Inner::XfrmError;
-    type Nego = DTLSNegotiator<Inner::Nego>;
 
     #[inline]
     fn wrap_xfrm(
@@ -495,6 +489,16 @@ where
     ) -> Result<Self::Xfrm, Self::XfrmError> {
         self.inner.wrap_xfrm(param, xfrm)
     }
+}
+
+impl<'a, F, Inner, InnerXfrm>
+    FarChannelBorrowFlows<'a, F, InnerXfrm>
+    for DTLSFarChannel<Inner>
+where
+    Inner: FarChannelBorrowFlows<'a, F, InnerXfrm>,
+    InnerXfrm: DatagramXfrm,
+    InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
+    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm> {
 }
 
 impl<F, Inner, AuthN, InnerXfrm>
@@ -506,19 +510,19 @@ where
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
     AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     AuthN: SessionAuthN<DTLSFlow<F::Flow>>,
-    F: OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm> {
+    F: OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm> {
     type OwnedFlowsError = Inner::OwnedFlowsError;
-    type Xfrm = Inner::Xfrm;
-    type XfrmError = Inner::XfrmError;
     type Nego = DTLSNegotiator<Inner::Nego>;
 
+
     #[inline]
-    fn wrap_xfrm(
-        &self,
-        param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
-        self.inner.wrap_xfrm(param, xfrm)
+    fn negotiator(&self) -> Self::Nego {
+        let inner = self.inner.negotiator();
+
+        DTLSNegotiator {
+            tls: self.tls.clone(),
+            inner: inner
+        }
     }
 }
 
@@ -526,15 +530,16 @@ impl<F, Inner> BorrowedFlowNegotiator<F> for DTLSNegotiator<Inner>
 where
     F: Credentials + Flow + Read + Write,
     Inner: BorrowedFlowNegotiator<F> {
-    type Flow = DTLSFlow<F>;
+    type Flow<'a> = DTLSFlow<Inner::Flow<'a>>
+    where Inner: 'a;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
     fn negotiate_outbound(
         &mut self,
-        inner: Inner::Inner,
+        inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<Inner::Inner>>,
+        RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
         let verify = endpoint.ok_or(DTLSNegotiateError::NoName)?;
@@ -542,7 +547,7 @@ where
             .tls
             .load_client(None, verify, true)
             .map_err(|e| DTLSNegotiateError::TLSLoad { tls: e })?;
-        let domain = match endpoint {
+        let domain = match verify {
             IPEndpointAddr::Name(name) => match name.find('.') {
                 Some(idx) => {
                     let (_, domain) = name.split_at(idx);
@@ -595,9 +600,9 @@ where
 
     fn negotiate_inbound(
         &mut self,
-        inner: Inner::Inner,
+        inner: F,
     ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<Inner::Inner>>,
+        RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
         let addr = inner.peer_addr();
@@ -653,18 +658,18 @@ where
     #[inline]
     fn negotiate_outbound_nonblock(
         &mut self,
-        inner: Inner::Inner,
-    ) -> Result<NonblockResult<Self::Flow, Inner::Inner>, Self::NegotiateError>
+        inner: F,
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
         Ok(NonblockResult::Fail(inner))
     }
 
     fn negotiate_outbound(
         &mut self,
-        inner: Inner::Inner,
+        inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<Inner::Inner>>,
+        RetryResult<Self::Flow, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
         let verify = endpoint.ok_or(DTLSNegotiateError::NoName)?;
@@ -726,17 +731,17 @@ where
     #[inline]
     fn negotiate_inbound_nonblock(
         &mut self,
-        inner: Inner::Inner,
-    ) -> Result<NonblockResult<Self::Flow, Inner::Inner>, Self::NegotiateError>
+        inner: F,
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
         Ok(NonblockResult::Fail(inner))
     }
 
     fn negotiate_inbound(
         &mut self,
-        inner: Inner::Inner,
+        inner: F,
     ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<Inner::Inner>>,
+        RetryResult<Self::Flow, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
         let addr = inner.peer_addr();

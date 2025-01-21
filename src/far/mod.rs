@@ -446,19 +446,11 @@ where
 /// Most implementations will only need to provide the
 /// [wrap_borrowed_flows](FarChannelBorrowFlows::wrap_borrowed_flows)
 /// implementation (as well as the associated types).
-pub trait FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>:
+pub trait FarChannelBorrowFlows<'a, F, InnerXfrm>:
     FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
-    AuthN: SessionAuthN<<Self::Nego as BorrowedFlowNegotiator<F::Flow>>::Flow<'a>>,
-    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
-    /// Type of errors that can occur when creating borrowed flows.
-    type BorrowedFlowsError: Display + ScopedError;
-    type Nego: 'a + BorrowedFlowNegotiator<F::Flow>;
-
-    /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
-    fn negotiator(&self) -> Self::Nego;
-
+    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm> {
     /// Create a [BorrowedFlows] instance around a socket created by
     /// this channel.
     ///
@@ -471,15 +463,13 @@ where
         &self,
         param: Self::Param,
         xfrm: InnerXfrm,
-        authn: AuthN,
         flow: F::CreateParam
     ) -> Result<
         F,
         FarChannelFlowsError<
             Self::SocketError,
             F::CreateError,
-            Self::XfrmError,
-            Self::BorrowedFlowsError
+            Self::XfrmError
         >
     > {
         let socket = self
@@ -488,9 +478,8 @@ where
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let negotiator = self.negotiator();
 
-        F::create(socket, authn, negotiator, xfrm, flow)
+        F::create(socket, xfrm, flow)
             .map_err(|e| FarChannelFlowsError::Flows { flows: e })
     }
 }
@@ -530,8 +519,6 @@ where
     InnerXfrm: DatagramXfrm,
     AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     F: OwnedFlowsCreate<Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
-    /// Type of errors that can occur when creating borrowed flows.
-    type OwnedFlowsError: Display + ScopedError;
     type Nego: OwnedFlowNegotiator<F::Flow>;
 
     /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
@@ -558,8 +545,7 @@ where
         FarChannelFlowsError<
             Self::SocketError,
             F::CreateError,
-            Self::XfrmError,
-            Self::OwnedFlowsError
+            Self::XfrmError
         >
     > {
         let socket = self
@@ -608,13 +594,7 @@ pub enum AcquiredResolveStaticError {
 /// Multiplexer for errors that can occur when creating a
 /// [Flows] instance.
 #[derive(Debug)]
-pub enum FarChannelFlowsError<Socket, Flows, Xfrm, Wrap> {
-    /// Error occurred while wrapping the inner [Flows] instance.
-    Wrap {
-        /// The error that occurred while wrapping the inner [Flows]
-        /// instance.
-        wrap: Wrap
-    },
+pub enum FarChannelFlowsError<Socket, Flows, Xfrm> {
     /// Error occurred while wrapping the inner [DatagramXfrm] instance.
     Xfrm {
         /// The error occurred while wrapping the inner
@@ -707,17 +687,15 @@ impl FarChannelAcquiredResolve for UnixSocketAddr {
     }
 }
 
-impl<Socket, Flows, Xfrm, Wrap> ScopedError
-    for FarChannelFlowsError<Socket, Flows, Xfrm, Wrap>
+impl<Socket, Flows, Xfrm> ScopedError
+    for FarChannelFlowsError<Socket, Flows, Xfrm>
 where
     Socket: ScopedError,
     Flows: ScopedError,
     Xfrm: ScopedError,
-    Wrap: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            FarChannelFlowsError::Wrap { wrap } => wrap.scope(),
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.scope(),
             FarChannelFlowsError::Flows { flows } => flows.scope(),
             FarChannelFlowsError::Socket { socket } => socket.scope()
@@ -725,10 +703,9 @@ where
     }
 }
 
-impl<Socket, Flows, Xfrm, Wrap> Display
-    for FarChannelFlowsError<Socket, Flows, Xfrm, Wrap>
+impl<Socket, Flows, Xfrm> Display
+    for FarChannelFlowsError<Socket, Flows, Xfrm>
 where
-    Wrap: Display,
     Xfrm: Display,
     Flows: Display,
     Socket: Display
@@ -738,7 +715,6 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            FarChannelFlowsError::Wrap { wrap } => wrap.fmt(f),
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.fmt(f),
             FarChannelFlowsError::Flows { flows } => flows.fmt(f),
             FarChannelFlowsError::Socket { socket } => socket.fmt(f)

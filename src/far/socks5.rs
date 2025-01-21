@@ -728,27 +728,17 @@ where
     }
 }
 
-impl<'a, F, Proxy, Datagram, AuthN, InnerXfrm>
-    FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>
+impl<'a, F, Proxy, Datagram, InnerXfrm>
+    FarChannelBorrowFlows<'a, F, InnerXfrm>
     for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
     Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>,
+    Datagram: FarChannelBorrowFlows<'a, F, InnerXfrm>,
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
-    AuthN: SessionAuthN<<Datagram::Nego as BorrowedFlowNegotiator<<F as BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm>>::Flow>>::Flow<'a>>,
-    F: BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, SOCKS5UDPXfrm<Datagram::Xfrm>>
-    + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm>
-    + BorrowedFlowsOutbound<'a, F, <Datagram::Xfrm as DatagramXfrm>::PeerAddr, AuthN::Prin>
-    + BorrowedFlowsInbound<'a, F, <Datagram::Xfrm as DatagramXfrm>::PeerAddr, AuthN::Prin> {
-    type BorrowedFlowsError = Datagram::BorrowedFlowsError;
-    type Nego = Datagram::Nego;
-
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        self.datagram.negotiator()
-    }
+    F: BorrowedFlowsCreate<'a, Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>> {
+//    + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Xfrm> {
 }
 
 impl<F, Proxy, Datagram, AuthN, InnerXfrm>

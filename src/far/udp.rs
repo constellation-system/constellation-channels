@@ -385,20 +385,12 @@ where
 }
 
 
-impl<'a, F, AuthN, InnerXfrm> FarChannelBorrowFlows<'a, F, AuthN, InnerXfrm>
+impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for UDPFarChannel
 where
     InnerXfrm: DatagramXfrm,
-    AuthN: SessionAuthN<F::Flow>,
-    F: BorrowedFlowsCreate<'a, UDPFarSocket, PassthruNegotiator, AuthN, InnerXfrm>,
+    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm>,
 {
-    type BorrowedFlowsError = Infallible;
-    type Nego = PassthruNegotiator;
-
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        PassthruNegotiator
-    }
 }
 
 impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
@@ -409,7 +401,6 @@ where
     F: OwnedFlowsCreate<UDPFarSocket, PassthruNegotiator, AuthN, InnerXfrm>,
     F::Flow: Send
 {
-    type OwnedFlowsError = Infallible;
     type Nego = PassthruNegotiator;
 
     #[inline]
