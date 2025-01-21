@@ -213,7 +213,6 @@
 //! listen.join().unwrap();
 //! ```
 
-use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -224,7 +223,6 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
-use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -2410,7 +2408,7 @@ where
     type NegotiateError = CompoundNegotiateError;
 
     fn negotiate_outbound(
-        &mut self,
+        &self,
         inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
@@ -2431,7 +2429,7 @@ where
     }
 
     fn negotiate_inbound(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<
         RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
@@ -2460,7 +2458,7 @@ where
 
     #[inline]
     fn negotiate_outbound_nonblock(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
@@ -2473,7 +2471,7 @@ where
     }
 
     fn negotiate_outbound(
-        &mut self,
+        &self,
         inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
@@ -2495,7 +2493,7 @@ where
 
     #[inline]
     fn negotiate_inbound_nonblock(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
@@ -2508,7 +2506,7 @@ where
     }
 
     fn negotiate_inbound(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<F>>,

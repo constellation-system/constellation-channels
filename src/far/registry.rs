@@ -39,7 +39,6 @@ use std::thread::sleep;
 use std::time::Instant;
 use std::vec::IntoIter;
 
-use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::codec::DatagramCodec;
 use constellation_common::error::ErrorScope;
@@ -440,7 +439,6 @@ where
                 Channel::SocketError,
                 F::CreateError,
                 Channel::XfrmError,
-                Channel::OwnedFlowsError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -571,7 +569,6 @@ where
                 Channel::SocketError,
                 F::CreateError,
                 Channel::XfrmError,
-                Channel::OwnedFlowsError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -614,14 +611,14 @@ where
 
                     match flows.flow(flow_addr, endpoint) {
                         // Created a flow; zero out the failures and return it.
-                        Ok(flow) => match ent.retry.write() {
+                        Ok(flow) => flow.map_ok(|flow| match ent.retry.write() {
                             Ok(mut guard) => {
                                 guard.nfailures = 0;
 
-                                Ok(RetryResult::Success(flow))
+                                Ok(flow)
                             }
                             Err(_) => Err(RegistryMutexPoison)
-                        },
+                        }),
                         // Error; record it and return a retry.
                         Err(err) => {
                             warn!(target: "far-channel-registry",
@@ -735,7 +732,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -787,7 +783,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -830,7 +825,6 @@ where
                 Channel::SocketError,
                 F::CreateError,
                 Channel::XfrmError,
-                Channel::OwnedFlowsError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1067,7 +1061,6 @@ where
                 Channel::SocketError,
                 F::CreateError,
                 Channel::XfrmError,
-                Channel::OwnedFlowsError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1149,7 +1142,6 @@ where
                 Channel::SocketError,
                 F::CreateError,
                 Channel::XfrmError,
-                Channel::OwnedFlowsError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1233,7 +1225,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1383,7 +1374,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1468,7 +1458,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1515,7 +1504,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1571,7 +1559,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1599,7 +1586,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1631,7 +1617,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1663,7 +1648,6 @@ where
                         Channel::SocketError,
                         F::CreateError,
                         Channel::XfrmError,
-                        Channel::OwnedFlowsError
                     >,
                     <Channel::Acquired as FarChannelAcquired>::WrapError
                 >
@@ -1804,7 +1788,6 @@ where
                 Channel::SocketError,
                 F::CreateError,
                 Channel::XfrmError,
-                Channel::OwnedFlowsError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1822,7 +1805,6 @@ where
                     Channel::SocketError,
                     F::CreateError,
                     Channel::XfrmError,
-                    Channel::OwnedFlowsError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >

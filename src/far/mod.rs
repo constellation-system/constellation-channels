@@ -166,7 +166,6 @@ use constellation_common::sched::SelectError;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
-use crate::far::flows::BorrowedFlowNegotiator;
 use crate::far::flows::BorrowedFlowsCreate;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;

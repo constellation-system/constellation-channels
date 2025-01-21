@@ -535,7 +535,7 @@ where
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
     fn negotiate_outbound(
-        &mut self,
+        &self,
         inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
@@ -599,7 +599,7 @@ where
     }
 
     fn negotiate_inbound(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<
         RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
@@ -657,7 +657,7 @@ where
 
     #[inline]
     fn negotiate_outbound_nonblock(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
@@ -665,7 +665,7 @@ where
     }
 
     fn negotiate_outbound(
-        &mut self,
+        &self,
         inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
@@ -730,7 +730,7 @@ where
 
     #[inline]
     fn negotiate_inbound_nonblock(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
@@ -738,7 +738,7 @@ where
     }
 
     fn negotiate_inbound(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<F>>,
