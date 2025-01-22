@@ -2400,9 +2400,9 @@ where
     }
 }
 
-impl<'a, F> BorrowedFlowNegotiator<F> for CompoundNegotiator
+impl<F> BorrowedFlowNegotiator<F> for CompoundNegotiator
 where
-    F: 'a + Credentials + Flow + Read + Write
+    F: Credentials + Flow + Read + Write
 {
     type Flow<'b> = CompoundFlow<F>;
     type NegotiateError = CompoundNegotiateError;
@@ -2419,8 +2419,8 @@ where
             CompoundNegotiator::Basic { .. } => {
                 Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
             }
-            CompoundNegotiator::DTLS { dtls } => Ok(dtls
-                .negotiate_outbound(inner, endpoint)
+            CompoundNegotiator::DTLS { dtls } => Ok(
+                BorrowedFlowNegotiator::negotiate_outbound(dtls, inner, endpoint)
                 .map_err(|err| CompoundNegotiateError::DTLS {
                     error: Box::new(err)
                 })?
@@ -2439,13 +2439,46 @@ where
             CompoundNegotiator::Basic { .. } => {
                 Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
             }
-            CompoundNegotiator::DTLS { dtls } => Ok(dtls
-                .negotiate_inbound(inner)
+            CompoundNegotiator::DTLS { dtls } => Ok(
+                BorrowedFlowNegotiator::negotiate_inbound(dtls, inner)
                 .map_err(|err| CompoundNegotiateError::DTLS {
                     error: Box::new(err)
                 })?
                 .map(|flow| CompoundFlow::DTLS { flow: flow }))
         }
+    }
+}
+
+impl<F> BorrowedFlowNegotiator<F> for Box<CompoundNegotiator>
+where
+    F: Credentials + Flow + Read + Write
+{
+    type Flow<'b> = Box<CompoundFlow<F>>;
+    type NegotiateError = CompoundNegotiateError;
+
+    #[inline]
+    fn negotiate_outbound(
+        &self,
+        inner: F,
+        endpoint: Option<&IPEndpointAddr>
+    ) -> Result<
+        RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
+        Self::NegotiateError
+    > {
+        BorrowedFlowNegotiator::negotiate_outbound(self.as_ref(), inner, endpoint)
+            .map(|out| out.map(Box::new))
+    }
+
+    #[inline]
+    fn negotiate_inbound(
+        &self,
+        inner: F,
+    ) -> Result<
+        RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
+        Self::NegotiateError
+    > {
+        BorrowedFlowNegotiator::negotiate_inbound(self.as_ref(), inner)
+            .map(|out| out.map(Box::new))
     }
 }
 
@@ -2482,8 +2515,8 @@ where
             CompoundNegotiator::Basic { .. } => {
                 Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
             }
-            CompoundNegotiator::DTLS { dtls } => Ok(dtls
-                .negotiate_outbound(inner, endpoint)
+            CompoundNegotiator::DTLS { dtls } => Ok(
+                OwnedFlowNegotiator::negotiate_outbound(dtls, inner, endpoint)
                 .map_err(|err| CompoundNegotiateError::DTLS {
                     error: Box::new(err)
                 })?
@@ -2516,8 +2549,8 @@ where
             CompoundNegotiator::Basic { .. } => {
                 Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
             }
-            CompoundNegotiator::DTLS { dtls } => Ok(dtls
-                .negotiate_inbound(inner)
+            CompoundNegotiator::DTLS { dtls } => Ok(
+                OwnedFlowNegotiator::negotiate_inbound(dtls, inner)
                 .map_err(|err| CompoundNegotiateError::DTLS {
                     error: Box::new(err)
                 })?
@@ -2558,8 +2591,7 @@ where
         RetryResult<Self::Flow, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
-        self.as_ref()
-            .negotiate_outbound(inner, endpoint)
+        OwnedFlowNegotiator::negotiate_outbound(self.as_ref(), inner, endpoint)
             .map(|out| out.map(Box::new))
     }
 
@@ -2587,8 +2619,7 @@ where
         RetryResult<Self::Flow, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
-        self.as_ref()
-            .negotiate_inbound(inner)
+        OwnedFlowNegotiator::negotiate_inbound(self.as_ref(), inner)
             .map(|out| out.map(Box::new))
     }
 }
