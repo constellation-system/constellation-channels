@@ -671,12 +671,14 @@ where
             Ok(guard) => match &*guard {
                 Some(session) => {
                     let (datagram, proxy) = param.take();
-                    let xfrm = self.datagram
+                    let xfrm = self
+                        .datagram
                         .wrap_xfrm(datagram, InnerXfrm::from(xfrm))
                         .map_err(|e| SOCKS5XfrmError::Datagram {
                             datagram: e
                         })?;
-                    let proxy_addr = <Datagram::Xfrm as DatagramXfrm>::PeerAddr::from(proxy);
+                    let proxy_addr =
+                        <Datagram::Xfrm as DatagramXfrm>::PeerAddr::from(proxy);
 
                     Ok(session.udp_xfrm(proxy_addr, xfrm))
                 }
@@ -725,8 +727,7 @@ where
     }
 }
 
-impl<'a, F, Proxy, Datagram, InnerXfrm>
-    FarChannelBorrowFlows<'a, F, InnerXfrm>
+impl<'a, F, Proxy, Datagram, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
@@ -735,7 +736,8 @@ where
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     F: BorrowedFlowsCreate<'a, Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>>
-    + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Xfrm> {
+        + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Xfrm>
+{
 }
 
 impl<F, Proxy, Datagram, AuthN, InnerXfrm>
@@ -748,7 +750,19 @@ where
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     AuthN: SessionAuthN<<Datagram::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
-    F: OwnedFlowsCreate<Datagram::Socket, Datagram::Nego, AuthN, Datagram::Xfrm> {
+    F: OwnedFlowsCreate<
+        Datagram::Socket,
+        Datagram::Nego,
+        AuthN,
+        SOCKS5UDPXfrm<Datagram::Xfrm>
+    >,
+    F: OwnedFlowsCreate<
+        Datagram::Socket,
+        Datagram::Nego,
+        AuthN,
+        Datagram::Xfrm
+    >
+{
     type Nego = Datagram::Nego;
 
     #[inline]

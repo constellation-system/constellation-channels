@@ -240,9 +240,11 @@ impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
 where
     Stream: Credentials + Read + Write
 {
-    type Cred<'a> = GSSAPIStreamCred<Stream::Cred<'a>>
-    where Self: 'a,
-          Stream: 'a;
+    type Cred<'a>
+        = GSSAPIStreamCred<Stream::Cred<'a>>
+    where
+        Self: 'a,
+        Stream: 'a;
     type CredError = GSSAPICredError<Stream::CredError>;
 
     #[inline]
@@ -273,9 +275,11 @@ impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
 where
     Stream: Credentials + Read + Write
 {
-    type Cred<'a> = GSSAPIStreamCred<Stream::Cred<'a>>
-    where Self: 'a,
-          Stream: 'a;
+    type Cred<'a>
+        = GSSAPIStreamCred<Stream::Cred<'a>>
+    where
+        Self: 'a,
+        Stream: 'a;
     type CredError = GSSAPICredError<Stream::CredError>;
 
     #[inline]

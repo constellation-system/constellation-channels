@@ -383,7 +383,7 @@ impl FarChannelCreate for UnixFarChannel {
 
 impl<Xfrm> FarChannelXfrm<Xfrm> for UnixFarChannel
 where
-    Xfrm: DatagramXfrm,
+    Xfrm: DatagramXfrm
 {
     type Xfrm = Xfrm;
     type XfrmError = Infallible;
@@ -398,12 +398,11 @@ where
     }
 }
 
-
 impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for UnixFarChannel
 where
     InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, UnixDatagramSocket, InnerXfrm>,
+    F: BorrowedFlowsCreate<'a, UnixDatagramSocket, InnerXfrm>
 {
 }
 
@@ -412,7 +411,12 @@ impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
     AuthN: SessionAuthN<F::Flow>,
-    F: OwnedFlowsCreate<UnixDatagramSocket, PassthruNegotiator, AuthN, InnerXfrm>,
+    F: OwnedFlowsCreate<
+        UnixDatagramSocket,
+        PassthruNegotiator,
+        AuthN,
+        InnerXfrm
+    >,
     F::Flow: Send
 {
     type Nego = PassthruNegotiator;

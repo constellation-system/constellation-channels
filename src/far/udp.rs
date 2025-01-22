@@ -369,7 +369,7 @@ impl FarChannelCreate for UDPFarChannel {
 
 impl<Xfrm> FarChannelXfrm<Xfrm> for UDPFarChannel
 where
-    Xfrm: DatagramXfrm,
+    Xfrm: DatagramXfrm
 {
     type Xfrm = Xfrm;
     type XfrmError = Infallible;
@@ -384,12 +384,10 @@ where
     }
 }
 
-
-impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
-    for UDPFarChannel
+impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm> for UDPFarChannel
 where
     InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm>,
+    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm>
 {
 }
 

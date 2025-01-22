@@ -513,7 +513,8 @@ where
 /// Most implementations will only need to provide the
 /// [wrap_owned_flows](FarChannelOwnedFlows::wrap_owned_flows)
 /// implementation (as well as the associated types).
-pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>: FarChannelXfrm<InnerXfrm>
+pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>:
+    FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
     AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
@@ -691,7 +692,7 @@ impl<Socket, Flows, Xfrm> ScopedError
 where
     Socket: ScopedError,
     Flows: ScopedError,
-    Xfrm: ScopedError,
+    Xfrm: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -702,8 +703,7 @@ where
     }
 }
 
-impl<Socket, Flows, Xfrm> Display
-    for FarChannelFlowsError<Socket, Flows, Xfrm>
+impl<Socket, Flows, Xfrm> Display for FarChannelFlowsError<Socket, Flows, Xfrm>
 where
     Xfrm: Display,
     Flows: Display,

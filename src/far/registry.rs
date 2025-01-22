@@ -69,8 +69,8 @@ use crate::config::AddrKind;
 use crate::config::AddrsConfig;
 use crate::config::ChannelRegistryChannelsConfig;
 use crate::config::ChannelRegistryConfig;
-use crate::far::flows::OwnedFlowsCreate;
 use crate::far::flows::OwnedFlowNegotiator;
+use crate::far::flows::OwnedFlowsCreate;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -83,7 +83,8 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// Trait for context objects that provide access to a [FarChannelRegistry].
 pub trait FarChannelRegistryCtx<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -126,7 +127,8 @@ struct RegistryFlowsRetry {
 /// addresses, and keep that updated.
 struct RegistryAcquired<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -151,7 +153,8 @@ where
 /// Entry in the registry for a single channel.
 struct RegistryEntry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -186,7 +189,8 @@ where
 /// creation, see [FarChannelRegistryChannels].
 pub struct FarChannelRegistry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -226,7 +230,8 @@ pub struct FarChannelRegistryChannels<
     AuthN,
     Xfrm
 > where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
@@ -237,24 +242,23 @@ pub struct FarChannelRegistryChannels<
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Reporter:
-        StreamReporter<
-            Stream = ThreadedStream<
-                DatagramCodecStream<
-                    Msg,
-                    <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                    Codec
-                >
-            >,
-            Src = StreamID<
-                <Channel::Xfrm as DatagramXfrm>::PeerAddr,
-                F::ChannelID,
-                Channel::Param
-            >,
-            Prin = <AuthN as SessionAuthN<
-                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
-            >>::Prin
+    Reporter: StreamReporter<
+        Stream = ThreadedStream<
+            DatagramCodecStream<
+                Msg,
+                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
+                Codec
+            >
         >,
+        Src = StreamID<
+            <Channel::Xfrm as DatagramXfrm>::PeerAddr,
+            F::ChannelID,
+            Channel::Param
+        >,
+        Prin = <AuthN as SessionAuthN<
+            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
+        >>::Prin
+    >,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq {
     msg: PhantomData<Msg>,
@@ -371,8 +375,7 @@ pub enum ReadOnlyErr {
     MutexPoison
 }
 
-impl<Owned> RegistryFlows<Owned>
-{
+impl<Owned> RegistryFlows<Owned> {
     /// Create a new `RegistryFlows` around `flows`.
     #[inline]
     pub fn new(flows: Owned) -> Self {
@@ -388,7 +391,8 @@ impl<Owned> RegistryFlows<Owned>
 
 impl<Channel, F, AuthN, Xfrm> RegistryAcquired<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -399,7 +403,8 @@ where
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Channel::Param: Clone + Display + Eq + Hash + PartialEq
+{
     /// Check to see if a refresh is needed.
     fn needs_refresh(&self) -> bool {
         match &self.resolver {
@@ -438,7 +443,7 @@ where
             FarChannelFlowsError<
                 Channel::SocketError,
                 F::CreateError,
-                Channel::XfrmError,
+                Channel::XfrmError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -568,7 +573,7 @@ where
             FarChannelFlowsError<
                 Channel::SocketError,
                 F::CreateError,
-                Channel::XfrmError,
+                Channel::XfrmError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -598,8 +603,10 @@ where
         addr: &<Channel::Xfrm as DatagramXfrm>::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<(<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                     AuthN::Prin)>,
+        RetryResult<(
+            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
+            AuthN::Prin
+        )>,
         RegistryMutexPoison
     > {
         match ent.flows.lock() {
@@ -607,18 +614,22 @@ where
                 // The flows are live, try creating the flow
                 Some(flows) => {
                     let flow_addr =
-                        <Channel::Xfrm as DatagramXfrm>::PeerAddr::from(addr.clone());
+                        <Channel::Xfrm as DatagramXfrm>::PeerAddr::from(
+                            addr.clone()
+                        );
 
                     match flows.flow(flow_addr, endpoint) {
                         // Created a flow; zero out the failures and return it.
-                        Ok(flow) => flow.map_ok(|flow| match ent.retry.write() {
-                            Ok(mut guard) => {
-                                guard.nfailures = 0;
+                        Ok(flow) => {
+                            flow.map_ok(|flow| match ent.retry.write() {
+                                Ok(mut guard) => {
+                                    guard.nfailures = 0;
 
-                                Ok(flow)
-                            }
-                            Err(_) => Err(RegistryMutexPoison)
-                        }),
+                                    Ok(flow)
+                                }
+                                Err(_) => Err(RegistryMutexPoison)
+                            })
+                        }
                         // Error; record it and return a retry.
                         Err(err) => {
                             warn!(target: "far-channel-registry",
@@ -655,10 +666,8 @@ where
     fn try_flows_readonly(
         &self,
         addr: &Channel::Param
-    ) -> Result<
-        ReadOnlyResult<(&RegistryFlows<F>, Option<Instant>)>,
-        ReadOnlyErr
-    > {
+    ) -> Result<ReadOnlyResult<(&RegistryFlows<F>, Option<Instant>)>, ReadOnlyErr>
+    {
         if !self.needs_refresh() {
             match self.flows.get(addr) {
                 // Check if we've been shut down.
@@ -731,7 +740,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -782,7 +791,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -824,7 +833,7 @@ where
             FarChannelFlowsError<
                 Channel::SocketError,
                 F::CreateError,
-                Channel::XfrmError,
+                Channel::XfrmError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1002,7 +1011,8 @@ where
 
 impl<Channel, F, AuthN, Xfrm> RegistryEntry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -1013,7 +1023,8 @@ where
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Channel::Param: Clone + Display + Eq + Hash + PartialEq
+{
     #[inline]
     fn create<NameCtx>(
         caches: &mut NameCtx,
@@ -1060,7 +1071,7 @@ where
             FarChannelFlowsError<
                 Channel::SocketError,
                 F::CreateError,
-                Channel::XfrmError,
+                Channel::XfrmError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1141,7 +1152,7 @@ where
             FarChannelFlowsError<
                 Channel::SocketError,
                 F::CreateError,
-                Channel::XfrmError,
+                Channel::XfrmError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
@@ -1224,7 +1235,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1278,7 +1289,8 @@ where
 
 impl<Channel, F, AuthN, Xfrm> FarChannelRegistry<Channel, F, AuthN, Xfrm>
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -1289,7 +1301,8 @@ where
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Channel::Param: Clone + Display + Eq + Hash + PartialEq
+{
     /// Create a `FarChannelRegistry` from its configuration.
     ///
     /// This will just create the channels; it will not attempt to
@@ -1335,10 +1348,7 @@ where
                    curr, name);
 
             // There should not be any duplicate keys
-            if ids
-                .insert(name.clone(), F::ChannelID::from(curr))
-                .is_some()
-            {
+            if ids.insert(name.clone(), F::ChannelID::from(curr)).is_some() {
                 return Err(FarChannelRegistryCreateError::DuplicateID {
                     name: name
                 });
@@ -1373,7 +1383,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1457,7 +1467,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1503,7 +1513,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1558,7 +1568,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1585,7 +1595,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1595,8 +1605,7 @@ where
         NameCtx: NSNameCachesCtx {
         match self.ids.get(name) {
             Some(id) => {
-                Ok(self.snapshot_addrs_nonblock_id(caches, &id)?
-                   .map(Some))
+                Ok(self.snapshot_addrs_nonblock_id(caches, &id)?.map(Some))
             }
             None => Ok(RetryResult::Success(None))
         }
@@ -1616,7 +1625,7 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
@@ -1656,7 +1665,7 @@ where
             AuthN::Error
         >
     >
-    where NameCtx: NSNameCachesCtx {
+    where NameCtx: NSNameCachesCtx{
         let idx: usize = id.into();
 
         match self.channels[idx].read() {
@@ -1672,11 +1681,11 @@ where
                         FarChannelRegistryFlowError::MutexPoison
                     }
                 })? {
-                ReadOnlyResult::Success(out) =>
-                    Ok(out.map(|(flow, prin, _)| (flow, prin))),
+                ReadOnlyResult::Success(out) => {
+                    Ok(out.map(|(flow, prin, _)| (flow, prin)))
+                }
                 // Fall back to write mode.
-                ReadOnlyResult::NeedsWrite => match self.channels[idx].write()
-                {
+                ReadOnlyResult::NeedsWrite => match self.channels[idx].write() {
                     Ok(mut guard) => Ok(guard
                         .flow_nonblock(
                             id,
@@ -1744,7 +1753,8 @@ impl<Msg, Codec, Reporter, Channel, F, AuthN, Xfrm, NameCtx> Channels<NameCtx>
         Xfrm
     >
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     <Channel::Xfrm as DatagramXfrm>::PeerAddr: Eq + Hash,
@@ -1757,26 +1767,31 @@ where
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Reporter:
-        StreamReporter<
-            Stream = ThreadedStream<
-                DatagramCodecStream<
-                    Msg,
-                    <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                    Codec
-                >
-            >,
-            Src = StreamID<
-                <Channel::Xfrm as DatagramXfrm>::PeerAddr,
-                F::ChannelID,
-                Channel::Param
-            >,
-            Prin = <AuthN as SessionAuthN<
-                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
-            >>::Prin
+    Reporter: StreamReporter<
+        Stream = ThreadedStream<
+            DatagramCodecStream<
+                Msg,
+                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
+                Codec
+            >
         >,
+        Src = StreamID<
+            <Channel::Xfrm as DatagramXfrm>::PeerAddr,
+            F::ChannelID,
+            Channel::Param
+        >,
+        Prin = <AuthN as SessionAuthN<
+            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
+        >>::Prin
+    >,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq + ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr> {
+    Channel::Param: Clone
+        + Display
+        + Eq
+        + Hash
+        + PartialEq
+        + ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr>
+{
     type Addr = <Channel::Xfrm as DatagramXfrm>::PeerAddr;
     type ChannelID = F::ChannelID;
     type Param = Channel::Param;
@@ -1787,14 +1802,18 @@ where
             FarChannelFlowsError<
                 Channel::SocketError,
                 F::CreateError,
-                Channel::XfrmError,
+                Channel::XfrmError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
     >;
     type ParamIter = IntoIter<(F::ChannelID, Channel::Param)>;
     type Stream = ThreadedStream<
-        DatagramCodecStream<Msg, <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow, Codec>
+        DatagramCodecStream<
+            Msg,
+            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
+            Codec
+        >
     >;
     type StreamError = FarChannelRegistryStreamError<
         RegistryFlowsError<
@@ -1804,14 +1823,16 @@ where
                 FarChannelFlowsError<
                     Channel::SocketError,
                     F::CreateError,
-                    Channel::XfrmError,
+                    Channel::XfrmError
                 >,
                 <Channel::Acquired as FarChannelAcquired>::WrapError
             >
         >,
         F::FlowError,
         Reporter::ReportError,
-        <AuthN as SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>>::Error
+        <AuthN as SessionAuthN<
+            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
+        >>::Error
     >;
 
     fn params(
@@ -1907,9 +1928,11 @@ impl<Msg, Codec, Reporter, Channel, F, AuthN, Xfrm, RegistryCtx>
         Xfrm
     >
 where
-    AuthN: Clone + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    AuthN: Clone
+        + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
-    Codec::Param: ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr> + Default,
+    Codec::Param:
+        ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr> + Default,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -1919,27 +1942,28 @@ where
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    RegistryCtx: FarChannelRegistryCtx<Channel, F, AuthN, Xfrm> + NSNameCachesCtx,
-    Reporter:
-        StreamReporter<
-            Stream = ThreadedStream<
-                DatagramCodecStream<
-                    Msg,
-                    <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                    Codec
-                >
-            >,
-            Src = StreamID<
-                <Channel::Xfrm as DatagramXfrm>::PeerAddr,
-                F::ChannelID,
-                Channel::Param
-            >,
-            Prin = <AuthN as SessionAuthN<
-                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
-            >>::Prin
+    RegistryCtx:
+        FarChannelRegistryCtx<Channel, F, AuthN, Xfrm> + NSNameCachesCtx,
+    Reporter: StreamReporter<
+        Stream = ThreadedStream<
+            DatagramCodecStream<
+                Msg,
+                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
+                Codec
+            >
         >,
+        Src = StreamID<
+            <Channel::Xfrm as DatagramXfrm>::PeerAddr,
+            F::ChannelID,
+            Channel::Param
+        >,
+        Prin = <AuthN as SessionAuthN<
+            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow
+        >>::Prin
+    >,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Channel::Param: Clone + Display + Eq + Hash + PartialEq
+{
     type Config = ChannelRegistryChannelsConfig<Codec::Param>;
     type CreateError =
         FarChannelRegistryChannelsCreateError<Codec::CreateError>;

@@ -1665,8 +1665,10 @@ impl<TLS> NearConnector for CompoundNearConnector<TLS>
 where
     TLS: Clone + Debug + TLSLoadClient
 {
-    type EndpointRef<'a> = CompoundNearConnectorEndpointRef<'a>
-    where TLS: 'a;
+    type EndpointRef<'a>
+        = CompoundNearConnectorEndpointRef<'a>
+    where
+        TLS: 'a;
     type Reader = CompoundNearClientReader;
     type Writer = CompoundNearClientWriter;
 
@@ -1789,8 +1791,10 @@ impl<TLS> NearConnector for Box<CompoundNearConnector<TLS>>
 where
     TLS: Clone + Debug + TLSLoadClient
 {
-    type EndpointRef<'a> = CompoundNearConnectorEndpointRef<'a>
-    where TLS: 'a;
+    type EndpointRef<'a>
+        = CompoundNearConnectorEndpointRef<'a>
+    where
+        TLS: 'a;
     type Reader = CompoundNearClientReader;
     type Writer = CompoundNearClientWriter;
 

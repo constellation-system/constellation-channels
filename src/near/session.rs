@@ -438,10 +438,12 @@ where
     Params::Value: CredentialsMut + Read + Write,
     Conn: NearConnector
 {
-    type EndpointRef<'a> = Conn::EndpointRef<'a>
-    where Conn::Endpoint: 'a,
-          Params: 'a,
-          Conn: 'a;
+    type EndpointRef<'a>
+        = Conn::EndpointRef<'a>
+    where
+        Conn::Endpoint: 'a,
+        Params: 'a,
+        Conn: 'a;
     type Reader = NearReader<Params::Value>;
     type Writer = NearWriter<Params::Value>;
 

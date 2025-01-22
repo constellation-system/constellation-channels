@@ -472,12 +472,11 @@ where
     }
 }
 
-impl<Inner, InnerXfrm>
-    FarChannelXfrm<InnerXfrm>
-    for DTLSFarChannel<Inner>
+impl<Inner, InnerXfrm> FarChannelXfrm<InnerXfrm> for DTLSFarChannel<Inner>
 where
     Inner: FarChannelXfrm<InnerXfrm>,
-    InnerXfrm: DatagramXfrm {
+    InnerXfrm: DatagramXfrm
+{
     type Xfrm = Inner::Xfrm;
     type XfrmError = Inner::XfrmError;
 
@@ -491,32 +490,36 @@ where
     }
 }
 
-impl<'a, F, Inner, InnerXfrm>
-    FarChannelBorrowFlows<'a, F, InnerXfrm>
+impl<'a, F, Inner, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for DTLSFarChannel<Inner>
 where
     Inner: FarChannelBorrowFlows<'a, F, InnerXfrm>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm> {
+    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm>
+{
 }
 
-impl<F, Inner, AuthN, InnerXfrm>
-    FarChannelOwnedFlows<F, AuthN, InnerXfrm>
+impl<F, Inner, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
     for DTLSFarChannel<Inner>
 where
     Inner: FarChannelOwnedFlows<F, AuthN, InnerXfrm>,
-    Inner::Nego: OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>>::Flow>,
+    Inner::Nego: OwnedFlowNegotiator<F::Flow>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm>>::Flow>>::Flow>,
-    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>>::Flow>>::Flow>,
-    AuthN: SessionAuthN<DTLSFlow<<Inner::Nego as OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>>::Flow>>::Flow>>,
-    F: OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>,
-    F: OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm> {
-
+    AuthN: SessionAuthN<
+        DTLSFlow<<Inner::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>
+    >,
+    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    F: OwnedFlowsCreate<
+        Inner::Socket,
+        DTLSNegotiator<Inner::Nego>,
+        AuthN,
+        Inner::Xfrm
+    >,
+    F: OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm>
+{
     type Nego = DTLSNegotiator<Inner::Nego>;
-
 
     #[inline]
     fn negotiator(&self) -> Self::Nego {
@@ -532,9 +535,12 @@ where
 impl<F, Inner> BorrowedFlowNegotiator<F> for DTLSNegotiator<Inner>
 where
     F: Credentials + Flow + Read + Write,
-    Inner: BorrowedFlowNegotiator<F> {
-    type Flow<'a> = DTLSFlow<Inner::Flow<'a>>
-    where Inner: 'a;
+    Inner: BorrowedFlowNegotiator<F>
+{
+    type Flow<'a>
+        = DTLSFlow<Inner::Flow<'a>>
+    where
+        Inner: 'a;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
     fn negotiate_outbound(
@@ -603,7 +609,7 @@ where
 
     fn negotiate_inbound(
         &self,
-        inner: F,
+        inner: F
     ) -> Result<
         RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
         Self::NegotiateError
@@ -654,16 +660,16 @@ where
 impl<F, Inner> OwnedFlowNegotiator<F> for DTLSNegotiator<Inner>
 where
     F: Credentials + Flow + Read + Write,
-    Inner: OwnedFlowNegotiator<F> {
+    Inner: OwnedFlowNegotiator<F>
+{
     type Flow = DTLSFlow<Inner::Flow>;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
     #[inline]
     fn negotiate_outbound_nonblock(
         &self,
-        inner: F,
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
-    {
+        inner: F
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
         Ok(NonblockResult::Fail(inner))
     }
 
@@ -671,10 +677,8 @@ where
         &self,
         inner: F,
         endpoint: Option<&IPEndpointAddr>
-    ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<F>>,
-        Self::NegotiateError
-    > {
+    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
+    {
         let verify = endpoint.ok_or(DTLSNegotiateError::NoName)?;
         let connector = self
             .tls
@@ -734,19 +738,16 @@ where
     #[inline]
     fn negotiate_inbound_nonblock(
         &self,
-        inner: F,
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
-    {
+        inner: F
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
         Ok(NonblockResult::Fail(inner))
     }
 
     fn negotiate_inbound(
         &self,
-        inner: F,
-    ) -> Result<
-        RetryResult<Self::Flow, NegotiateRetry<F>>,
-        Self::NegotiateError
-    > {
+        inner: F
+    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
+    {
         let addr = inner.peer_addr();
         let flow = match self
             .inner
@@ -846,8 +847,10 @@ impl<F> Credentials for DTLSFlow<F>
 where
     F: Credentials + Flow + Read + Write
 {
-    type Cred<'a> = SSLCred<'a, <F as Credentials>::Cred<'a>>
-    where Self: 'a;
+    type Cred<'a>
+        = SSLCred<'a, <F as Credentials>::Cred<'a>>
+    where
+        Self: 'a;
     type CredError = <F as Credentials>::CredError;
 
     #[inline]

@@ -231,7 +231,8 @@ where
 /// [owned_flows](crate::far::FarChannelOwnedFlows::owned_flows) and
 /// [borrowed_flows](crate::far::FarChannelBorrowFlows::borrowed_flows).
 /// It is not intended to be used directly.
-pub trait BorrowedFlowsCreate<'a, Sock, Xfrm>: FlowsLocalAddr<Sock::Addr>
+pub trait BorrowedFlowsCreate<'a, Sock, Xfrm>:
+    FlowsLocalAddr<Sock::Addr>
 where
     Sock: Socket,
     Xfrm: DatagramXfrm {
@@ -287,9 +288,11 @@ where
     fn listen(
         &'a mut self,
         nego: &'a mut Nego,
-        authn: &mut AuthN,
-    ) -> Result<RetryResult<(Nego::Flow<'a>, PeerAddr, AuthN::Prin)>,
-                Self::ListenError>;
+        authn: &mut AuthN
+    ) -> Result<
+        RetryResult<(Nego::Flow<'a>, PeerAddr, AuthN::Prin)>,
+        Self::ListenError
+    >;
 
     /// Get a [Flow] instance to send messages to the peer
     /// at `addr`.
@@ -318,13 +321,15 @@ where
 }
 
 pub trait BorrowedFlowNegotiator<Inner>: Send + Sync
-where Inner: Credentials + Flow + Read + Write {
+where
+    Inner: Credentials + Flow + Read + Write {
     /// Resulting [Flow] type.
     ///
     /// This may differ from `Inner`, which is the type of flows used
     /// to do the negotiation.
     type Flow<'a>: Credentials + Flow + Read + Write
-    where Self: 'a;
+    where
+        Self: 'a;
     /// Errors that can occur during negotiations.
     type NegotiateError: Display + ScopedError;
 
@@ -346,7 +351,7 @@ where Inner: Credentials + Flow + Read + Write {
     /// negotiation before calling this function.
     fn negotiate_inbound(
         &self,
-        inner: Inner,
+        inner: Inner
     ) -> Result<
         RetryResult<Self::Flow<'_>, NegotiateRetry<Inner>>,
         Self::NegotiateError
@@ -461,19 +466,24 @@ where
     ) -> Result<RetryResult<(F, PeerAddr, Prin)>, Self::ListenError>;
 }
 
-/// Trait for creating [OwnedFlows] from a configuration object.
-pub trait OwnedFlowsCreate<Sock, Nego, AuthN, Xfrm>: FlowsLocalAddr<Sock::Addr>
-    + OwnedFlowsOutbound<Nego::Flow, Xfrm::PeerAddr, AuthN::Prin>
-where
-    Sock: Socket,
-    Nego: OwnedFlowNegotiator<Self::Flow>,
-    AuthN: SessionAuthN<Nego::Flow>,
-    Xfrm: DatagramXfrm {
+pub trait OwnedFlows {
     /// Type of basic [Flow]s produced by this instance.
     ///
     /// This will likely differ from the type of [Flow] produced by
     /// the [Negotiator].
     type Flow: Credentials + Flow + Read + Write;
+}
+
+/// Trait for creating [OwnedFlows] from a configuration object.
+pub trait OwnedFlowsCreate<Sock, Nego, AuthN, Xfrm>:
+    FlowsLocalAddr<Sock::Addr>
+    + OwnedFlowsOutbound<Nego::Flow, Xfrm::PeerAddr, AuthN::Prin>
+    + OwnedFlows
+where
+    Sock: Socket,
+    Nego: OwnedFlowNegotiator<Self::Flow>,
+    AuthN: SessionAuthN<Nego::Flow>,
+    Xfrm: DatagramXfrm {
     /// Channel identifier for the created [Flows].
     type ChannelID: Clone + Display + Eq + Hash;
     type CreateParam;
@@ -503,7 +513,8 @@ where
 /// This allows the details of session negotiation to be abstracted
 /// over.
 pub trait OwnedFlowNegotiator<Inner>: Send + Sync
-where Inner: Credentials + Flow + Read + Write {
+where
+    Inner: Credentials + Flow + Read + Write {
     /// Resulting [Flow] type.
     ///
     /// This may differ from `Inner`, which is the type of flows used
@@ -514,7 +525,7 @@ where Inner: Credentials + Flow + Read + Write {
 
     fn negotiate_outbound_nonblock(
         &self,
-        inner: Inner,
+        inner: Inner
     ) -> Result<NonblockResult<Self::Flow, Inner>, Self::NegotiateError>;
 
     fn negotiate_outbound(
@@ -537,7 +548,7 @@ where Inner: Credentials + Flow + Read + Write {
     /// Errors returned indicate "hard" errors.
     fn negotiate_inbound_nonblock(
         &self,
-        inner: Inner,
+        inner: Inner
     ) -> Result<NonblockResult<Self::Flow, Inner>, Self::NegotiateError>;
 
     /// Negotiate an inbound session.
@@ -549,7 +560,7 @@ where Inner: Credentials + Flow + Read + Write {
     /// negotiation before calling this function.
     fn negotiate_inbound(
         &self,
-        inner: Inner,
+        inner: Inner
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Inner>>,
         Self::NegotiateError
@@ -558,35 +569,20 @@ where Inner: Credentials + Flow + Read + Write {
 
 #[derive(Debug)]
 pub enum FlowNegoAuthNError<Flow, Nego, AuthN> {
-    Flow {
-        err: Flow
-    },
-    Nego {
-        err: Nego
-    },
-    AuthN {
-        err: AuthN
-    },
+    Flow { err: Flow },
+    Nego { err: Nego },
+    AuthN { err: AuthN },
     AuthNFail
 }
 
 pub enum FlowNegoAuthNRetry<Flow, Nego, AuthN> {
-    Flow {
-        err: Flow
-    },
-    Nego {
-        err: Nego
-    },
-    AuthN {
-        err: AuthN
-    }
+    Flow { err: Flow },
+    Nego { err: Nego },
+    AuthN { err: AuthN }
 }
 
 pub enum SingleFlowError<Addr> {
-    WrongAddr {
-        expected: Addr,
-        actual: Addr
-    }
+    WrongAddr { expected: Addr, actual: Addr }
 }
 
 /// Retry information for [Negotiator].
@@ -627,7 +623,7 @@ where
     /// The underlying socket.
     socket: Sock,
     /// The channel context.
-    xfrm: Xfrm,
+    xfrm: Xfrm
 }
 
 /// Individual traffic flows associated with [MultiFlows].
@@ -883,9 +879,11 @@ impl ScopedError for ThreadedFlowsFlowError {
 }
 
 impl<Flow, Nego, AuthN> ScopedError for FlowNegoAuthNError<Flow, Nego, AuthN>
-where Flow: ScopedError,
-      Nego: ScopedError,
-      AuthN: ScopedError {
+where
+    Flow: ScopedError,
+    Nego: ScopedError,
+    AuthN: ScopedError
+{
     #[inline]
     fn scope(&self) -> ErrorScope {
         match self {
@@ -898,7 +896,9 @@ where Flow: ScopedError,
 }
 
 impl<Addr> ScopedError for SingleFlowError<Addr>
-where Addr: Display {
+where
+    Addr: Display
+{
     #[inline]
     fn scope(&self) -> ErrorScope {
         match self {
@@ -908,9 +908,11 @@ where Addr: Display {
 }
 
 impl<Flow, Nego, AuthN> RetryWhen for FlowNegoAuthNRetry<Flow, Nego, AuthN>
-where Flow: RetryWhen,
-      Nego: RetryWhen,
-      AuthN: RetryWhen {
+where
+    Flow: RetryWhen,
+    Nego: RetryWhen,
+    AuthN: RetryWhen
+{
     #[inline]
     fn when(&self) -> Instant {
         match self {
@@ -948,7 +950,7 @@ impl<Flow> NegotiateRetry<Flow> {
 
 impl<F> OwnedFlowNegotiator<F> for PassthruNegotiator
 where
-    F: Flow + Send,
+    F: Flow + Send
 {
     type Flow = F;
     type NegotiateError = Infallible;
@@ -956,9 +958,8 @@ where
     #[inline]
     fn negotiate_outbound_nonblock(
         &self,
-        inner: F,
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
-    {
+        inner: F
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
         Ok(NonblockResult::Success(inner))
     }
 
@@ -977,16 +978,15 @@ where
     #[inline]
     fn negotiate_inbound_nonblock(
         &self,
-        inner: F,
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
-    {
+        inner: F
+    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
         Ok(NonblockResult::Success(inner))
     }
 
     #[inline]
     fn negotiate_inbound(
         &self,
-        inner: F,
+        inner: F
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<Self::Flow>>,
         Self::NegotiateError
@@ -997,7 +997,7 @@ where
 
 impl<F> BorrowedFlowNegotiator<F> for PassthruNegotiator
 where
-    F: Flow,
+    F: Flow
 {
     type Flow<'a> = F;
     type NegotiateError = Infallible;
@@ -1017,7 +1017,7 @@ where
     #[inline]
     fn negotiate_inbound(
         &self,
-        inner: F,
+        inner: F
     ) -> Result<
         RetryResult<Self::Flow<'_>, NegotiateRetry<Self::Flow<'_>>>,
         Self::NegotiateError
@@ -1262,9 +1262,7 @@ impl<Sock, AuthN, Xfrm, Nego, Param, ID>
 where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send,
     AuthN::Prin: 'static + Send,
-    Xfrm: 'static
-        + DatagramXfrm<LocalAddr = Sock::Addr>
-        + Send,
+    Xfrm: 'static + DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: 'static + Eq + Hash,
     Sock: 'static + Socket + Sender + Receiver,
     Param: 'static + Clone + Display + Eq + Hash + Send,
@@ -1808,24 +1806,26 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> FlowsLocalAddr<Sock::Addr>
-    for MultiFlows<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> FlowsLocalAddr<Sock::Addr> for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     #[inline]
     fn local_addr(&self) -> Result<Sock::Addr, Error> {
         self.socket.local_addr()
     }
 }
 
-impl<'a, Sock, Xfrm> Credentials
-    for SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> Credentials for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type Cred<'b> = Xfrm::PeerAddr
-    where Self: 'b;
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
+    type Cred<'b>
+        = Xfrm::PeerAddr
+    where
+        Self: 'b;
     type CredError = Infallible;
 
     #[inline]
@@ -1838,25 +1838,25 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> FlowsLocalAddr<Sock::Addr>
-    for SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> FlowsLocalAddr<Sock::Addr> for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     #[inline]
     fn local_addr(&self) -> Result<Sock::Addr, Error> {
         self.socket.local_addr()
     }
 }
 
-impl<'a, Sock, Xfrm>
-    BorrowedFlowsCreate<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> BorrowedFlowsCreate<'a, Sock, Xfrm>
     for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type CreateParam = ();
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type CreateError = Infallible;
+    type CreateParam = ();
 
     #[inline]
     fn create(
@@ -1872,14 +1872,14 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm>
-    BorrowedFlowsCreate<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> BorrowedFlowsCreate<'a, Sock, Xfrm>
     for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type CreateParam = Xfrm::PeerAddr;
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type CreateError = Infallible;
+    type CreateParam = Xfrm::PeerAddr;
 
     #[inline]
     fn create(
@@ -1896,8 +1896,27 @@ where
     }
 }
 
-impl<Sock, Nego, AuthN, Xfrm, ID>
-    OwnedFlowsCreate<Sock, Nego, AuthN, Xfrm>
+impl<Sock, Nego, AuthN, Xfrm, ID> OwnedFlows
+    for ThreadedFlows<Sock, Nego, AuthN, Xfrm, ID>
+where
+    AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send + Sync,
+    AuthN::Prin: 'static + Send,
+    Nego: 'static + Clone + OwnedFlowNegotiator<ThreadedFlow<Sock, Xfrm>>,
+    Nego::Flow: Send,
+    Xfrm: 'static
+        + DatagramXfrm<LocalAddr = Sock::Addr>
+        + DatagramXfrmCreateParam<Socket = Sock>
+        + Send,
+    Xfrm: 'static + DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Xfrm::PeerAddr: Eq + Hash,
+    Xfrm::Param: Clone + Display + Eq + Hash + Send,
+    Sock: 'static + Socket + Sender + Receiver + Send,
+    ID: 'static + Clone + Display + Eq + Hash + Send
+{
+    type Flow = ThreadedFlow<Sock, Xfrm>;
+}
+
+impl<Sock, Nego, AuthN, Xfrm, ID> OwnedFlowsCreate<Sock, Nego, AuthN, Xfrm>
     for ThreadedFlows<Sock, Nego, AuthN, Xfrm, ID>
 where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send + Sync,
@@ -1917,7 +1936,6 @@ where
     type ChannelID = ID;
     type CreateError = Xfrm::ParamError;
     type CreateParam = ThreadedFlowsParams;
-    type Flow = ThreadedFlow<Sock, Xfrm>;
     type Reporter = ThreadedFlowsReporter<
         Nego::Flow,
         StreamID<Xfrm::PeerAddr, ID, Xfrm::Param>,
@@ -1944,8 +1962,26 @@ where
     }
 }
 
-impl<Sock, Nego, AuthN, Xfrm, ID>
-    OwnedFlowsCreate<Sock, Nego, AuthN, Xfrm>
+impl<Sock, Nego, AuthN, Xfrm, ID> OwnedFlows
+    for Arc<ThreadedFlowsInner<Sock, Nego, AuthN, Xfrm, ID>>
+where
+    AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send + Sync,
+    AuthN::Prin: 'static + Send,
+    Nego: 'static + Clone + OwnedFlowNegotiator<ThreadedFlow<Sock, Xfrm>>,
+    Nego::Flow: Send,
+    Xfrm: 'static
+        + DatagramXfrm<LocalAddr = Sock::Addr>
+        + DatagramXfrmCreateParam<Socket = Sock>
+        + Send,
+    Xfrm::PeerAddr: 'static + Eq + Hash,
+    Xfrm::Param: Clone + Display + Eq + Hash + Send,
+    Sock: 'static + Socket + Sender + Receiver + Send,
+    ID: 'static + Clone + Display + Eq + Hash + Send
+{
+    type Flow = ThreadedFlow<Sock, Xfrm>;
+}
+
+impl<Sock, Nego, AuthN, Xfrm, ID> OwnedFlowsCreate<Sock, Nego, AuthN, Xfrm>
     for Arc<ThreadedFlowsInner<Sock, Nego, AuthN, Xfrm, ID>>
 where
     AuthN: 'static + Clone + SessionAuthN<Nego::Flow> + Send + Sync,
@@ -1962,7 +1998,6 @@ where
     ID: 'static + Clone + Display + Eq + Hash + Send
 {
     type ChannelID = ID;
-    type Flow = ThreadedFlow<Sock, Xfrm>;
     type CreateError = Xfrm::ParamError;
     type CreateParam = ThreadedFlowsParams;
     type Reporter = ThreadedFlowsReporter<
@@ -2038,11 +2073,13 @@ where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Sock: Socket + Sender + Receiver,
-    ID: Clone + Display + Eq + Hash + Send,
+    ID: Clone + Display + Eq + Hash + Send
 {
-    type FlowError = FlowNegoAuthNError<ThreadedFlowsFlowError,
-                                        Nego::NegotiateError,
-                                        AuthN::Error>;
+    type FlowError = FlowNegoAuthNError<
+        ThreadedFlowsFlowError,
+        Nego::NegotiateError,
+        AuthN::Error
+    >;
 
     #[inline]
     fn flow(
@@ -2063,7 +2100,7 @@ where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Sock: Socket + Sender + Receiver,
-    ID: Clone + Display + Eq + Hash + Send,
+    ID: Clone + Display + Eq + Hash + Send
 {
     type RawFlowError = ThreadedFlowsFlowError;
 
@@ -2093,7 +2130,7 @@ where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Sock: Socket + Sender + Receiver,
-    ID: Clone + Display + Eq + Hash + Send,
+    ID: Clone + Display + Eq + Hash + Send
 {
     fn drop(&mut self) {
         // Signal to the thread that it should quit.
@@ -2211,14 +2248,17 @@ where
     #[inline]
     fn listen(
         &mut self
-    ) -> Result<RetryResult<(Self::Stream, Self::Addr, Self::Prin)>,
-                Self::ListenError> {
-        Ok(self.inner.listen()?
-           .map(|(flow, addr, prin)| (
-               DatagramCodecStream::create(self.codec.clone(), flow),
-               addr,
-               prin,
-           )))
+    ) -> Result<
+        RetryResult<(Self::Stream, Self::Addr, Self::Prin)>,
+        Self::ListenError
+    > {
+        Ok(self.inner.listen()?.map(|(flow, addr, prin)| {
+            (
+                DatagramCodecStream::create(self.codec.clone(), flow),
+                addr,
+                prin
+            )
+        }))
     }
 }
 
@@ -2313,12 +2353,10 @@ where
                "listening for incoming flow");
 
         match self.backlog_recv.lock() {
-            Ok(guard) => {
-                guard
-                    .recv()
-                    .map(|out| RetryResult::Success(out))
-                    .map_err(|_| ThreadedFlowsListenError::Shutdown)
-            }
+            Ok(guard) => guard
+                .recv()
+                .map(|out| RetryResult::Success(out))
+                .map_err(|_| ThreadedFlowsListenError::Shutdown),
             Err(_) => Err(ThreadedFlowsListenError::MutexPoison)
         }
     }
@@ -2333,39 +2371,42 @@ where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Sock: Socket + Sender + Receiver,
-    ID: Clone + Display + Eq + Hash + Send,
+    ID: Clone + Display + Eq + Hash + Send
 {
-    type FlowError = FlowNegoAuthNError<ThreadedFlowsFlowError,
-                                        Nego::NegotiateError,
-                                        AuthN::Error>;
+    type FlowError = FlowNegoAuthNError<
+        ThreadedFlowsFlowError,
+        Nego::NegotiateError,
+        AuthN::Error
+    >;
 
     fn flow(
         &mut self,
         addr: Xfrm::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<RetryResult<(Nego::Flow, AuthN::Prin)>, Self::FlowError> {
-        let flow = match self.flow_raw(addr, endpoint)
-            .map_err(|err| FlowNegoAuthNError::Flow {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry));
-                }
-            };
-        let mut flow = match self.nego.negotiate_outbound(flow, endpoint)
-            .map_err(|err| FlowNegoAuthNError::Nego {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry.when));
-                }
-            };
-        let prin = self.authn.session_authn(&mut flow)
-            .map_err(|err| FlowNegoAuthNError::AuthN {
-                err: err
-            })?;
+        let flow = match self
+            .flow_raw(addr, endpoint)
+            .map_err(|err| FlowNegoAuthNError::Flow { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry));
+            }
+        };
+        let mut flow = match self
+            .nego
+            .negotiate_outbound(flow, endpoint)
+            .map_err(|err| FlowNegoAuthNError::Nego { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry.when));
+            }
+        };
+        let prin = self
+            .authn
+            .session_authn(&mut flow)
+            .map_err(|err| FlowNegoAuthNError::AuthN { err: err })?;
 
         match prin {
             AuthNResult::Accept(prin) => Ok(RetryResult::Success((flow, prin))),
@@ -2383,7 +2424,7 @@ where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Eq + Hash,
     Sock: Socket + Sender + Receiver,
-    ID: Clone + Display + Eq + Hash + Send,
+    ID: Clone + Display + Eq + Hash + Send
 {
     type RawFlowError = ThreadedFlowsFlowError;
 
@@ -2469,16 +2510,18 @@ impl<'a, Sock, Xfrm>
     for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type RawListenError = Error;
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type RawFlowError = Infallible;
+    type RawListenError = Error;
 
     #[inline]
     fn listen_raw(
         &'a mut self
-    ) -> Result<RetryResult<(MultiFlow<'a, Sock, Xfrm>, Xfrm::PeerAddr)>,
-                Self::RawListenError>
-    {
+    ) -> Result<
+        RetryResult<(MultiFlow<'a, Sock, Xfrm>, Xfrm::PeerAddr)>,
+        Self::RawListenError
+    > {
         let mtu = match self.socket.mtu() {
             Some(mtu) => mtu,
             None => {
@@ -2509,7 +2552,8 @@ where
         &'a mut self,
         addr: Xfrm::PeerAddr,
         _endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<MultiFlow<'a, Sock, Xfrm>>, Self::RawFlowError> {
+    ) -> Result<RetryResult<MultiFlow<'a, Sock, Xfrm>>, Self::RawFlowError>
+    {
         Ok(RetryResult::Success(MultiFlow {
             socket: &mut self.socket,
             xfrm: &mut self.xfrm,
@@ -2518,55 +2562,55 @@ where
     }
 }
 
-impl<'a, Sock, Nego, AuthN, Xfrm>
-    BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
+impl<'a, Sock, Nego, AuthN, Xfrm> BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
     for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
     Xfrm::PeerAddr: ScopedError,
     Nego: 'a + BorrowedFlowNegotiator<MultiFlow<'a, Sock, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type Flow = MultiFlow<'a, Sock, Xfrm>;
-    type FlowError = FlowNegoAuthNError<Infallible,
-                                        Nego::NegotiateError,
-                                        AuthN::Error>;
-    type ListenError = FlowNegoAuthNError<Error,
-                                          Nego::NegotiateError,
-                                          AuthN::Error>;
+    type FlowError =
+        FlowNegoAuthNError<Infallible, Nego::NegotiateError, AuthN::Error>;
+    type ListenError =
+        FlowNegoAuthNError<Error, Nego::NegotiateError, AuthN::Error>;
 
     fn listen(
         &'a mut self,
         nego: &'a mut Nego,
-        authn: &mut AuthN,
-    ) -> Result<RetryResult<(Nego::Flow<'a>, Xfrm::PeerAddr, AuthN::Prin)>,
-                Self::ListenError> {
-        let (flow, addr) = match self.listen_raw()
-            .map_err(|err| FlowNegoAuthNError::Flow {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry));
-                }
-            };
-        let mut flow = match nego.negotiate_inbound(flow)
-            .map_err(|err| FlowNegoAuthNError::Nego {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry.when));
-                }
-            };
-        let prin = authn.session_authn(&mut flow)
-            .map_err(|err| FlowNegoAuthNError::AuthN {
-                err: err
-            })?;
+        authn: &mut AuthN
+    ) -> Result<
+        RetryResult<(Nego::Flow<'a>, Xfrm::PeerAddr, AuthN::Prin)>,
+        Self::ListenError
+    > {
+        let (flow, addr) = match self
+            .listen_raw()
+            .map_err(|err| FlowNegoAuthNError::Flow { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry));
+            }
+        };
+        let mut flow = match nego
+            .negotiate_inbound(flow)
+            .map_err(|err| FlowNegoAuthNError::Nego { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry.when));
+            }
+        };
+        let prin = authn
+            .session_authn(&mut flow)
+            .map_err(|err| FlowNegoAuthNError::AuthN { err: err })?;
 
         match prin {
-            AuthNResult::Accept(prin) =>
-                Ok(RetryResult::Success((flow, addr, prin))),
+            AuthNResult::Accept(prin) => {
+                Ok(RetryResult::Success((flow, addr, prin)))
+            }
             AuthNResult::Reject => Err(FlowNegoAuthNError::AuthNFail)
         }
     }
@@ -2577,29 +2621,29 @@ where
         authn: &mut AuthN,
         addr: Xfrm::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError> {
-        let flow = match self.flow_raw(addr, endpoint)
-            .map_err(|err| FlowNegoAuthNError::Flow {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry));
-                }
-            };
-        let mut flow = match nego.negotiate_outbound(flow, endpoint)
-            .map_err(|err| FlowNegoAuthNError::Nego {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry.when));
-                }
-            };
-        let prin = authn.session_authn(&mut flow)
-            .map_err(|err| FlowNegoAuthNError::AuthN {
-                err: err
-            })?;
+    ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError>
+    {
+        let flow = match self
+            .flow_raw(addr, endpoint)
+            .map_err(|err| FlowNegoAuthNError::Flow { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry));
+            }
+        };
+        let mut flow = match nego
+            .negotiate_outbound(flow, endpoint)
+            .map_err(|err| FlowNegoAuthNError::Nego { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry.when));
+            }
+        };
+        let prin = authn
+            .session_authn(&mut flow)
+            .map_err(|err| FlowNegoAuthNError::AuthN { err: err })?;
 
         match prin {
             AuthNResult::Accept(prin) => Ok(RetryResult::Success((flow, prin))),
@@ -2609,21 +2653,22 @@ where
 }
 
 impl<'a, Sock, Xfrm>
-    BorrowedFlowsRaw<'a, &'a mut SingleFlow<'a, Sock, Xfrm>,
-                     Xfrm::PeerAddr>
+    BorrowedFlowsRaw<'a, &'a mut SingleFlow<'a, Sock, Xfrm>, Xfrm::PeerAddr>
     for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type RawListenError = Infallible;
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type RawFlowError = SingleFlowError<Xfrm::PeerAddr>;
+    type RawListenError = Infallible;
 
     #[inline]
     fn listen_raw(
         &'a mut self
-    ) -> Result<RetryResult<(&'a mut SingleFlow<'a, Sock, Xfrm>, Xfrm::PeerAddr)>,
-                Self::RawListenError>
-    {
+    ) -> Result<
+        RetryResult<(&'a mut SingleFlow<'a, Sock, Xfrm>, Xfrm::PeerAddr)>,
+        Self::RawListenError
+    > {
         let addr = self.addr.clone();
 
         Ok(RetryResult::Success((self, addr)))
@@ -2633,8 +2678,10 @@ where
         &'a mut self,
         addr: Xfrm::PeerAddr,
         _endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<&'a mut SingleFlow<'a, Sock, Xfrm>>,
-                Self::RawFlowError> {
+    ) -> Result<
+        RetryResult<&'a mut SingleFlow<'a, Sock, Xfrm>>,
+        Self::RawFlowError
+    > {
         let expected = self.addr.clone();
 
         if expected == addr {
@@ -2648,55 +2695,58 @@ where
     }
 }
 
-impl<'a, Sock, Nego, AuthN, Xfrm>
-    BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
+impl<'a, Sock, Nego, AuthN, Xfrm> BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
     for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
     Xfrm::PeerAddr: ScopedError,
     Nego: 'a + BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type Flow = &'a mut SingleFlow<'a, Sock, Xfrm>;
-    type FlowError = FlowNegoAuthNError<SingleFlowError<Xfrm::PeerAddr>,
-                                        Nego::NegotiateError,
-                                        AuthN::Error>;
-    type ListenError = FlowNegoAuthNError<Infallible,
-                                          Nego::NegotiateError,
-                                          AuthN::Error>;
+    type FlowError = FlowNegoAuthNError<
+        SingleFlowError<Xfrm::PeerAddr>,
+        Nego::NegotiateError,
+        AuthN::Error
+    >;
+    type ListenError =
+        FlowNegoAuthNError<Infallible, Nego::NegotiateError, AuthN::Error>;
 
     fn listen(
         &'a mut self,
         nego: &'a mut Nego,
-        authn: &mut AuthN,
-    ) -> Result<RetryResult<(Nego::Flow<'a>, Xfrm::PeerAddr, AuthN::Prin)>,
-                Self::ListenError> {
-        let (flow, addr) = match self.listen_raw()
-            .map_err(|err| FlowNegoAuthNError::Flow {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry));
-                }
-            };
-        let mut flow = match nego.negotiate_inbound(flow)
-            .map_err(|err| FlowNegoAuthNError::Nego {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry.when));
-                }
-            };
-        let prin = authn.session_authn(&mut flow)
-            .map_err(|err| FlowNegoAuthNError::AuthN {
-                err: err
-            })?;
+        authn: &mut AuthN
+    ) -> Result<
+        RetryResult<(Nego::Flow<'a>, Xfrm::PeerAddr, AuthN::Prin)>,
+        Self::ListenError
+    > {
+        let (flow, addr) = match self
+            .listen_raw()
+            .map_err(|err| FlowNegoAuthNError::Flow { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry));
+            }
+        };
+        let mut flow = match nego
+            .negotiate_inbound(flow)
+            .map_err(|err| FlowNegoAuthNError::Nego { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry.when));
+            }
+        };
+        let prin = authn
+            .session_authn(&mut flow)
+            .map_err(|err| FlowNegoAuthNError::AuthN { err: err })?;
 
         match prin {
-            AuthNResult::Accept(prin) =>
-                Ok(RetryResult::Success((flow, addr, prin))),
+            AuthNResult::Accept(prin) => {
+                Ok(RetryResult::Success((flow, addr, prin)))
+            }
             AuthNResult::Reject => Err(FlowNegoAuthNError::AuthNFail)
         }
     }
@@ -2707,29 +2757,29 @@ where
         authn: &mut AuthN,
         addr: Xfrm::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError> {
-        let flow = match self.flow_raw(addr, endpoint)
-            .map_err(|err| FlowNegoAuthNError::Flow {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry));
-                }
-            };
-        let mut flow = match nego.negotiate_outbound(flow, endpoint)
-            .map_err(|err| FlowNegoAuthNError::Nego {
-                err: err
-            })? {
-                RetryResult::Success(out) => out,
-                RetryResult::Retry(retry) => {
-                    return Ok(RetryResult::Retry(retry.when));
-                }
-            };
-        let prin = authn.session_authn(&mut flow)
-            .map_err(|err| FlowNegoAuthNError::AuthN {
-                err: err
-            })?;
+    ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError>
+    {
+        let flow = match self
+            .flow_raw(addr, endpoint)
+            .map_err(|err| FlowNegoAuthNError::Flow { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry));
+            }
+        };
+        let mut flow = match nego
+            .negotiate_outbound(flow, endpoint)
+            .map_err(|err| FlowNegoAuthNError::Nego { err: err })?
+        {
+            RetryResult::Success(out) => out,
+            RetryResult::Retry(retry) => {
+                return Ok(RetryResult::Retry(retry.when));
+            }
+        };
+        let prin = authn
+            .session_authn(&mut flow)
+            .map_err(|err| FlowNegoAuthNError::AuthN { err: err })?;
 
         match prin {
             AuthNResult::Accept(prin) => Ok(RetryResult::Success((flow, prin))),
@@ -2756,8 +2806,10 @@ where
     Xfrm::PeerAddr: Hash,
     Sock: Socket + Sender + Receiver
 {
-    type Cred<'b> = Xfrm::PeerAddr
-    where Self: 'b;
+    type Cred<'b>
+        = Xfrm::PeerAddr
+    where
+        Self: 'b;
     type CredError = Infallible;
 
     #[inline]
@@ -2796,8 +2848,10 @@ where
     Sock: Receiver + Sender,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
 {
-    type Cred<'b> = Xfrm::PeerAddr
-    where Self: 'b;
+    type Cred<'b>
+        = Xfrm::PeerAddr
+    where
+        Self: 'b;
     type CredError = Infallible;
 
     #[inline]
@@ -2830,13 +2884,15 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Credentials
-    for &'a mut SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> Credentials for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type Cred<'b> = Xfrm::PeerAddr
-    where Self: 'b;
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
+    type Cred<'b>
+        = Xfrm::PeerAddr
+    where
+        Self: 'b;
     type CredError = Infallible;
 
     #[inline]
@@ -2849,13 +2905,15 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Credentials
-    for &'a SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> Credentials for &'a SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
-    type Cred<'b> = Xfrm::PeerAddr
-    where Self: 'b;
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
+    type Cred<'b>
+        = Xfrm::PeerAddr
+    where
+        Self: 'b;
     type CredError = Infallible;
 
     #[inline]
@@ -2868,11 +2926,11 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Flow
-    for &'a mut SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> Flow for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     type LocalAddr = Xfrm::LocalAddr;
     type PeerAddr = Xfrm::PeerAddr;
 
@@ -2887,11 +2945,11 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Read
-    for &'a mut SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> Read for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     #[inline]
     fn read(
         &mut self,
@@ -2926,11 +2984,11 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Write
-    for &'a mut SingleFlow<'a, Sock, Xfrm>
+impl<'a, Sock, Xfrm> Write for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
     #[inline]
     fn write(
         &mut self,
@@ -3098,9 +3156,11 @@ impl Display for ThreadedFlowsListenError {
 }
 
 impl<Flow, Nego, AuthN> Display for FlowNegoAuthNError<Flow, Nego, AuthN>
-where Flow: Display,
-      Nego: Display,
-      AuthN: Display {
+where
+    Flow: Display,
+    Nego: Display,
+    AuthN: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter
@@ -3109,23 +3169,25 @@ where Flow: Display,
             FlowNegoAuthNError::AuthN { err } => err.fmt(f),
             FlowNegoAuthNError::Nego { err } => err.fmt(f),
             FlowNegoAuthNError::Flow { err } => err.fmt(f),
-            FlowNegoAuthNError::AuthNFail =>
-                write!(f, "authentication failed"),
+            FlowNegoAuthNError::AuthNFail => write!(f, "authentication failed")
         }
     }
 }
 
-
 impl<Addr> Display for SingleFlowError<Addr>
-where Addr: Display {
+where
+    Addr: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SingleFlowError::WrongAddr { expected, actual } =>
-                write!(f, "wrong address: expected {}, actual {}",
-                       expected, actual)
+            SingleFlowError::WrongAddr { expected, actual } => write!(
+                f,
+                "wrong address: expected {}, actual {}",
+                expected, actual
+            )
         }
     }
 }
