@@ -2535,11 +2535,11 @@ where
 
     #[inline]
     fn negotiate_outbound_nonblock(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
-        self.as_mut()
+        self.as_ref()
             .negotiate_inbound_nonblock(inner)
             .map(|out| match out {
                 NonblockResult::Success(out) => {
@@ -2551,25 +2551,25 @@ where
 
     #[inline]
     fn negotiate_outbound(
-        &mut self,
+        &self,
         inner: F,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
-        self.as_mut()
+        self.as_ref()
             .negotiate_outbound(inner, endpoint)
             .map(|out| out.map(Box::new))
     }
 
     #[inline]
     fn negotiate_inbound_nonblock(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError>
     {
-        self.as_mut()
+        self.as_ref()
             .negotiate_inbound_nonblock(inner)
             .map(|out| match out {
                 NonblockResult::Success(out) => {
@@ -2581,13 +2581,13 @@ where
 
     #[inline]
     fn negotiate_inbound(
-        &mut self,
+        &self,
         inner: F,
     ) -> Result<
         RetryResult<Self::Flow, NegotiateRetry<F>>,
         Self::NegotiateError
     > {
-        self.as_mut()
+        self.as_ref()
             .negotiate_inbound(inner)
             .map(|out| out.map(Box::new))
     }

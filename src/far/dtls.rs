@@ -506,12 +506,15 @@ impl<F, Inner, AuthN, InnerXfrm>
     for DTLSFarChannel<Inner>
 where
     Inner: FarChannelOwnedFlows<F, AuthN, InnerXfrm>,
+    Inner::Nego: OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>>::Flow>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
-    AuthN: SessionAuthN<DTLSFlow<F::Flow>>,
-    F: OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm> {
-    type OwnedFlowsError = Inner::OwnedFlowsError;
+    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm>>::Flow>>::Flow>,
+    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>>::Flow>>::Flow>,
+    AuthN: SessionAuthN<DTLSFlow<<Inner::Nego as OwnedFlowNegotiator<<F as OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>>::Flow>>::Flow>>,
+    F: OwnedFlowsCreate<Inner::Socket, DTLSNegotiator<Inner::Nego>, AuthN, Inner::Xfrm>,
+    F: OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm> {
+
     type Nego = DTLSNegotiator<Inner::Nego>;
 
 
