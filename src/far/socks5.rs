@@ -173,6 +173,7 @@ use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
@@ -275,12 +276,10 @@ use crate::resolve::Resolver;
 /// - Double-layer SOCKS5 proxy: connecting to a remote SOCKS5 proxy via a
 ///   connection made through a *different* SOCKS5 proxy.  This could be
 ///   extended to any number of layered proxy connections.
-pub struct SOCKS5FarChannel<
-    Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannel,
-    InnerXfrm: DatagramXfrm
-> {
-    xfrm: PhantomData<InnerXfrm>,
+pub struct SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
+where Proxy: NearConnector + NearChannelCreate,
+      Datagram: FarChannel {
+    peer_addr: PhantomData<PeerAddr>,
     /// The TCP connection, which must be kept alive.
     #[allow(dead_code)]
     keepalive: Arc<Mutex<Option<Proxy>>>,
@@ -503,25 +502,17 @@ where
     }
 }
 
-impl<Proxy, Datagram, InnerXfrm> FarChannel
-    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
+impl<Proxy, PeerAddr, Datagram> FarChannel
+    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
 where
     Proxy: NearChannelCreate + NearConnector,
-    Datagram: FarChannelXfrm<InnerXfrm>,
+    Datagram: FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
-    InnerXfrm: DatagramXfrm
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
     type AcquireError =
         SOCKS5AcquireError<Proxy::TakeConnectError, Datagram::AcquireError>;
     type Acquired = SOCKS5Acquired<Datagram::Acquired, IPEndpoint>;
-    type Config = SOCKS5AssocConfig<Proxy::Config, Datagram::Config>;
-    type Param = SOCKS5Param<
-        Datagram::Param,
-        <Datagram::Xfrm as DatagramXfrm>::PeerAddr
-    >;
-    type Socket = Datagram::Socket;
-    type SocketError = SOCKS5SocketError<Datagram::SocketError>;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -637,6 +628,23 @@ where
             }
         }
     }
+}
+
+impl<Proxy, Datagram, PeerAddr>
+    FarChannelSocket
+    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
+where
+    Proxy: NearChannelCreate + NearConnector,
+    Datagram: FarChannelSocket + FarChannel,
+    Datagram::Socket: Socket,
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
+{
+    type Param = SOCKS5Param<
+        Datagram::Param,
+        PeerAddr
+    >;
+    type Socket = Datagram::Socket;
+    type SocketError = SOCKS5SocketError<Datagram::SocketError>;
 
     #[inline]
     fn socket(
@@ -650,11 +658,12 @@ where
 }
 
 impl<Proxy, Datagram, InnerXfrm> FarChannelXfrm<InnerXfrm>
-    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
+    for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
 where
     Proxy: NearChannelCreate + NearConnector,
-    Datagram: FarChannelXfrm<InnerXfrm>,
+    Datagram: FarChannelXfrm<InnerXfrm> + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
+    <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     InnerXfrm: DatagramXfrm
 {
@@ -691,15 +700,15 @@ where
     }
 }
 
-impl<Proxy, Datagram, InnerXfrm> FarChannelCreate
-    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
+impl<Proxy, PeerAddr, Datagram> FarChannelCreate
+    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
 where
     Proxy: NearChannelCreate + NearConnector,
-    Datagram: FarChannelCreate + FarChannelXfrm<InnerXfrm>,
+    Datagram: FarChannelCreate + FarChannelSocket,
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
-    InnerXfrm: DatagramXfrm
 {
+    type Config = SOCKS5AssocConfig<Proxy::Config, Datagram::Config>;
     type CreateError =
         SOCKS5CreateError<Proxy::CreateError, Datagram::CreateError>;
 
@@ -716,24 +725,25 @@ where
             .map_err(|e| SOCKS5CreateError::Proxy { proxy: e })?;
 
         Ok(SOCKS5FarChannel {
+            peer_addr: PhantomData,
             keepalive: Arc::new(Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
             auth: auth,
             proxy: proxy,
             nretries: 0,
-            datagram: datagram,
-            xfrm: PhantomData
+            datagram: datagram
         })
     }
 }
 
 impl<'a, F, Proxy, Datagram, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
-    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
+    for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
 where
     InnerXfrm: DatagramXfrm,
     Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelBorrowFlows<'a, F, InnerXfrm>,
+    Datagram: FarChannelBorrowFlows<'a, F, InnerXfrm> + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
+    <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     F: BorrowedFlowsCreate<'a, Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>>
         + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Xfrm>
@@ -742,12 +752,13 @@ where
 
 impl<F, Proxy, Datagram, AuthN, InnerXfrm>
     FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for SOCKS5FarChannel<Proxy, Datagram, InnerXfrm>
+    for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
 where
     InnerXfrm: DatagramXfrm,
     Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelOwnedFlows<F, AuthN, InnerXfrm>,
+    Datagram: FarChannelOwnedFlows<F, AuthN, InnerXfrm> + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
+    <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     AuthN: SessionAuthN<<Datagram::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     F: OwnedFlowsCreate<

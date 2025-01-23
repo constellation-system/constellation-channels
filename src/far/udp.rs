@@ -160,6 +160,7 @@ use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::far::OwnedFlowsCreate;
 use crate::resolve::cache::NSNameCachesCtx;
@@ -300,10 +301,6 @@ impl DatagramXfrmCreateParam for UDPDatagramXfrm {
 impl FarChannel for UDPFarChannel {
     type AcquireError = Infallible;
     type Acquired = SocketAddr;
-    type Config = UDPFarChannelConfig;
-    type Param = SocketAddr;
-    type Socket = UDPFarSocket;
-    type SocketError = Error;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -325,6 +322,12 @@ impl FarChannel for UDPFarChannel {
     fn acquire(&mut self) -> Result<SocketAddr, Infallible> {
         Ok(self.bind)
     }
+}
+
+impl FarChannelSocket for UDPFarChannel {
+    type Param = SocketAddr;
+    type Socket = UDPFarSocket;
+    type SocketError = Error;
 
     #[inline]
     fn socket(
@@ -341,6 +344,7 @@ impl FarChannel for UDPFarChannel {
 }
 
 impl FarChannelCreate for UDPFarChannel {
+    type Config = UDPFarChannelConfig;
     type CreateError = Infallible;
 
     #[inline]
@@ -497,6 +501,8 @@ use std::thread::spawn;
 use constellation_common::net::PassthruDatagramXfrm;
 
 #[cfg(test)]
+use crate::far::flows::BorrowedFlows;
+#[cfg(test)]
 use crate::far::flows::MultiFlows;
 #[cfg(test)]
 use crate::far::flows::SingleFlow;
@@ -535,7 +541,7 @@ fn test_send_recv() {
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: MultiFlows<
-            UDPFarChannel,
+            UDPFarSocket,
             PassthruDatagramXfrm<SocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
         let mut buf = [0; FIRST_BYTES.len()];
@@ -566,7 +572,7 @@ fn test_send_recv() {
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: SingleFlow<
-            UDPFarChannel,
+            UDPFarSocket,
             PassthruDatagramXfrm<SocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())

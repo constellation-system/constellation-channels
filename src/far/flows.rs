@@ -2566,7 +2566,6 @@ impl<'a, Sock, Nego, AuthN, Xfrm> BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
     for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm::PeerAddr: ScopedError,
     Nego: 'a + BorrowedFlowNegotiator<MultiFlow<'a, Sock, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
@@ -2699,7 +2698,6 @@ impl<'a, Sock, Nego, AuthN, Xfrm> BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
     for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm::PeerAddr: ScopedError,
     Nego: 'a + BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>

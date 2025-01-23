@@ -240,6 +240,7 @@ use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -389,7 +390,7 @@ pub struct DTLSFlow<F: Flow + Read + Write> {
 /// let mut channel = DTLSFarChannel::<UDPFarChannel>
 ///     ::new(&mut nscaches, dtls_config).expect("Expected success");
 /// ```
-pub struct DTLSFarChannel<Channel: FarChannel> {
+pub struct DTLSFarChannel<Channel> {
     /// The underlying channel.
     inner: Channel,
     /// The TLS configuration.
@@ -419,10 +420,6 @@ where
 {
     type AcquireError = Channel::AcquireError;
     type Acquired = Channel::Acquired;
-    type Config = DTLSFarChannelConfig<Channel::Config>;
-    type Param = Channel::Param;
-    type Socket = Channel::Socket;
-    type SocketError = Channel::SocketError;
 
     #[inline]
     fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
@@ -437,6 +434,15 @@ where
     ) -> Result<IPEndpoint, std::io::Error> {
         self.inner.socks5_target(val)
     }
+}
+
+impl<Channel> FarChannelSocket for DTLSFarChannel<Channel>
+where
+    Channel: FarChannelSocket
+{
+    type Param = Channel::Param;
+    type Socket = Channel::Socket;
+    type SocketError = Channel::SocketError;
 
     #[inline]
     fn socket(
@@ -451,6 +457,7 @@ impl<Channel> FarChannelCreate for DTLSFarChannel<Channel>
 where
     Channel: FarChannelCreate
 {
+    type Config = DTLSFarChannelConfig<Channel::Config>;
     type CreateError = Channel::CreateError;
 
     #[inline]
@@ -1007,6 +1014,14 @@ use crate::config::UDPFarChannelConfig;
 #[cfg(test)]
 use crate::far::udp::UDPFarChannel;
 #[cfg(test)]
+use crate::far::udp::UDPFarSocket;
+#[cfg(test)]
+use crate::far::flows::MultiFlows;
+#[cfg(test)]
+use crate::far::flows::SingleFlow;
+#[cfg(test)]
+use crate::far::flows::BorrowedFlows;
+#[cfg(test)]
 use crate::init;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
@@ -1082,8 +1097,8 @@ fn test_send_recv() {
         .expect("Expected success");
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: DTLSMultiFlows<
-            UDPFarChannel,
+        let mut flows: MultiFlows<
+            UDPFarSocket,
             PassthruDatagramXfrm<SocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
         let mut buf = [0; FIRST_BYTES.len()];
@@ -1114,8 +1129,8 @@ fn test_send_recv() {
         .expect("expected success");
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: DTLSSingleFlow<
-            UDPFarChannel,
+        let mut flows: SingleFlow<
+            UDPFarSocket,
             PassthruDatagramXfrm<SocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())

@@ -315,16 +315,8 @@ pub trait FarChannel: Sized {
     /// This will be processed by the channel's upstream user to
     /// create one or more [Param](FarChannel::Param)s.
     type Acquired;
-    /// Configuration information used to create the channel.
-    type Config;
-    /// Type of basic sockets created by the channel.
-    type Socket: Receiver + Sender + Socket + Send + Sync;
-    /// Type of parameters used to create sockets.
-    type Param;
     /// Type of errors that can occur in the acquisition phase.
     type AcquireError: Display + ScopedError;
-    /// Type of errors that can occur in socket creation.
-    type SocketError: Display + ScopedError;
 
     /// Perform the acquisition phase of establishing the channel.
     ///
@@ -354,7 +346,15 @@ pub trait FarChannel: Sized {
         &self,
         val: &Self::Acquired
     ) -> Result<IPEndpoint, Error>;
+}
 
+pub trait FarChannelSocket: Sized {
+    /// Type of parameters used to create sockets.
+    type Param;
+    /// Type of basic sockets created by the channel.
+    type Socket: Receiver + Sender + Socket + Send + Sync;
+    /// Type of errors that can occur in socket creation.
+    type SocketError: Display + ScopedError;
     /// Create a basic socket.
     ///
     /// This will create a socket from a [Param](Self::Param).  In
@@ -374,6 +374,8 @@ pub trait FarChannel: Sized {
 
 /// Subtrait for creating [FarChannel]s from configuration parameters.
 pub trait FarChannelCreate: FarChannel {
+    /// Configuration information used to create the channel.
+    type Config;
     /// Type of errors that can occur in channel creation.
     type CreateError: Display + ScopedError;
 
@@ -390,7 +392,7 @@ pub trait FarChannelCreate: FarChannel {
         Ctx: NSNameCachesCtx;
 }
 
-pub trait FarChannelXfrm<InnerXfrm>: FarChannel
+pub trait FarChannelXfrm<InnerXfrm>: FarChannelSocket
 where
     InnerXfrm: DatagramXfrm {
     /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.

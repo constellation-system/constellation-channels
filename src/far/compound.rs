@@ -297,6 +297,7 @@ use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::near::compound::CompoundNearConnector;
 use crate::near::compound::CompoundNearConnectorCreateError;
@@ -1791,10 +1792,6 @@ impl ScopedError for CompoundFarChannelCreateError {
 impl FarChannel for CompoundFarIPChannel {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarIPChannelAcquired;
-    type Config = CompoundFarIPChannelConfig;
-    type Param = CompoundFarIPChannelParam;
-    type Socket = CompoundFarIPChannelSocket;
-    type SocketError = CompoundFarIPChannelSocketError;
 
     fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
         match self {
@@ -1841,6 +1838,12 @@ impl FarChannel for CompoundFarIPChannel {
             ))
         }
     }
+}
+
+impl FarChannelSocket for CompoundFarIPChannel {
+    type Param = CompoundFarIPChannelParam;
+    type Socket = CompoundFarIPChannelSocket;
+    type SocketError = CompoundFarIPChannelSocketError;
 
     fn socket(
         &self,
@@ -1871,7 +1874,9 @@ impl FarChannel for CompoundFarIPChannel {
     }
 }
 
+
 impl FarChannelCreate for CompoundFarIPChannel {
+    type Config = CompoundFarIPChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
     fn new<Ctx>(
@@ -1908,10 +1913,6 @@ impl FarChannelCreate for CompoundFarIPChannel {
 impl FarChannel for CompoundFarChannel {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarChannelAcquired;
-    type Config = CompoundFarChannelConfig;
-    type Param = CompoundFarChannelParam;
-    type Socket = CompoundFarChannelSocket;
-    type SocketError = CompoundFarChannelSocketError;
 
     fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
         match self {
@@ -1950,6 +1951,12 @@ impl FarChannel for CompoundFarChannel {
             ))
         }
     }
+}
+
+impl FarChannelSocket for CompoundFarChannel {
+    type Param = CompoundFarChannelParam;
+    type Socket = CompoundFarChannelSocket;
+    type SocketError = CompoundFarChannelSocketError;
 
     fn socket(
         &self,
@@ -1985,6 +1992,7 @@ impl FarChannel for CompoundFarChannel {
 }
 
 impl FarChannelCreate for CompoundFarChannel {
+    type Config = CompoundFarChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
     fn new<Ctx>(
@@ -2030,10 +2038,6 @@ impl FarChannelCreate for CompoundFarChannel {
 impl FarChannel for Box<CompoundFarIPChannel> {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarIPChannelAcquired;
-    type Config = Box<CompoundFarIPChannelConfig>;
-    type Param = CompoundFarIPChannelParam;
-    type Socket = CompoundFarIPChannelSocket;
-    type SocketError = CompoundFarIPChannelSocketError;
 
     #[inline]
     fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
@@ -2048,6 +2052,12 @@ impl FarChannel for Box<CompoundFarIPChannel> {
     ) -> Result<IPEndpoint, Error> {
         self.as_ref().socks5_target(val)
     }
+}
+
+impl FarChannelSocket for Box<CompoundFarIPChannel> {
+    type Param = CompoundFarIPChannelParam;
+    type Socket = CompoundFarIPChannelSocket;
+    type SocketError = CompoundFarIPChannelSocketError;
 
     #[inline]
     fn socket(
@@ -2059,6 +2069,7 @@ impl FarChannel for Box<CompoundFarIPChannel> {
 }
 
 impl FarChannelCreate for Box<CompoundFarIPChannel> {
+    type Config = Box<CompoundFarIPChannelConfig>;
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
@@ -2075,10 +2086,6 @@ impl FarChannelCreate for Box<CompoundFarIPChannel> {
 impl FarChannel for Box<CompoundFarChannel> {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarChannelAcquired;
-    type Config = Box<CompoundFarChannelConfig>;
-    type Param = CompoundFarChannelParam;
-    type Socket = CompoundFarChannelSocket;
-    type SocketError = CompoundFarChannelSocketError;
 
     #[inline]
     fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
@@ -2093,6 +2100,12 @@ impl FarChannel for Box<CompoundFarChannel> {
     ) -> Result<IPEndpoint, Error> {
         self.as_ref().socks5_target(val)
     }
+}
+
+impl FarChannelSocket for Box<CompoundFarChannel> {
+    type Param = CompoundFarChannelParam;
+    type Socket = CompoundFarChannelSocket;
+    type SocketError = CompoundFarChannelSocketError;
 
     #[inline]
     fn socket(
@@ -2104,6 +2117,7 @@ impl FarChannel for Box<CompoundFarChannel> {
 }
 
 impl FarChannelCreate for Box<CompoundFarChannel> {
+    type Config = Box<CompoundFarChannelConfig>;
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
@@ -2252,6 +2266,9 @@ where
             > as FarChannelXfrm<CompoundFarIPChannelXfrm<UDP>>>::wrap_xfrm(
                 socks5, *param, xfrm
             )
+            .map(|socks5| CompoundFarIPChannelXfrm::SOCKS5 {
+                socks5: Box::new(socks5)
+            })
             .map_err(|e| CompoundFarChannelXfrmError::SOCKS5 {
                 socks5: Box::new(e)
             }),
@@ -2317,20 +2334,49 @@ impl<F, AuthN, Unix, UDP>
 where
     AuthN: SessionAuthN<
         <CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow
-    >,
-    AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
+    >
+        + SessionAuthN<Box<CompoundFlow<F::Flow>>>
+        + SessionAuthN<CompoundFlow<F::Flow>>
+        + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
+        + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
     F: OwnedFlowsCreate<
         CompoundFarChannelSocket,
         CompoundNegotiator,
         AuthN,
         CompoundFarChannelXfrm<Unix, UDP>
-    >,
-    F: OwnedFlowsCreate<
-        CompoundFarIPChannelSocket,
-        CompoundNegotiator,
-        AuthN,
-        CompoundFarChannelXfrm<Unix, UDP>
-    >,
+    >
++ OwnedFlowsCreate<
+            CompoundFarChannelSocket,
+            Box<CompoundNegotiator>,
+            AuthN,
+            CompoundFarChannelXfrm<Unix, UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarChannelSocket,
+            DTLSNegotiator<Box<CompoundNegotiator>>,
+            AuthN,
+            CompoundFarChannelXfrm<Unix, UDP>
+        >
+    + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            CompoundNegotiator,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            Box<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<Box<CompoundNegotiator>>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        >,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
@@ -2358,21 +2404,46 @@ impl<F, AuthN, Unix, UDP>
     for Box<CompoundFarChannel>
 where
     AuthN: SessionAuthN<
-        <Box<CompoundNegotiator> as OwnedFlowNegotiator<F::Flow>>::Flow
-    >,
-    AuthN: SessionAuthN<Box<CompoundFlow<F::Flow>>>,
+            <Box<CompoundNegotiator> as OwnedFlowNegotiator<F::Flow>>::Flow
+        >
+        + SessionAuthN<Box<CompoundFlow<F::Flow>>>
+        + SessionAuthN<CompoundFlow<F::Flow>>
+        + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
+        + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
+
     F: OwnedFlowsCreate<
-        CompoundFarChannelSocket,
-        Box<CompoundNegotiator>,
-        AuthN,
-        CompoundFarChannelXfrm<Unix, UDP>
-    >,
-    F: OwnedFlowsCreate<
-        CompoundFarIPChannelSocket,
-        Box<CompoundNegotiator>,
-        AuthN,
-        CompoundFarChannelXfrm<Unix, UDP>
-    >,
+            CompoundFarChannelSocket,
+            Box<CompoundNegotiator>,
+            AuthN,
+            CompoundFarChannelXfrm<Unix, UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarChannelSocket,
+            DTLSNegotiator<Box<CompoundNegotiator>>,
+            AuthN,
+            CompoundFarChannelXfrm<Unix, UDP>
+        >
+    + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            CompoundNegotiator,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        >
+    + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            Box<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<Box<CompoundNegotiator>>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        >,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
@@ -2404,21 +2475,36 @@ where
     }
 }
 
-impl<F, AuthN, Unix, UDP>
-    FarChannelOwnedFlows<F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
+impl<F, AuthN, UDP>
+    FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>
     for CompoundFarIPChannel
 where
-    AuthN: SessionAuthN<
-        <CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow
-    >,
-    AuthN: SessionAuthN<CompoundFlow<F::Flow>>,
+    AuthN: SessionAuthN<<CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow>
+        + SessionAuthN<Box<CompoundFlow<F::Flow>>>
+        + SessionAuthN<CompoundFlow<F::Flow>>
+        + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
+        + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
     F: OwnedFlowsCreate<
-        CompoundFarIPChannelSocket,
-        CompoundNegotiator,
-        AuthN,
-        CompoundFarChannelXfrm<Unix, UDP>
-    >,
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+            CompoundFarIPChannelSocket,
+            CompoundNegotiator,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            Box<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<Box<CompoundNegotiator>>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Nego = CompoundNegotiator;
@@ -2430,28 +2516,32 @@ where
                 CompoundNegotiator::Basic,
             CompoundFarIPChannel::DTLS { dtls } =>
                 CompoundNegotiator::DTLS {
-                    dtls: <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelOwnedFlows<F, CompoundFarIPChannelXfrm<UDP>>>
+                    dtls: <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>>
                     ::negotiator(dtls)
                 }
         }
     }
 }
 
-impl<F, AuthN, Unix, UDP>
-    FarChannelOwnedFlows<F, AuthN, CompoundFarChannelXfrm<Unix, UDP>>
+impl<F, AuthN, UDP>
+    FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>
     for Box<CompoundFarIPChannel>
 where
     AuthN: SessionAuthN<
-        <Box<CompoundNegotiator> as OwnedFlowNegotiator<F::Flow>>::Flow
-    >,
-    AuthN: SessionAuthN<Box<CompoundFlow<F::Flow>>>,
+            <Box<CompoundNegotiator> as OwnedFlowNegotiator<F::Flow>>::Flow
+        > + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
+        + SessionAuthN<Box<CompoundFlow<F::Flow>>>,
     F: OwnedFlowsCreate<
-        CompoundFarIPChannelSocket,
-        Box<CompoundNegotiator>,
-        AuthN,
-        CompoundFarChannelXfrm<Unix, UDP>
-    >,
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+            CompoundFarIPChannelSocket,
+            Box<CompoundNegotiator>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        > + OwnedFlowsCreate<
+            CompoundFarIPChannelSocket,
+            DTLSNegotiator<Box<CompoundNegotiator>>,
+            AuthN,
+            CompoundFarIPChannelXfrm<UDP>
+        >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Nego = Box<CompoundNegotiator>;
@@ -2464,7 +2554,7 @@ where
             }
             CompoundFarIPChannel::DTLS { dtls } => {
                 let out = CompoundNegotiator::DTLS {
-                    dtls: <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelOwnedFlows<F, CompoundFarIPChannelXfrm<UDP>>>
+                    dtls: <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>>
                     ::negotiator(dtls)
                 };
 

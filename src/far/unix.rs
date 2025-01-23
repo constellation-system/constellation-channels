@@ -192,6 +192,7 @@ use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::far::OwnedFlowsCreate;
 use crate::resolve::cache::NSNameCachesCtx;
@@ -335,10 +336,6 @@ impl DatagramXfrmCreateParam for UnixDatagramXfrm {
 impl FarChannel for UnixFarChannel {
     type AcquireError = Infallible;
     type Acquired = UnixSocketAddr;
-    type Config = UnixFarChannelConfig;
-    type Param = UnixSocketAddr;
-    type Socket = UnixDatagramSocket;
-    type SocketError = Error;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -353,6 +350,12 @@ impl FarChannel for UnixFarChannel {
     fn acquire(&mut self) -> Result<UnixSocketAddr, Infallible> {
         Ok(self.bind.clone())
     }
+}
+
+impl FarChannelSocket for UnixFarChannel {
+    type Param = UnixSocketAddr;
+    type Socket = UnixDatagramSocket;
+    type SocketError = Error;
 
     #[inline]
     fn socket(
@@ -366,6 +369,7 @@ impl FarChannel for UnixFarChannel {
 }
 
 impl FarChannelCreate for UnixFarChannel {
+    type Config = UnixFarChannelConfig;
     type CreateError = Error;
 
     #[inline]
@@ -533,6 +537,8 @@ use crate::far::flows::MultiFlows;
 #[cfg(test)]
 use crate::far::flows::SingleFlow;
 #[cfg(test)]
+use crate::far::flows::BorrowedFlows;
+#[cfg(test)]
 use crate::init;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
@@ -571,7 +577,7 @@ fn test_send_recv() {
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: MultiFlows<
-            UnixFarChannel,
+            UnixDatagramSocket,
             PassthruDatagramXfrm<UnixSocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
@@ -604,7 +610,7 @@ fn test_send_recv() {
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: SingleFlow<
-            UnixFarChannel,
+            UnixDatagramSocket,
             PassthruDatagramXfrm<UnixSocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())

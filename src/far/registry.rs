@@ -60,7 +60,6 @@ use constellation_streams::stream::StreamID;
 use constellation_streams::stream::StreamReporter;
 use constellation_streams::stream::ThreadedStream;
 use log::debug;
-use log::info;
 use log::trace;
 use log::warn;
 
@@ -234,6 +233,8 @@ pub struct FarChannelRegistryChannels<
         + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
+    Channel::Param: ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr>,
+    <Channel::Xfrm as DatagramXfrm>::PeerAddr: Eq + Hash,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
@@ -1757,6 +1758,7 @@ where
         + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
+    Channel::Param: ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr>,
     <Channel::Xfrm as DatagramXfrm>::PeerAddr: Eq + Hash,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
@@ -1934,6 +1936,8 @@ where
     Codec::Param:
         ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr> + Default,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
+    Channel::Param: ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr>,
+    <Channel::Xfrm as DatagramXfrm>::PeerAddr: Eq + Hash,
     F: OwnedFlowsCreate<Channel::Socket, Channel::Nego, AuthN, Channel::Xfrm>,
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
