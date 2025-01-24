@@ -164,6 +164,7 @@ use crate::config::ResolverConfig;
 use crate::config::SOCKS5AssocConfig;
 use crate::config::SOCKS5AuthNConfig;
 use crate::far::flows::BorrowedFlowsCreate;
+use crate::far::flows::BorrowedFlowsFlow;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;
 use crate::far::AcquiredResolver;
@@ -172,6 +173,7 @@ use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
@@ -277,8 +279,9 @@ use crate::resolve::Resolver;
 ///   connection made through a *different* SOCKS5 proxy.  This could be
 ///   extended to any number of layered proxy connections.
 pub struct SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
-where Proxy: NearConnector + NearChannelCreate,
-      Datagram: FarChannel {
+where
+    Proxy: NearConnector + NearChannelCreate,
+    Datagram: FarChannel {
     peer_addr: PhantomData<PeerAddr>,
     /// The TCP connection, which must be kept alive.
     #[allow(dead_code)]
@@ -630,19 +633,15 @@ where
     }
 }
 
-impl<Proxy, Datagram, PeerAddr>
-    FarChannelSocket
+impl<Proxy, Datagram, PeerAddr> FarChannelSocket
     for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
 where
     Proxy: NearChannelCreate + NearConnector,
     Datagram: FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
-    type Param = SOCKS5Param<
-        Datagram::Param,
-        PeerAddr
-    >;
+    type Param = SOCKS5Param<Datagram::Param, PeerAddr>;
     type Socket = Datagram::Socket;
     type SocketError = SOCKS5SocketError<Datagram::SocketError>;
 
@@ -706,7 +705,7 @@ where
     Proxy: NearChannelCreate + NearConnector,
     Datagram: FarChannelCreate + FarChannelSocket,
     Datagram::Socket: Socket,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
     type Config = SOCKS5AssocConfig<Proxy::Config, Datagram::Config>;
     type CreateError =
@@ -736,18 +735,35 @@ where
     }
 }
 
+impl<Proxy, Datagram, Nego, PeerAddr> FarChannelNegotiator<Nego>
+    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
+where
+    Proxy: NearConnector + NearChannelCreate,
+    Datagram: FarChannelNegotiator<Nego> + FarChannelSocket + FarChannel,
+    Datagram::Socket: Socket,
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
+{
+    #[inline]
+    fn negotiator(&self) -> Nego {
+        self.datagram.negotiator()
+    }
+}
+
 impl<'a, F, Proxy, Datagram, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
 where
     InnerXfrm: DatagramXfrm,
     Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelBorrowFlows<'a, F, InnerXfrm> + FarChannelSocket + FarChannel,
+    Datagram:
+        FarChannelBorrowFlows<'a, F, InnerXfrm> + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
     <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
     F: BorrowedFlowsCreate<'a, Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>>
         + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Xfrm>
+        + BorrowedFlowsFlow
 {
+    type Nego = Datagram::Nego;
 }
 
 impl<F, Proxy, Datagram, AuthN, InnerXfrm>
@@ -756,7 +772,9 @@ impl<F, Proxy, Datagram, AuthN, InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
     Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelOwnedFlows<F, AuthN, InnerXfrm> + FarChannelSocket + FarChannel,
+    Datagram: FarChannelOwnedFlows<F, AuthN, InnerXfrm>
+        + FarChannelSocket
+        + FarChannel,
     Datagram::Socket: Socket,
     <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
@@ -775,11 +793,6 @@ where
     >
 {
     type Nego = Datagram::Nego;
-
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        self.datagram.negotiator()
-    }
 }
 
 impl<Proxy, Datagram> Display for SOCKS5CreateError<Proxy, Datagram>

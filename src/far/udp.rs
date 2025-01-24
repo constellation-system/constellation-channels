@@ -156,9 +156,11 @@ use log::warn;
 use crate::config::UDPFarChannelConfig;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::BorrowedFlowsCreate;
+use crate::far::BorrowedFlowsFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
@@ -388,11 +390,19 @@ where
     }
 }
 
+impl FarChannelNegotiator<PassthruNegotiator> for UDPFarChannel {
+    #[inline]
+    fn negotiator(&self) -> PassthruNegotiator {
+        PassthruNegotiator
+    }
+}
+
 impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm> for UDPFarChannel
 where
     InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm>
+    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm> + BorrowedFlowsFlow
 {
+    type Nego = PassthruNegotiator;
 }
 
 impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
@@ -404,11 +414,6 @@ where
     F::Flow: Send
 {
     type Nego = PassthruNegotiator;
-
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        PassthruNegotiator
-    }
 }
 
 impl Socket for UDPFarSocket {

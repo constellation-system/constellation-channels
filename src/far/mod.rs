@@ -166,7 +166,9 @@ use constellation_common::sched::SelectError;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
+use crate::far::flows::BorrowedFlowNegotiator;
 use crate::far::flows::BorrowedFlowsCreate;
+use crate::far::flows::BorrowedFlowsFlow;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;
 #[cfg(feature = "socks5")]
@@ -417,6 +419,11 @@ where
     ) -> Result<Self::Xfrm, Self::XfrmError>;
 }
 
+pub trait FarChannelNegotiator<Nego> {
+    /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
+    fn negotiator(&self) -> Nego;
+}
+
 /// Trait for [FarChannel]s that can construct [BorrowedFlows] instances.
 ///
 /// This trait represents channels that can construct a
@@ -448,10 +455,13 @@ where
 /// [wrap_borrowed_flows](FarChannelBorrowFlows::wrap_borrowed_flows)
 /// implementation (as well as the associated types).
 pub trait FarChannelBorrowFlows<'a, F, InnerXfrm>:
-    FarChannelXfrm<InnerXfrm>
+    FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm> {
+    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm>
+        + BorrowedFlowsFlow {
+    type Nego: BorrowedFlowNegotiator<F::Flow>;
+
     /// Create a [BorrowedFlows] instance around a socket created by
     /// this channel.
     ///
@@ -516,15 +526,12 @@ where
 /// [wrap_owned_flows](FarChannelOwnedFlows::wrap_owned_flows)
 /// implementation (as well as the associated types).
 pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>:
-    FarChannelXfrm<InnerXfrm>
+    FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
     AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     F: OwnedFlowsCreate<Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
     type Nego: OwnedFlowNegotiator<F::Flow>;
-
-    /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
-    fn negotiator(&self) -> Self::Nego;
 
     /// Create an [OwnedFlows] instance around a socket created by
     /// this channel.

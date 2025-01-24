@@ -188,9 +188,11 @@ use log::warn;
 use crate::config::UnixFarChannelConfig;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::BorrowedFlowsCreate;
+use crate::far::BorrowedFlowsFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
@@ -402,12 +404,21 @@ where
     }
 }
 
+impl FarChannelNegotiator<PassthruNegotiator> for UnixFarChannel {
+    #[inline]
+    fn negotiator(&self) -> PassthruNegotiator {
+        PassthruNegotiator
+    }
+}
+
 impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for UnixFarChannel
 where
     InnerXfrm: DatagramXfrm,
     F: BorrowedFlowsCreate<'a, UnixDatagramSocket, InnerXfrm>
+        + BorrowedFlowsFlow
 {
+    type Nego = PassthruNegotiator;
 }
 
 impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
@@ -424,11 +435,6 @@ where
     F::Flow: Send
 {
     type Nego = PassthruNegotiator;
-
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        PassthruNegotiator
-    }
 }
 
 impl Drop for UnixDatagramSocket {
@@ -530,14 +536,20 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
+use constellation_auth::authn::PassthruSessionAuthN;
+#[cfg(test)]
+use constellation_auth::cred::NullCred;
+#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use constellation_common::retry::RetryResult;
 
+#[cfg(test)]
+use crate::far::flows::BorrowedFlows;
 #[cfg(test)]
 use crate::far::flows::MultiFlows;
 #[cfg(test)]
 use crate::far::flows::SingleFlow;
-#[cfg(test)]
-use crate::far::flows::BorrowedFlows;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
@@ -574,6 +586,7 @@ fn test_send_recv() {
         let mut listener =
             UnixFarChannel::new(&mut client_nscaches, channel_config)
                 .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: MultiFlows<
@@ -584,12 +597,22 @@ fn test_send_recv() {
         client_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (peer_addr, mut flow) = flows.listen().unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
         let nbytes = flow.read(&mut buf).unwrap();
-        let mut flow = flows.flow(client_addr.clone(), None).unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, client_addr.clone(), None)
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&SECOND_BYTES).expect("Expected success");
 
@@ -607,6 +630,7 @@ fn test_send_recv() {
         let mut conn =
             UnixFarChannel::new(&mut channel_nscaches, client_config)
                 .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: SingleFlow<
@@ -618,14 +642,24 @@ fn test_send_recv() {
 
         channel_barrier.wait();
 
-        let mut flow = flows.flow(channel_addr.clone(), None).unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
         channel_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let (peer_addr, mut flow) = flows.listen().unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         channel_barrier.wait();
 

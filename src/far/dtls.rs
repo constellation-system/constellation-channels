@@ -198,10 +198,8 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Condvar;
-use std::time::Instant;
 
 use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::Credentials;
@@ -232,6 +230,7 @@ use crate::config::tls::TLSPeerConfig;
 use crate::config::DTLSFarChannelConfig;
 use crate::far::flows::BorrowedFlowNegotiator;
 use crate::far::flows::BorrowedFlowsCreate;
+use crate::far::flows::BorrowedFlowsFlow;
 use crate::far::flows::Flow;
 use crate::far::flows::NegotiateRetry;
 use crate::far::flows::OwnedFlowNegotiator;
@@ -239,6 +238,7 @@ use crate::far::flows::OwnedFlowsCreate;
 use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
@@ -283,35 +283,6 @@ pub enum DTLSNegotiateError<Inner> {
     },
     /// No server name could be established.
     NoName
-}
-
-/// A [Flows] instance that negotiates DTLS sessions for flows.
-///
-/// This [Flows] instance will negotiate a DTLS session as part of the
-/// creation of a new [Flow].  If the underlying [Flows] instance `F`
-/// implements [OwnedFlows], then `DTLSFlows` will also implement
-/// `BorrowedFlows`, and the
-/// [listen](crate::far::flows::OwnedFlowsListener::listen) and
-/// [flow](OwnedFlows::flow) functions will retry DTLS negotiations
-/// until they succeed, according to a [Retry] policy provided by the
-/// [DTLSFarChannel] that created this instance. Similarly, if the
-/// underlying [Flows] instance `F` implements [BorrowedFlows], then
-/// `DTLSFlows` will also implement `BorrowedFlows`; however, the
-/// [listen](BorrowedFlows::listen) and [flow](BorrowedFlows::flow)
-/// functions will only attempt a single DTLS negotiation, and will
-/// fail with an error if it fails.
-pub struct DTLSFlows<Xfrm: DatagramXfrm, F> {
-    context: PhantomData<Xfrm>,
-    /// The inner [Flows].
-    inner: F,
-    /// The TLS configuration.
-    tls: TLSPeerConfig,
-    /// Current number of retries.
-    nretries: usize,
-    /// The time at which the next retry will take place.
-    until: Instant,
-    /// Retry policy.
-    retry: Retry
 }
 
 /// [Negotiator] instance for [DTLSFlows].
@@ -497,6 +468,22 @@ where
     }
 }
 
+impl<Nego, Inner> FarChannelNegotiator<DTLSNegotiator<Nego>>
+    for DTLSFarChannel<Inner>
+where
+    Inner: FarChannelNegotiator<Nego>
+{
+    #[inline]
+    fn negotiator(&self) -> DTLSNegotiator<Nego> {
+        let inner = self.inner.negotiator();
+
+        DTLSNegotiator {
+            tls: self.tls.clone(),
+            inner: inner
+        }
+    }
+}
+
 impl<'a, F, Inner, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
     for DTLSFarChannel<Inner>
 where
@@ -504,7 +491,9 @@ where
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
     F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm>
+        + BorrowedFlowsFlow
 {
+    type Nego = DTLSNegotiator<Inner::Nego>;
 }
 
 impl<F, Inner, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
@@ -527,16 +516,6 @@ where
     F: OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm>
 {
     type Nego = DTLSNegotiator<Inner::Nego>;
-
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        let inner = self.inner.negotiator();
-
-        DTLSNegotiator {
-            tls: self.tls.clone(),
-            inner: inner
-        }
-    }
 }
 
 impl<F, Inner> BorrowedFlowNegotiator<F> for DTLSNegotiator<Inner>
@@ -1012,15 +991,15 @@ use constellation_common::net::PassthruDatagramXfrm;
 #[cfg(test)]
 use crate::config::UDPFarChannelConfig;
 #[cfg(test)]
-use crate::far::udp::UDPFarChannel;
-#[cfg(test)]
-use crate::far::udp::UDPFarSocket;
+use crate::far::flows::BorrowedFlows;
 #[cfg(test)]
 use crate::far::flows::MultiFlows;
 #[cfg(test)]
 use crate::far::flows::SingleFlow;
 #[cfg(test)]
-use crate::far::flows::BorrowedFlows;
+use crate::far::udp::UDPFarChannel;
+#[cfg(test)]
+use crate::far::udp::UDPFarSocket;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]

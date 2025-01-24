@@ -178,14 +178,13 @@ pub trait FlowsLocalAddr<LocalAddr>: Sized {
 
 pub trait BorrowedFlowsRaw<'a, F, PeerAddr>
 where
-    F: 'a + Credentials + Flow + Read + Write {
+    F: Credentials + Flow + Read + Write {
     /// Errors that can occur when obtaining flows.
     type RawFlowError: Display + ScopedError;
     /// Errors that can occur listening.
     type RawListenError: Display + ScopedError;
 
-    /// Get a [Flow] instance to send messages to the peer
-    /// at `addr`.
+    /// Get a [Flow] instance to send messages to the peer at `addr`.
     ///
     /// This will create a [Flow] for all traffic to
     /// or from `addr`.  The `endpoint` parameter is used to indicate
@@ -252,6 +251,14 @@ where
     ) -> Result<Self, Self::CreateError>;
 }
 
+pub trait BorrowedFlowsFlow {
+    /// Type of basic [Flow]s produced by this instance.
+    ///
+    /// This will likely differ from the type of [Flow] produced by
+    /// the [Negotiator].
+    type Flow: Credentials + Flow + Read + Write;
+}
+
 /// Trait for creating traffic flow splitters.
 ///
 /// This is used primarily with
@@ -259,15 +266,10 @@ where
 /// [borrowed_flows](crate::far::FarChannelBorrowFlows::borrowed_flows).
 /// It is not intended to be used directly.
 pub trait BorrowedFlows<'a, Nego, AuthN, PeerAddr>:
-    BorrowedFlowsRaw<'a, Self::Flow, PeerAddr>
+    BorrowedFlowsRaw<'a, Self::Flow, PeerAddr> + BorrowedFlowsFlow
 where
     Nego: 'a + BorrowedFlowNegotiator<Self::Flow>,
     AuthN: SessionAuthN<Nego::Flow<'a>> {
-    /// Type of basic [Flow]s produced by this instance.
-    ///
-    /// This will likely differ from the type of [Flow] produced by
-    /// the [Negotiator].
-    type Flow: 'a + Credentials + Flow + Read + Write;
     /// Errors that can occur when obtaining flows.
     type ListenError: Display + ScopedError;
     type FlowError: Display + ScopedError;
@@ -287,8 +289,8 @@ where
     /// policy provided by the channel.
     fn listen(
         &'a mut self,
-        nego: &'a mut Nego,
-        authn: &mut AuthN
+        nego: &'a Nego,
+        authn: &AuthN
     ) -> Result<
         RetryResult<(Nego::Flow<'a>, PeerAddr, AuthN::Prin)>,
         Self::ListenError
@@ -313,8 +315,8 @@ where
     /// policy provided by the channel.
     fn flow(
         &'a mut self,
-        nego: &'a mut Nego,
-        authn: &mut AuthN,
+        nego: &'a Nego,
+        authn: &AuthN,
         addr: PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError>;
@@ -581,6 +583,7 @@ pub enum FlowNegoAuthNRetry<Flow, Nego, AuthN> {
     AuthN { err: AuthN }
 }
 
+#[derive(Debug)]
 pub enum SingleFlowError<Addr> {
     WrongAddr { expected: Addr, actual: Addr }
 }
@@ -2562,6 +2565,14 @@ where
     }
 }
 
+impl<'a, Sock, Xfrm> BorrowedFlowsFlow for MultiFlows<'a, Sock, Xfrm>
+where
+    Sock: Socket + Sender + Receiver,
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
+    type Flow = MultiFlow<'a, Sock, Xfrm>;
+}
+
 impl<'a, Sock, Nego, AuthN, Xfrm> BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
     for MultiFlows<'a, Sock, Xfrm>
 where
@@ -2570,7 +2581,6 @@ where
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
 {
-    type Flow = MultiFlow<'a, Sock, Xfrm>;
     type FlowError =
         FlowNegoAuthNError<Infallible, Nego::NegotiateError, AuthN::Error>;
     type ListenError =
@@ -2578,8 +2588,8 @@ where
 
     fn listen(
         &'a mut self,
-        nego: &'a mut Nego,
-        authn: &mut AuthN
+        nego: &'a Nego,
+        authn: &AuthN
     ) -> Result<
         RetryResult<(Nego::Flow<'a>, Xfrm::PeerAddr, AuthN::Prin)>,
         Self::ListenError
@@ -2616,8 +2626,8 @@ where
 
     fn flow(
         &'a mut self,
-        nego: &'a mut Nego,
-        authn: &mut AuthN,
+        nego: &'a Nego,
+        authn: &AuthN,
         addr: Xfrm::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError>
@@ -2694,6 +2704,14 @@ where
     }
 }
 
+impl<'a, Sock, Xfrm> BorrowedFlowsFlow for SingleFlow<'a, Sock, Xfrm>
+where
+    Sock: Socket + Sender + Receiver,
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+{
+    type Flow = &'a mut SingleFlow<'a, Sock, Xfrm>;
+}
+
 impl<'a, Sock, Nego, AuthN, Xfrm> BorrowedFlows<'a, Nego, AuthN, Xfrm::PeerAddr>
     for SingleFlow<'a, Sock, Xfrm>
 where
@@ -2702,7 +2720,6 @@ where
     AuthN: SessionAuthN<Nego::Flow<'a>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
 {
-    type Flow = &'a mut SingleFlow<'a, Sock, Xfrm>;
     type FlowError = FlowNegoAuthNError<
         SingleFlowError<Xfrm::PeerAddr>,
         Nego::NegotiateError,
@@ -2713,8 +2730,8 @@ where
 
     fn listen(
         &'a mut self,
-        nego: &'a mut Nego,
-        authn: &mut AuthN
+        nego: &'a Nego,
+        authn: &AuthN
     ) -> Result<
         RetryResult<(Nego::Flow<'a>, Xfrm::PeerAddr, AuthN::Prin)>,
         Self::ListenError
@@ -2751,8 +2768,8 @@ where
 
     fn flow(
         &'a mut self,
-        nego: &'a mut Nego,
-        authn: &mut AuthN,
+        nego: &'a Nego,
+        authn: &AuthN,
         addr: Xfrm::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<RetryResult<(Nego::Flow<'a>, AuthN::Prin)>, Self::FlowError>
