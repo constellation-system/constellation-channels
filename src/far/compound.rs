@@ -3645,10 +3645,20 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
+use constellation_auth::authn::PassthruSessionAuthN;
+#[cfg(test)]
+use constellation_auth::cred::NullCred;
+#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
 
 #[cfg(test)]
 use crate::init;
+#[cfg(test)]
+use crate::far::flows::BorrowedFlows;
+#[cfg(test)]
+use crate::far::flows::SingleFlow;
+#[cfg(test)]
+use crate::far::flows::MultiFlows;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
 
@@ -3717,6 +3727,7 @@ fn test_compound_dtls_unix() {
         let mut listener =
             CompoundFarChannel::new(&mut client_nscaches, channel_config)
                 .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = match listener.acquire().unwrap() {
             CompoundFarChannelAcquired::Unix { unix } => {
                 CompoundFarChannelParam::Unix { unix: unix }
@@ -3725,15 +3736,19 @@ fn test_compound_dtls_unix() {
         };
         let create_param = CompoundXfrmCreateParam::default();
         let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-        let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketAddr>,
-            PassthruDatagramXfrm<SocketAddr>
+        let mut flows: MultiFlows<
+            CompoundFarChannelSocket,
+            PassthruDatagramXfrm<CompoundFarChannelAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
         client_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (peer_addr, mut flow) = BorrowedFlows::listen(&mut flows).unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
@@ -3757,6 +3772,7 @@ fn test_compound_dtls_unix() {
         let mut conn =
             CompoundFarChannel::new(&mut channel_nscaches, client_config)
                 .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = match conn.acquire().unwrap() {
             CompoundFarChannelAcquired::Unix { unix } => {
                 CompoundFarChannelParam::Unix { unix: unix }
@@ -3768,20 +3784,22 @@ fn test_compound_dtls_unix() {
 
         channel_barrier.wait();
 
-        let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketAddr>,
-            PassthruDatagramXfrm<SocketAddr>
+        let mut flows: SingleFlow<
+            CompoundFarChannelSocket,
+            PassthruDatagramXfrm<CompoundFarChannelAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())
             .unwrap();
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
-        let mut flow = BorrowedFlows::flow(
-            &mut flows,
-            channel_addr.clone(),
-            Some(&endpoint)
-        )
-        .unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
+                  Some(&endpoint))
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
@@ -3864,6 +3882,7 @@ fn test_compound_dtls_udp() {
         let mut listener =
             CompoundFarChannel::new(&mut client_nscaches, channel_config)
                 .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = match listener.acquire().unwrap() {
             CompoundFarChannelAcquired::IP {
                 ip: CompoundFarIPChannelAcquired::UDP { udp }
@@ -3874,15 +3893,19 @@ fn test_compound_dtls_udp() {
         };
         let create_param = CompoundXfrmCreateParam::default();
         let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-        let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketAddr>,
-            PassthruDatagramXfrm<SocketAddr>
+        let mut flows: MultiFlows<
+            CompoundFarChannelSocket,
+            PassthruDatagramXfrm<CompoundFarChannelAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
         client_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (peer_addr, mut flow) = BorrowedFlows::listen(&mut flows).unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
@@ -3905,6 +3928,7 @@ fn test_compound_dtls_udp() {
         let mut conn =
             CompoundFarChannel::new(&mut channel_nscaches, client_config)
                 .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = match conn.acquire().unwrap() {
             CompoundFarChannelAcquired::IP {
                 ip: CompoundFarIPChannelAcquired::UDP { udp }
@@ -3918,20 +3942,22 @@ fn test_compound_dtls_udp() {
 
         channel_barrier.wait();
 
-        let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketAddr>,
-            PassthruDatagramXfrm<SocketAddr>
+        let mut flows: SingleFlow<
+            CompoundFarChannelSocket,
+            PassthruDatagramXfrm<CompoundFarChannelAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())
             .unwrap();
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
-        let mut flow = BorrowedFlows::flow(
-            &mut flows,
-            channel_addr.clone(),
-            Some(&endpoint)
-        )
-        .unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
+                  Some(&endpoint))
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
@@ -4043,6 +4069,7 @@ fn test_compound_dtls_double() {
         let mut listener =
             CompoundFarChannel::new(&mut client_nscaches, channel_config)
                 .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = match listener.acquire().unwrap() {
             CompoundFarChannelAcquired::Unix { unix } => {
                 CompoundFarChannelParam::Unix { unix: unix }
@@ -4051,15 +4078,19 @@ fn test_compound_dtls_double() {
         };
         let create_param = CompoundXfrmCreateParam::default();
         let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-        let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketAddr>,
-            PassthruDatagramXfrm<SocketAddr>
+        let mut flows: MultiFlows<
+            CompoundFarChannelSocket,
+            PassthruDatagramXfrm<CompoundFarChannelAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
         client_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (peer_addr, mut flow) = BorrowedFlows::listen(&mut flows).unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
@@ -4083,6 +4114,7 @@ fn test_compound_dtls_double() {
         let mut conn =
             CompoundFarChannel::new(&mut channel_nscaches, client_config)
                 .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = match conn.acquire().unwrap() {
             CompoundFarChannelAcquired::Unix { unix } => {
                 CompoundFarChannelParam::Unix { unix: unix }
@@ -4094,20 +4126,22 @@ fn test_compound_dtls_double() {
 
         channel_barrier.wait();
 
-        let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketAddr>,
-            PassthruDatagramXfrm<SocketAddr>
+        let mut flows: SingleFlow<
+            CompoundFarChannelSocket,
+            PassthruDatagramXfrm<CompoundFarChannelAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())
             .unwrap();
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
-        let mut flow = BorrowedFlows::flow(
-            &mut flows,
-            channel_addr.clone(),
-            Some(&endpoint)
-        )
-        .unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
+                  Some(&endpoint))
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 

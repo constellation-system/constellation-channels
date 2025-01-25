@@ -986,6 +986,10 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
+use constellation_auth::authn::PassthruSessionAuthN;
+#[cfg(test)]
+use constellation_auth::cred::NullCred;
+#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
 
 #[cfg(test)]
@@ -1074,6 +1078,7 @@ fn test_send_recv() {
             channel_config
         )
         .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: MultiFlows<
@@ -1084,7 +1089,11 @@ fn test_send_recv() {
 
         client_barrier.wait();
 
-        let (peer_addr, mut flow) = BorrowedFlows::listen(&mut flows).unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
@@ -1106,6 +1115,7 @@ fn test_send_recv() {
             client_config
         )
         .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: SingleFlow<
@@ -1119,12 +1129,14 @@ fn test_send_recv() {
 
         channel_barrier.wait();
 
-        let mut flow = BorrowedFlows::flow(
-            &mut flows,
-            channel_addr.clone(),
-            Some(&endpoint)
-        )
-        .unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
+                  Some(&endpoint))
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
@@ -1136,7 +1148,6 @@ fn test_send_recv() {
 
         flow.read_exact(&mut buf).unwrap();
 
-        // assert_eq!(peer_addr, channel_addr);
         assert_eq!(SECOND_BYTES, buf);
     });
 

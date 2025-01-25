@@ -606,13 +606,6 @@ fn test_send_recv() {
         client_barrier.wait();
 
         let nbytes = flow.read(&mut buf).unwrap();
-        let (mut flow, NullCred) = match flows
-            .flow(&nego, &PassthruSessionAuthN, client_addr.clone(), None)
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
-        };
 
         flow.write_all(&SECOND_BYTES).expect("Expected success");
 
@@ -655,17 +648,11 @@ fn test_send_recv() {
         channel_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let (mut flow, peer_addr, NullCred) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
 
         channel_barrier.wait();
 
         flow.read_exact(&mut buf).unwrap();
 
-        assert_eq!(peer_addr, channel_addr);
         assert_eq!(SECOND_BYTES, buf);
     });
 

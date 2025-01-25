@@ -503,7 +503,13 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
+use constellation_auth::authn::PassthruSessionAuthN;
+#[cfg(test)]
+use constellation_auth::cred::NullCred;
+#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use constellation_common::retry::RetryResult;
 
 #[cfg(test)]
 use crate::far::flows::BorrowedFlows;
@@ -543,6 +549,7 @@ fn test_send_recv() {
         let mut listener =
             UDPFarChannel::new(&mut client_nscaches, channel_config)
                 .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: MultiFlows<
@@ -553,12 +560,15 @@ fn test_send_recv() {
 
         client_barrier.wait();
 
-        let (peer_addr, mut flow) = flows.listen().unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
         let nbytes = flow.read(&mut buf).unwrap();
-        let mut flow = flows.flow(client_addr.clone(), None).unwrap();
 
         flow.write_all(&SECOND_BYTES).expect("Expected success");
 
@@ -574,6 +584,7 @@ fn test_send_recv() {
     let send = spawn(move || {
         let mut conn = UDPFarChannel::new(&mut channel_nscaches, client_config)
             .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: SingleFlow<
@@ -585,20 +596,24 @@ fn test_send_recv() {
 
         channel_barrier.wait();
 
-        let mut flow = flows.flow(channel_addr.clone(), None).unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
         channel_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let (peer_addr, mut flow) = flows.listen().unwrap();
 
         channel_barrier.wait();
 
         flow.read_exact(&mut buf).unwrap();
 
-        assert_eq!(peer_addr, channel_addr);
         assert_eq!(SECOND_BYTES, buf);
     });
 

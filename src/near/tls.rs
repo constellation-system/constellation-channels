@@ -735,11 +735,7 @@ where
 #[cfg(test)]
 use std::fs::metadata;
 #[cfg(test)]
-use std::thread::sleep;
-#[cfg(test)]
 use std::thread::spawn;
-#[cfg(test)]
-use std::time::Duration;
 
 #[cfg(test)]
 use crate::config::tls::TLSClientConfig;
