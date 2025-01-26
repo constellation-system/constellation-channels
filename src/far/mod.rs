@@ -306,9 +306,8 @@ pub trait FarChannelAcquiredResolve: FarChannelAcquired {
 ///
 /// 4. Each [Param](FarChannelSocket::Param) value is used to create a traffic
 ///    flow instance using the [owned_flows](FarChannelOwnedFlows::owned_flows)
-///    or [borrowed_flows](FarChannelBorrowFlows::borrowed_flows) functionss.
-///    In most cases, obtaining `Flows` in this way will be the preferable
-///    option.
+///    or [borrowed_flows](FarChannelBorrowFlows::borrowed_flows) functionss. In
+///    most cases, obtaining `Flows` in this way will be the preferable option.
 ///
 /// 5. If [borrowed_flows](FarChannelBorrowFlows::borrowed_flows) or
 ///    [borrowed_flows](FarChannelOwnedFlows::owned_flows) is used, traffic will
