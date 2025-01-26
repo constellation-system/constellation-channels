@@ -2464,41 +2464,11 @@ where
         + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
         + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
     F: OwnedFlowsCreate<
-            CompoundFarChannelSocket,
-            CompoundNegotiator,
-            AuthN,
-            CompoundFarChannelXfrm<Unix, UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarChannelSocket,
-            Box<CompoundNegotiator>,
-            AuthN,
-            CompoundFarChannelXfrm<Unix, UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarChannelSocket,
-            DTLSNegotiator<Box<CompoundNegotiator>>,
-            AuthN,
-            CompoundFarChannelXfrm<Unix, UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            CompoundNegotiator,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            Box<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<Box<CompoundNegotiator>>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        >,
+        CompoundFarChannelSocket,
+        CompoundNegotiator,
+        AuthN,
+        CompoundFarChannelXfrm<Unix, UDP>
+    >,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
@@ -2517,36 +2487,11 @@ where
         + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
 
     F: OwnedFlowsCreate<
-            CompoundFarChannelSocket,
-            Box<CompoundNegotiator>,
-            AuthN,
-            CompoundFarChannelXfrm<Unix, UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarChannelSocket,
-            DTLSNegotiator<Box<CompoundNegotiator>>,
-            AuthN,
-            CompoundFarChannelXfrm<Unix, UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            CompoundNegotiator,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            Box<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<Box<CompoundNegotiator>>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        >,
+        CompoundFarChannelSocket,
+        Box<CompoundNegotiator>,
+        AuthN,
+        CompoundFarChannelXfrm<Unix, UDP>
+    >,
     Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
@@ -2563,26 +2508,11 @@ where
         + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
         + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
     F: OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            CompoundNegotiator,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            Box<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<Box<CompoundNegotiator>>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        >,
+        CompoundFarIPChannelSocket,
+        CompoundNegotiator,
+        AuthN,
+        CompoundFarIPChannelXfrm<UDP>
+    >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Nego = CompoundNegotiator;
@@ -2597,16 +2527,11 @@ where
         > + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
         + SessionAuthN<Box<CompoundFlow<F::Flow>>>,
     F: OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            Box<CompoundNegotiator>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        > + OwnedFlowsCreate<
-            CompoundFarIPChannelSocket,
-            DTLSNegotiator<Box<CompoundNegotiator>>,
-            AuthN,
-            CompoundFarIPChannelXfrm<UDP>
-        >,
+        CompoundFarIPChannelSocket,
+        Box<CompoundNegotiator>,
+        AuthN,
+        CompoundFarIPChannelXfrm<UDP>
+    >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Nego = Box<CompoundNegotiator>;

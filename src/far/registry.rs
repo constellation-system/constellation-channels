@@ -68,8 +68,13 @@ use crate::config::AddrKind;
 use crate::config::AddrsConfig;
 use crate::config::ChannelRegistryChannelsConfig;
 use crate::config::ChannelRegistryConfig;
+use crate::far::compound::CompoundFarChannel;
+use crate::far::compound::CompoundFarChannelSocket;
+use crate::far::compound::CompoundFarChannelXfrm;
+use crate::far::compound::CompoundNegotiator;
 use crate::far::flows::OwnedFlowNegotiator;
 use crate::far::flows::OwnedFlowsCreate;
+use crate::far::flows::ThreadedFlows;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -89,7 +94,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -133,7 +138,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -159,7 +164,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -195,7 +200,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -239,7 +244,7 @@ pub struct FarChannelRegistryChannels<
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -271,6 +276,43 @@ pub struct FarChannelRegistryChannels<
     reporter: Reporter,
     codec: Codec
 }
+
+pub type CompoundFarChannelRegistry<AuthN, Unix, UDP, ID> = FarChannelRegistry<
+    CompoundFarChannel,
+    ThreadedFlows<
+        CompoundFarChannelSocket,
+        CompoundNegotiator,
+        AuthN,
+        CompoundFarChannelXfrm<Unix, UDP>,
+        ID
+    >,
+    AuthN,
+    CompoundFarChannelXfrm<Unix, UDP>
+>;
+
+pub type CompoundFarChannelRegistryChannels<
+    Msg,
+    Codec,
+    Reporter,
+    AuthN,
+    Unix,
+    UDP,
+    ID
+> = FarChannelRegistryChannels<
+    Msg,
+    Codec,
+    Reporter,
+    CompoundFarChannel,
+    ThreadedFlows<
+        CompoundFarChannelSocket,
+        CompoundNegotiator,
+        AuthN,
+        CompoundFarChannelXfrm<Unix, UDP>,
+        ID
+    >,
+    AuthN,
+    CompoundFarChannelXfrm<Unix, UDP>
+>;
 
 /// Errors that can occur when acquiring on channels managed by
 /// [FarChannelRegistry].
@@ -399,7 +441,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -1019,7 +1061,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -1297,7 +1339,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
@@ -1522,7 +1564,7 @@ where
     >
     where
         NameCtx: NSNameCachesCtx {
-        let idx: usize = id.into();
+        let idx: usize = id.clone().into();
 
         // First try the read-only option
         match self.channels[idx].read() {
@@ -1667,7 +1709,7 @@ where
         >
     >
     where NameCtx: NSNameCachesCtx{
-        let idx: usize = id.into();
+        let idx: usize = id.clone().into();
 
         match self.channels[idx].read() {
             Ok(guard) => match guard
@@ -1732,7 +1774,7 @@ where
         &self,
         id: &F::ChannelID
     ) -> &str {
-        let idx: usize = id.into();
+        let idx: usize = id.clone().into();
 
         &self.names[idx]
     }
@@ -1764,7 +1806,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     NameCtx: NSNameCachesCtx,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
@@ -1942,7 +1984,7 @@ where
     F::CreateParam: Clone + Default,
     F::Reporter: Clone,
     F::ChannelID: From<usize>,
-    for<'a> &'a F::ChannelID: Into<usize>,
+    F::ChannelID: Into<usize>,
     Xfrm: DatagramXfrm + DatagramXfrmCreate<Addr = Channel::Param>,
     Xfrm::CreateParam: Clone + Default,
     Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
