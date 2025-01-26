@@ -458,8 +458,7 @@ pub trait FarChannelBorrowFlows<'a, F, InnerXfrm>:
     FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm>
-        + BorrowedFlowsFlow {
+    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm> + BorrowedFlowsFlow {
     type Nego: BorrowedFlowNegotiator<F::Flow>;
 
     /// Create a [BorrowedFlows] instance around a socket created by

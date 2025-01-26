@@ -1606,7 +1606,7 @@ where
         NameCtx: NSNameCachesCtx {
         match self.ids.get(name) {
             Some(id) => {
-                Ok(self.snapshot_addrs_nonblock_id(caches, &id)?.map(Some))
+                Ok(self.snapshot_addrs_nonblock_id(caches, id)?.map(Some))
             }
             None => Ok(RetryResult::Success(None))
         }

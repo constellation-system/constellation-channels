@@ -679,12 +679,10 @@ where
             Ok(guard) => match &*guard {
                 Some(session) => {
                     let (datagram, proxy) = param.take();
-                    let xfrm = self
-                        .datagram
-                        .wrap_xfrm(datagram, InnerXfrm::from(xfrm))
-                        .map_err(|e| SOCKS5XfrmError::Datagram {
-                            datagram: e
-                        })?;
+                    let xfrm =
+                        self.datagram.wrap_xfrm(datagram, xfrm).map_err(
+                            |e| SOCKS5XfrmError::Datagram { datagram: e }
+                        )?;
                     let proxy_addr =
                         <Datagram::Xfrm as DatagramXfrm>::PeerAddr::from(proxy);
 

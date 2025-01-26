@@ -33,19 +33,22 @@
 //! receiving over DTLS:
 //!
 //! ```
+//! # use constellation_auth::authn::PassthruSessionAuthN;
 //! # use constellation_common::net::IPEndpointAddr;
 //! # use constellation_common::net::PassthruDatagramXfrm;
+//! # use constellation_common::retry::RetryResult;
 //! # use constellation_channels::config::DTLSFarChannelConfig;
 //! # use constellation_channels::config::UDPFarChannelConfig;
 //! # use constellation_channels::config::tls::TLSClientConfig;
 //! # use constellation_channels::config::tls::TLSServerConfig;
 //! # use constellation_channels::far::FarChannel;
-//! # use constellation_channels::far::FarChannelCreate;
 //! # use constellation_channels::far::FarChannelBorrowFlows;
+//! # use constellation_channels::far::FarChannelCreate;
+//! # use constellation_channels::far::FarChannelNegotiator;
 //! # use constellation_channels::far::dtls::DTLSFarChannel;
-//! # use constellation_channels::far::dtls::DTLSMultiFlows;
-//! # use constellation_channels::far::dtls::DTLSSingleFlow;
 //! # use constellation_channels::far::flows::BorrowedFlows;
+//! # use constellation_channels::far::flows::MultiFlows;
+//! # use constellation_channels::far::flows::SingleFlow;
 //! # use constellation_channels::far::udp::UDPFarChannel;
 //! # use constellation_channels::far::udp::UDPFarSocket;
 //! # use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -122,17 +125,22 @@
 //!         channel_config
 //!     )
 //!     .expect("Expected success");
+//!     let nego = FarChannelNegotiator::negotiator(&listener);
 //!     let param = listener.acquire().unwrap();
 //!     let xfrm = PassthruDatagramXfrm::new();
-//!     let mut flows: DTLSMultiFlows<
-//!         UDPFarChannel,
+//!     let mut flows: MultiFlows<
+//!         UDPFarSocket,
 //!         PassthruDatagramXfrm<SocketAddr>
 //!     > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 //!     let mut buf = [0; FIRST_BYTES.len()];
 //!
 //! #   client_barrier.wait();
 //!
-//!     let (peer_addr, mut flow) = BorrowedFlows::listen(&mut flows).unwrap();
+//!     let (mut flow, peer_addr, NullCred) =
+//!         match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+//!             RetryResult::Success(flow) => flow,
+//!             _ => panic!("Shouldn't see retry")
+//!         };
 //!
 //! #   client_barrier.wait();
 //!
@@ -154,10 +162,11 @@
 //!         client_config
 //!     )
 //!     .expect("expected success");
+//!     let nego = FarChannelNegotiator::negotiator(&conn);
 //!     let param = conn.acquire().unwrap();
 //!     let xfrm = PassthruDatagramXfrm::new();
-//!     let mut flows: DTLSSingleFlow<
-//!         UDPFarChannel,
+//!     let mut flows: SingleFlow<
+//!         UDPFarSocket,
 //!         PassthruDatagramXfrm<SocketAddr>
 //!     > = conn
 //!         .borrowed_flows(param, xfrm, channel_addr.clone())
@@ -167,12 +176,14 @@
 //!
 //! #   channel_barrier.wait();
 //!
-//!     let mut flow = BorrowedFlows::flow(
-//!         &mut flows,
-//!         channel_addr.clone(),
-//!         Some(&endpoint)
-//!     )
-//!     .unwrap();
+//!     let (mut flow, NullCred) = match flows
+//!         .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
+//!               Some(&endpoint))
+//!         .unwrap()
+//!     {
+//!         RetryResult::Success(flow) => flow,
+//!         _ => panic!("Shouldn't see retry")
+//!     };
 //!
 //!     flow.write_all(&FIRST_BYTES).expect("Expected success");
 //!
@@ -211,7 +222,6 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Socket;
 use constellation_common::nonblock::NonblockResult;
-use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use constellation_streams::stream::ConcurrentStream;
 use log::debug;
@@ -365,9 +375,7 @@ pub struct DTLSFarChannel<Channel> {
     /// The underlying channel.
     inner: Channel,
     /// The TLS configuration.
-    tls: TLSPeerConfig,
-    /// Retry policy for session negotiations.
-    retry: Retry
+    tls: TLSPeerConfig
 }
 
 impl<Inner> ScopedError for DTLSNegotiateError<Inner>
@@ -438,14 +446,13 @@ where
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        let (tls, retry) = config.take();
+        let (tls, _) = config.take();
         let (tls, inner) = tls.take();
         let inner = Channel::new(caches, inner)?;
 
         Ok(DTLSFarChannel {
             inner: inner,
-            tls: tls,
-            retry: retry
+            tls: tls
         })
     }
 }
@@ -490,8 +497,7 @@ where
     Inner: FarChannelBorrowFlows<'a, F, InnerXfrm>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm>
-        + BorrowedFlowsFlow
+    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm> + BorrowedFlowsFlow
 {
     type Nego = DTLSNegotiator<Inner::Nego>;
 }
@@ -1130,8 +1136,12 @@ fn test_send_recv() {
         channel_barrier.wait();
 
         let (mut flow, NullCred) = match flows
-            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
-                  Some(&endpoint))
+            .flow(
+                &nego,
+                &PassthruSessionAuthN,
+                channel_addr.clone(),
+                Some(&endpoint)
+            )
             .unwrap()
         {
             RetryResult::Success(flow) => flow,

@@ -104,6 +104,7 @@ use std::collections::hash_map::OccupiedEntry;
 use std::collections::hash_map::VacantEntry;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -588,6 +589,13 @@ pub enum SingleFlowError<Addr> {
     WrongAddr { expected: Addr, actual: Addr }
 }
 
+#[derive(Debug)]
+pub enum MultiFlowError<Xfrm, Addr> {
+    Addr { err: Addr },
+    Xfrm { err: Xfrm },
+    IO { err: Error }
+}
+
 /// Retry information for [Negotiator].
 pub struct NegotiateRetry<Flow> {
     when: Instant,
@@ -603,14 +611,17 @@ pub struct NegotiateRetry<Flow> {
 pub struct SingleFlow<'a, Sock, Xfrm>
 where
     Sock: 'a + Socket + Sender + Receiver,
-    Xfrm: 'a + DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: 'a + DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError {
     lifetime: PhantomData<&'a mut ()>,
     /// The underlying socket.
     socket: Sock,
     /// The channel context.
     xfrm: Xfrm,
     /// The peer address.
-    addr: Xfrm::PeerAddr
+    addr: Xfrm::LocalAddr
 }
 
 /// A [BorrowedFlows] instance that communicates with one peer at a
@@ -621,7 +632,11 @@ where
 pub struct MultiFlows<'a, Sock, Xfrm>
 where
     Sock: 'a + Socket + Sender + Receiver,
-    Xfrm: 'a + DatagramXfrm<LocalAddr = Sock::Addr> {
+    Xfrm: 'a + DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    Xfrm::Error: ScopedError,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError {
     lifetime: PhantomData<&'a ()>,
     /// The underlying socket.
     socket: Sock,
@@ -638,7 +653,7 @@ where
 pub struct MultiFlow<'a, Sock: Socket, Xfrm: DatagramXfrm> {
     socket: &'a mut Sock,
     xfrm: &'a mut Xfrm,
-    addr: Xfrm::PeerAddr
+    addr: Xfrm::LocalAddr
 }
 
 /// An [OwnedFlows] instance based on threading.
@@ -859,6 +874,21 @@ pub enum ThreadedFlowsListenError {
     Shutdown,
     /// Mutex was poisoned.
     MutexPoison
+}
+
+impl<Xfrm, Addr> ScopedError for MultiFlowError<Xfrm, Addr>
+where
+    Addr: ScopedError,
+    Xfrm: ScopedError
+{
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        match self {
+            MultiFlowError::Addr { err } => err.scope(),
+            MultiFlowError::Xfrm { err } => err.scope(),
+            MultiFlowError::IO { err } => err.scope()
+        }
+    }
 }
 
 impl ScopedError for ThreadedFlowsListenError {
@@ -1809,10 +1839,14 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> FlowsLocalAddr<Sock::Addr> for MultiFlows<'a, Sock, Xfrm>
+impl<Sock, Xfrm> FlowsLocalAddr<Sock::Addr> for MultiFlows<'_, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Xfrm::Error: ScopedError,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     #[inline]
     fn local_addr(&self) -> Result<Sock::Addr, Error> {
@@ -1820,10 +1854,13 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Credentials for SingleFlow<'a, Sock, Xfrm>
+impl<Sock, Xfrm> Credentials for SingleFlow<'_, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type Cred<'b>
         = Xfrm::PeerAddr
@@ -1834,17 +1871,20 @@ where
     #[inline]
     fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Infallible> {
         if self.socket.allow_session_addr_creds() {
-            Ok(Some(self.addr.clone()))
+            Ok(Some(Xfrm::PeerAddr::from(self.addr.clone())))
         } else {
             Ok(None)
         }
     }
 }
 
-impl<'a, Sock, Xfrm> FlowsLocalAddr<Sock::Addr> for SingleFlow<'a, Sock, Xfrm>
+impl<Sock, Xfrm> FlowsLocalAddr<Sock::Addr> for SingleFlow<'_, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     #[inline]
     fn local_addr(&self) -> Result<Sock::Addr, Error> {
@@ -1856,7 +1896,11 @@ impl<'a, Sock, Xfrm> BorrowedFlowsCreate<'a, Sock, Xfrm>
     for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Xfrm::Error: ScopedError,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type CreateError = Infallible;
     type CreateParam = ();
@@ -1879,9 +1923,12 @@ impl<'a, Sock, Xfrm> BorrowedFlowsCreate<'a, Sock, Xfrm>
     for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type CreateError = Infallible;
+    type CreateError = <Xfrm::LocalAddr as TryFrom<Xfrm::PeerAddr>>::Error;
     type CreateParam = Xfrm::PeerAddr;
 
     #[inline]
@@ -1890,10 +1937,12 @@ where
         xfrm: Xfrm,
         param: Self::CreateParam
     ) -> Result<Self, Self::CreateError> {
+        let addr = Sock::Addr::try_from(param)?;
+
         Ok(SingleFlow {
             lifetime: PhantomData,
             socket: socket,
-            addr: param,
+            addr: addr,
             xfrm: xfrm
         })
     }
@@ -2358,7 +2407,7 @@ where
         match self.backlog_recv.lock() {
             Ok(guard) => guard
                 .recv()
-                .map(|out| RetryResult::Success(out))
+                .map(RetryResult::Success)
                 .map_err(|_| ThreadedFlowsListenError::Shutdown),
             Err(_) => Err(ThreadedFlowsListenError::MutexPoison)
         }
@@ -2513,10 +2562,17 @@ impl<'a, Sock, Xfrm>
     for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Xfrm::Error: ScopedError,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type RawFlowError = Infallible;
-    type RawListenError = Error;
+    type RawFlowError = <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error;
+    type RawListenError = MultiFlowError<
+        Xfrm::Error,
+        <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error
+    >;
 
     #[inline]
     fn listen_raw(
@@ -2535,16 +2591,21 @@ where
             }
         };
         let mut buf = vec![0; mtu];
-        let (n, addr) = self.socket.peek_from(&mut buf)?;
+        let (n, addr) = self
+            .socket
+            .peek_from(&mut buf)
+            .map_err(|err| MultiFlowError::IO { err: err })?;
         let (_, addr) = self
             .xfrm
             .unwrap(&mut buf[..n], addr)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| MultiFlowError::Xfrm { err: err })?;
+        let sockaddr = Xfrm::LocalAddr::try_from(addr.clone())
+            .map_err(|err| MultiFlowError::Addr { err: err })?;
 
         Ok(RetryResult::Success((
             MultiFlow {
                 socket: &mut self.socket,
-                addr: addr.clone(),
+                addr: sockaddr,
                 xfrm: &mut self.xfrm
             },
             addr
@@ -2557,6 +2618,8 @@ where
         _endpoint: Option<&IPEndpointAddr>
     ) -> Result<RetryResult<MultiFlow<'a, Sock, Xfrm>>, Self::RawFlowError>
     {
+        let addr = Sock::Addr::try_from(addr)?;
+
         Ok(RetryResult::Success(MultiFlow {
             socket: &mut self.socket,
             xfrm: &mut self.xfrm,
@@ -2568,7 +2631,11 @@ where
 impl<'a, Sock, Xfrm> BorrowedFlowsFlow for MultiFlows<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Xfrm::Error: ScopedError,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type Flow = MultiFlow<'a, Sock, Xfrm>;
 }
@@ -2579,12 +2646,22 @@ where
     Sock: Socket + Sender + Receiver,
     Nego: 'a + BorrowedFlowNegotiator<MultiFlow<'a, Sock, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Xfrm::Error: ScopedError,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type FlowError =
-        FlowNegoAuthNError<Infallible, Nego::NegotiateError, AuthN::Error>;
-    type ListenError =
-        FlowNegoAuthNError<Error, Nego::NegotiateError, AuthN::Error>;
+    type FlowError = FlowNegoAuthNError<
+        Self::RawFlowError,
+        Nego::NegotiateError,
+        AuthN::Error
+    >;
+    type ListenError = FlowNegoAuthNError<
+        Self::RawListenError,
+        Nego::NegotiateError,
+        AuthN::Error
+    >;
 
     fn listen(
         &'a mut self,
@@ -2666,7 +2743,10 @@ impl<'a, Sock, Xfrm>
     for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type RawFlowError = SingleFlowError<Xfrm::PeerAddr>;
     type RawListenError = Infallible;
@@ -2678,7 +2758,7 @@ where
         RetryResult<(&'a mut SingleFlow<'a, Sock, Xfrm>, Xfrm::PeerAddr)>,
         Self::RawListenError
     > {
-        let addr = self.addr.clone();
+        let addr = Xfrm::PeerAddr::from(self.addr.clone());
 
         Ok(RetryResult::Success((self, addr)))
     }
@@ -2691,7 +2771,7 @@ where
         RetryResult<&'a mut SingleFlow<'a, Sock, Xfrm>>,
         Self::RawFlowError
     > {
-        let expected = self.addr.clone();
+        let expected = Xfrm::PeerAddr::from(self.addr.clone());
 
         if expected == addr {
             Ok(RetryResult::Success(self))
@@ -2707,7 +2787,10 @@ where
 impl<'a, Sock, Xfrm> BorrowedFlowsFlow for SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type Flow = &'a mut SingleFlow<'a, Sock, Xfrm>;
 }
@@ -2718,7 +2801,10 @@ where
     Sock: Socket + Sender + Receiver,
     Nego: 'a + BorrowedFlowNegotiator<&'a mut SingleFlow<'a, Sock, Xfrm>>,
     AuthN: SessionAuthN<Nego::Flow<'a>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type FlowError = FlowNegoAuthNError<
         SingleFlowError<Xfrm::PeerAddr>,
@@ -2857,20 +2943,23 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Credentials for MultiFlow<'a, Sock, Xfrm>
+impl<Sock, Xfrm> Credentials for MultiFlow<'_, Sock, Xfrm>
 where
     Sock::Addr: Clone + Eq,
     Sock: Receiver + Sender,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type Cred<'b>
         = Xfrm::PeerAddr
     where
         Self: 'b;
-    type CredError = Infallible;
+    type CredError = <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error;
 
     #[inline]
-    fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Infallible> {
+    fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Self::CredError> {
         if self.socket.allow_session_addr_creds() {
             Ok(Some(self.peer_addr()))
         } else {
@@ -2879,11 +2968,14 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Flow for MultiFlow<'a, Sock, Xfrm>
+impl<Sock, Xfrm> Flow for MultiFlow<'_, Sock, Xfrm>
 where
     Sock::Addr: Clone + Eq,
     Sock: Receiver + Sender,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type LocalAddr = Xfrm::LocalAddr;
     type PeerAddr = Xfrm::PeerAddr;
@@ -2895,14 +2987,17 @@ where
 
     #[inline]
     fn peer_addr(&self) -> Self::PeerAddr {
-        self.addr.clone()
+        Xfrm::PeerAddr::from(self.addr.clone())
     }
 }
 
 impl<'a, Sock, Xfrm> Credentials for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type Cred<'b>
         = Xfrm::PeerAddr
@@ -2912,8 +3007,10 @@ where
 
     #[inline]
     fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Infallible> {
+        let addr = Xfrm::PeerAddr::from(self.addr.clone());
+
         if self.socket.allow_session_addr_creds() {
-            Ok(Some(self.addr.clone()))
+            Ok(Some(addr))
         } else {
             Ok(None)
         }
@@ -2923,7 +3020,10 @@ where
 impl<'a, Sock, Xfrm> Credentials for &'a SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type Cred<'b>
         = Xfrm::PeerAddr
@@ -2933,8 +3033,10 @@ where
 
     #[inline]
     fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Infallible> {
+        let addr = Xfrm::PeerAddr::from(self.addr.clone());
+
         if self.socket.allow_session_addr_creds() {
-            Ok(Some(self.addr.clone()))
+            Ok(Some(addr))
         } else {
             Ok(None)
         }
@@ -2944,7 +3046,10 @@ where
 impl<'a, Sock, Xfrm> Flow for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     type LocalAddr = Xfrm::LocalAddr;
     type PeerAddr = Xfrm::PeerAddr;
@@ -2956,42 +3061,48 @@ where
 
     #[inline]
     fn peer_addr(&self) -> Self::PeerAddr {
-        self.addr.clone()
+        Xfrm::PeerAddr::from(self.addr.clone())
     }
 }
 
 impl<'a, Sock, Xfrm> Read for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     #[inline]
     fn read(
         &mut self,
         buf: &mut [u8]
     ) -> Result<usize, Error> {
-        let mut nbytes;
+        let mut nbytes = 0;
 
         while {
-            let (n, addr) = self.socket.recv_from(buf)?;
+            let (n, peer) = self.socket.recv_from(buf)?;
 
-            match self.xfrm.unwrap(&mut buf[..n], addr) {
-                Ok((n, peer)) => {
-                    nbytes = n;
+            if self.addr != peer {
+                warn!(target: "far-multi-flow",
+                      "discarding {} bytes from {} (expected {})",
+                      n, peer, self.addr);
 
-                    if self.addr != peer {
-                        warn!(target: "far-multi-flow",
-                              "discarding {} bytes from {} (expected {})",
-                              nbytes, peer, self.addr);
-
-                        true
-                    } else {
-                        false
+                true
+            } else {
+                match self.xfrm.unwrap(&mut buf[..n], peer) {
+                    Ok((n, _)) => {
+                        nbytes = n;
+                    }
+                    Err(err) => {
+                        return Err(Error::new(
+                            ErrorKind::Other,
+                            err.to_string()
+                        ))
                     }
                 }
-                Err(err) => {
-                    return Err(Error::new(ErrorKind::Other, err.to_string()))
-                }
+
+                false
             }
         } {}
 
@@ -3002,14 +3113,19 @@ where
 impl<'a, Sock, Xfrm> Write for &'a mut SingleFlow<'a, Sock, Xfrm>
 where
     Sock: Socket + Sender + Receiver,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     #[inline]
     fn write(
         &mut self,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        match self.xfrm.wrap(buf, self.addr.clone()) {
+        let addr = Xfrm::PeerAddr::from(self.addr.clone());
+
+        match self.xfrm.wrap(buf, addr) {
             Ok((Some(buf), addr)) => self.socket.send_to(&addr, &buf),
             Ok((None, addr)) => self.socket.send_to(&addr, buf),
             Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
@@ -3058,51 +3174,57 @@ where
     }
 }
 
-impl<'a, Sock, Xfrm> Read for MultiFlow<'a, Sock, Xfrm>
+impl<Sock, Xfrm> Read for MultiFlow<'_, Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Sock::Addr: Clone + Eq,
-    Sock: Receiver
+    Sock: Receiver,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     #[inline]
     fn read(
         &mut self,
         buf: &mut [u8]
     ) -> Result<usize, Error> {
-        let (n, addr) = self.socket.recv_from(buf)?;
+        let (n, peer) = self.socket.recv_from(buf)?;
 
-        match self.xfrm.unwrap(&mut buf[..n], addr) {
-            Ok((n, peer)) => {
-                if self.addr != peer {
-                    warn!(target: "far-multi-flow",
-                      "discarding {} bytes from {} (expected {})",
-                      n, peer, self.addr);
+        if self.addr != peer {
+            warn!(target: "far-multi-flow",
+                  "discarding {} bytes from {} (expected {})",
+                  n, peer, self.addr);
 
-                    Err(Error::new(
-                        ErrorKind::Other,
-                        "discarded {} bytes from wrong address {}"
-                    ))
-                } else {
-                    Ok(n)
-                }
+            Err(Error::new(
+                ErrorKind::Other,
+                "discarded {} bytes from wrong address {}"
+            ))
+        } else {
+            match self.xfrm.unwrap(&mut buf[..n], peer) {
+                Ok((n, _)) => Ok(n),
+                Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
             }
-            Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
         }
     }
 }
 
-impl<'a, Sock, Xfrm> Write for MultiFlow<'a, Sock, Xfrm>
+impl<Sock, Xfrm> Write for MultiFlow<'_, Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Sock::Addr: Clone + Eq,
-    Sock: Sender
+    Sock: Sender,
+    Xfrm::PeerAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::PeerAddr>,
+    <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
     #[inline]
     fn write(
         &mut self,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        match self.xfrm.wrap(buf, self.addr.clone()) {
+        let addr = Xfrm::PeerAddr::from(self.addr.clone());
+
+        match self.xfrm.wrap(buf, addr) {
             Ok((Some(buf), addr)) => self.socket.send_to(&addr, &buf),
             Ok((None, addr)) => self.socket.send_to(&addr, buf),
             Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
@@ -3203,6 +3325,23 @@ where
                 "wrong address: expected {}, actual {}",
                 expected, actual
             )
+        }
+    }
+}
+
+impl<Xfrm, Addr> Display for MultiFlowError<Xfrm, Addr>
+where
+    Xfrm: Display,
+    Addr: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            MultiFlowError::Addr { err } => err.fmt(f),
+            MultiFlowError::Xfrm { err } => err.fmt(f),
+            MultiFlowError::IO { err } => err.fmt(f)
         }
     }
 }
