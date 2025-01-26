@@ -658,7 +658,7 @@ pub enum CompoundFarChannelXfrmWrapError<Unix, UDP> {
 
 /// [ThreadedFlows] using [CompoundFarChannel]s.
 pub type CompoundFarChannelThreadedFlows<AuthN, Unix, UDP, ID> = ThreadedFlows<
-    CompoundFarChannel,
+    CompoundFarChannelSocket,
     CompoundNegotiator,
     AuthN,
     CompoundFarChannelXfrm<Unix, UDP>,

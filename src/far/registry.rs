@@ -1975,8 +1975,7 @@ where
     AuthN: Clone
         + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
     Codec: Clone + DatagramCodec<Msg> + Send,
-    Codec::Param:
-        ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr> + Default,
+    Codec::Param: Default,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     Channel::Param: ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr>,
     <Channel::Xfrm as DatagramXfrm>::PeerAddr: Eq + Hash,
@@ -2055,6 +2054,13 @@ where
             registry: registry,
             ids: ids
         })
+    }
+}
+
+impl From<usize> for FarChannelRegistryID {
+    #[inline]
+    fn from(val: usize) -> FarChannelRegistryID {
+        FarChannelRegistryID(val)
     }
 }
 
