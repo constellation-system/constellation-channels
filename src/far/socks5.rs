@@ -253,7 +253,7 @@ use crate::resolve::Resolver;
 /// This will be an [IPEndpoint], which may resolve to multiple
 /// independent [SocketAddr]s.  An individual socket can then be
 /// created for any one of these addresses using the
-/// [socket](FarChannel::socket) function.
+/// [socket](FarChannelSocket::socket) function.
 ///
 /// The SOCKS5 proxy negotiation occurs transparently in the call to
 /// [acquire](FarChannel::acquire).  This will block until a UDP
@@ -323,7 +323,7 @@ pub enum SOCKS5AcquireError<Proxy, Datagram> {
     MutexPoison
 }
 
-/// Errors that can occur during the [acquire](FarChannel::socket)
+/// Errors that can occur during the [acquire](FarChannelSocket::socket)
 /// step of establishing a [SOCKS5FarChannel].
 #[derive(Debug)]
 pub enum SOCKS5SocketError<Datagram> {

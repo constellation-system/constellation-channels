@@ -339,8 +339,8 @@ pub enum RegistryRefreshError<Flows, Wrap> {
     NoValidAddrs
 }
 
-/// Errors that can occur when obtaining [Flows] for channels managed
-/// by [FarChannelRegistry].
+/// Errors that can occur when obtaining traffic splitters for
+/// channels managed by [FarChannelRegistry].
 #[derive(Debug)]
 pub enum RegistryFlowsError<Acquire> {
     Acquire { err: Acquire },
@@ -370,8 +370,8 @@ pub enum FarChannelRegistryAcquireError<Acquire> {
     MutexPoison
 }
 
-/// Errors that can occur when obtaining [Flows] for channels managed
-/// by [FarChannelRegistry].
+/// Errors that can occur when obtaining traffic splitters for
+/// channels managed by [FarChannelRegistry].
 #[derive(Debug)]
 pub enum FarChannelRegistryFlowsError<Acquire> {
     Acquire {

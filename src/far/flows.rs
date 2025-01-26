@@ -20,26 +20,27 @@
 //!
 //! Far-link channels are connectionless, and may send and receive
 //! traffic from multiple peers on a single socket.  Moreover, some
-//! [FarChannel] implementations support session protocol negotiations
-//! with peers (such as with DTLS).  This requires a mechanism for
-//! splitting out traffic flows with individual peers and managing
-//! them as separate entities.  This functionality is provided by the
-//! [Flows] trait and its implementations in this module.
+//! [FarChannel](crate::far::FarChannel) implementations support
+//! session protocol negotiations with peers (such as with DTLS).
+//! This requires a mechanism for splitting out traffic flows with
+//! individual peers and managing them as separate entities.
 //!
 //! # Usage
 //!
-//! The two primary traits in the module are [Flows] and [Flow].
-//! `Flow` represents an individual traffic flow, and implementations
-//! must also provide [Read] and [Write] implementations.  [Flows] can
+//! The two primary APIs in the module are the traffic splitter and
+//! [Flow] APIs.  `Flow` represents an individual traffic flow, and
+//! implementations must also provide [Read] and [Write]
+//! implementations.  Traffic splitters have two separate APIs
+//! depending on whether the instance is owned or borrowed.  They can
 //! be thought of as an abstraction over a socket, and can be used to
 //! obtain individual [Flow]s for each peer.
 //!
-//! ## Obtaining [Flow]s from [Flows]
+//! ## Obtaining [Flow]s from Traffic Splitters
 //!
-//! [Flows] instances should also provide implementations of one of
-//! two sub-traits: [OwnedFlows] and [BorrowedFlows].  Both sub-traits
-//! provide two functions: [flow](OwnedFlows::flow) and
-//! [listen](OwnedFlowsListener::listen).
+//! Traffic splitter instances should also provide implementations of
+//! one of two sub-traits: [OwnedFlows] and [BorrowedFlows].  Both
+//! sub-traits provide two functions: [flow](OwnedFlowsOutbound::flow) and
+//! [listen](OwnedFlowsInbound::listen).
 //!
 //! Users can obtain a flow for a given peer from an address using
 //! `flow`.  This is typically used to establish a client or
@@ -48,34 +49,36 @@
 //! Additionally, users can obtain inbound flows from arbitrary peers
 //! using `listen`.  This is typically used in a server-type use case.
 //!
-//! ## Borrowed vs. Owned Flows
+//! ## Borrowed vs. Owned Traffic Splitters
 //!
-//! Implementors of the [Flows] trait also provide an implementation
-//! of one of two sub-traits: [BorrowedFlows] and [OwnedFlows].  Both
-//! sub-traits support the [listen](OwnedFlowsListener::listen) and
-//! [flow](OwnedFlows::flow) functions, but behave differently with
-//! respect to lifetime semantics:
+//! The traffic splitters API is split into two trait hierarchies,
+//! depending on whether the associated traffic splitters are owned or
+//! borrowed:
 //!
-//! - [BorrowedFlows] assumes that individual [Flow]s represent a mutable borrow
-//!   of the parent `Flows` object.  In general, this means that only one `Flow`
-//!   can exist at any given time.  This supports very simple implementations,
-//!   and is intended for simple usage patterns, such as "one-shot" clients.
-//!   Implementations generally represent a thin abstraction, do not have
-//!   internal buffering, and do not support sharing.
+//! - The borrowed trait hierarchy is characterized primarily by
+//!   [BorrowedFlows], and assumes that individual [Flow]s represent a mutable
+//!   borrow of the parent traffic splitter object.  In general, this means that
+//!   only one `Flow` can exist at any given time.  This supports very simple
+//!   implementations, and is intended for simple usage patterns, such as
+//!   "one-shot" clients. Implementations generally represent a thin
+//!   abstraction, do not have internal buffering, and do not support sharing.
 //!
-//! - [OwnedFlows] assumes that individual [Flow]s represent owned objects,
-//!   separate from their parent `Flows`.  This supports more complicated
-//!   implementations, and is suitable for general use. Implementations support
-//!   sharing and potentially inter-thread communication, and thus will
-//!   generally have internal buffering and possibly synchronization of some
-//!   kind.  `OwnedFlows` is typically appropriate for components of larger
-//!   systems, continuously-running peer services or connectors, or anything
-//!   acting like a server.
+//! - The owned trait hierarchy is characterized by the [OwnedFlowsInbound] and
+//!   [OwnedFlowsOutbound] traits, and assumes that individual [Flow]s represent
+//!   owned objects, separate from their parent `Flows`.  This supports more
+//!   complicated implementations, and is suitable for general use.
+//!   Implementations support sharing and potentially inter-thread
+//!   communication, and thus will generally have internal buffering and
+//!   possibly synchronization of some kind.  `OwnedFlows` is typically
+//!   appropriate for components of larger systems, continuously-running peer
+//!   services or connectors, or anything acting like a server.  Typically, the
+//!   [FarChannelRegistry](crate::far::registry::FarChannelRegistry) API will be
+//!   used as the actual mechanism for obtaining owned flows.
 //!
-//! ## Creating [Flows]
+//! ## Creating Traffic Splitters
 //!
-//! [Flows] instances are obtained from [FarChannel]s directly,
-//! through the
+//! Traffic splitter instances are obtained from
+//! [FarChannel](crate::far::FarChannel)s directly, through the
 //! [owned_flows](crate::far::FarChannelOwnedFlows::owned_flows) and
 //! [borrowed_flows](crate::far::FarChannelBorrowFlows::borrowed_flows)
 //! functions, depending on whether the specific `Flows` instance
@@ -83,8 +86,13 @@
 //!
 //! # Implementations
 //!
-//! This module provides several implementations of [Flows], each with
-//! a different intended usage pattern:
+//! This module provides several implementations of traffic flow
+//! splitters, each with a different intended usage pattern:
+//!
+//! - [ThreadedFlows] is intended for most complex uses, and implements the
+//!   owned trait API.  This should be used for most complex use cases where
+//!   many different [Flow]s may exist at a given time.  It is also required for
+//!   use with [FarChannelRegistry](crate::far::registry::FarChannelRegistry).
 //!
 //! - [SingleFlow] is intended for uses where a channel will only *ever* be used
 //!   to talk to a single peer.  It implements [BorrowedFlows], and will discard
@@ -256,7 +264,7 @@ pub trait BorrowedFlowsFlow {
     /// Type of basic [Flow]s produced by this instance.
     ///
     /// This will likely differ from the type of [Flow] produced by
-    /// the [Negotiator].
+    /// the [BorrowedFlowNegotiator].
     type Flow: Credentials + Flow + Read + Write;
 }
 
@@ -336,6 +344,7 @@ where
     /// Errors that can occur during negotiations.
     type NegotiateError: Display + ScopedError;
 
+    /// Negotiate an outbound session.
     fn negotiate_outbound(
         &self,
         inner: Inner,
@@ -346,12 +355,6 @@ where
     >;
 
     /// Negotiate an inbound session.
-    ///
-    /// This may block for a a long time; users should generally use
-    /// [negotiate_nonblock](Negotiator::negotiate_nonblock)
-    /// to try to negotiate without blocking, then set up the
-    /// necessary machinery to handle a potentially stalled
-    /// negotiation before calling this function.
     fn negotiate_inbound(
         &self,
         inner: Inner
@@ -473,7 +476,7 @@ pub trait OwnedFlows {
     /// Type of basic [Flow]s produced by this instance.
     ///
     /// This will likely differ from the type of [Flow] produced by
-    /// the [Negotiator].
+    /// the [OwnedFlowNegotiator].
     type Flow: Credentials + Flow + Read + Write;
 }
 
@@ -487,7 +490,7 @@ where
     Nego: OwnedFlowNegotiator<Self::Flow>,
     AuthN: SessionAuthN<Nego::Flow>,
     Xfrm: DatagramXfrm {
-    /// Channel identifier for the created [Flows].
+    /// Channel identifier for the created traffic splitter.
     type ChannelID: Clone + Display + Eq + Hash;
     type CreateParam;
     /// Errors that can occur when creating this type.
@@ -526,11 +529,27 @@ where
     /// errors that can occur during negotiations.
     type NegotiateError: Display + ScopedError;
 
+    /// Attempt to negotiate an outbound session without blocking.
+    ///
+    /// This means that no additional messages need to be sent.  This
+    /// will return a [NonblockResult] indicating success or failure;
+    /// if failure is indicated, then
+    /// [negotiate_outbound](OwnedFlowNegotiator::negotiate_outbound)
+    /// should be called with the same parameters.
+    ///
+    /// Errors returned indicate "hard" errors.
     fn negotiate_outbound_nonblock(
         &self,
         inner: Inner
     ) -> Result<NonblockResult<Self::Flow, Inner>, Self::NegotiateError>;
 
+    /// Negotiate an outbound session.
+    ///
+    /// This may block for a a long time; users should generally use
+    /// [negotiate_outbound_nonblock](OwnedFlowNegotiator::negotiate_outbound_nonblock)
+    /// to try to negotiate without blocking, then set up the
+    /// necessary machinery to handle a potentially stalled
+    /// negotiation before calling this function.
     fn negotiate_outbound(
         &self,
         inner: Inner,
@@ -545,8 +564,8 @@ where
     /// This means that no additional messages need to be sent.  This
     /// will return a [NonblockResult] indicating success or failure;
     /// if failure is indicated, then
-    /// [negotiate](Negotiator::negotiate) should be called
-    /// with the same parameters.
+    /// [negotiate](OwnedFlowNegotiator::negotiate_inbound) should be
+    /// called with the same parameters.
     ///
     /// Errors returned indicate "hard" errors.
     fn negotiate_inbound_nonblock(
@@ -557,7 +576,7 @@ where
     /// Negotiate an inbound session.
     ///
     /// This may block for a a long time; users should generally use
-    /// [negotiate_nonblock](Negotiator::negotiate_nonblock)
+    /// [negotiate_inbound_nonblock](OwnedFlowNegotiator::negotiate_inbound_nonblock)
     /// to try to negotiate without blocking, then set up the
     /// necessary machinery to handle a potentially stalled
     /// negotiation before calling this function.
@@ -596,16 +615,19 @@ pub enum MultiFlowError<Xfrm, Addr> {
     IO { err: Error }
 }
 
-/// Retry information for [Negotiator].
+/// Retry information for [OwnedFlowNegotiator] and
+/// [BorrowedFlowNegotiator].
 pub struct NegotiateRetry<Flow> {
+    /// When the operation should be retried.
     when: Instant,
+    /// The flow on which to retry.
     flow: Flow
 }
 
 /// A simple [BorrowedFlows] instance that communicates only with a
 /// single peer.
 ///
-/// This functions as its own [Flow](BorrowedFlows::Flow) instance,
+/// This functions as its own [Flow] instance,
 /// and communicates exclusively with one peer.  Any traffic from
 /// another peer will be dropped.
 pub struct SingleFlow<'a, Sock, Xfrm>
@@ -656,7 +678,13 @@ pub struct MultiFlow<'a, Sock: Socket, Xfrm: DatagramXfrm> {
     addr: Xfrm::LocalAddr
 }
 
-/// An [OwnedFlows] instance based on threading.
+/// An owned traffic splitter instance that operates using threads.
+///
+/// This will create a separate thread for listening for inbound
+/// traffic flows, and will automatically generate [ThreadedFlow]s for
+/// them, perform negitation and authentication, and report them via
+/// [ThreadedFlowsListener].  Individual [Flow]s can also be obtained
+/// using the [OwnedFlowsOutbound] API.
 pub struct ThreadedFlows<Sock, Nego, AuthN, Xfrm, ChannelID>
 where
     Sock: Socket + Sender + Receiver,
@@ -669,7 +697,7 @@ where
     inner: Arc<ThreadedFlowsInner<Sock, Nego, AuthN, Xfrm, ChannelID>>
 }
 
-/// An [OwnedFlowsListener] instance based on threading.
+/// An [OwnedFlowsInbound] instance based on threading.
 pub struct ThreadedFlowsListener<F, ID, Prin>
 where
     F: Flow,
@@ -679,7 +707,8 @@ where
     backlog_recv: Arc<Mutex<mpsc::Receiver<(F, ID, Prin)>>>
 }
 
-/// A [PullStreamListener] instance based on an [OwnedFlowsListener].
+/// A [PullStreamListener] instance based on an [OwnedFlowsInbound]
+/// instance.
 pub struct ThreadedFlowsPullStreamListener<F, Msg, Codec, ID, Prin>
 where
     Codec: Clone + DatagramCodec<Msg>,
@@ -849,15 +878,15 @@ where
     cond: Arc<Condvar>
 }
 
-/// An [Negotiator] instance that simply passes the
-/// underlying [OwnedFlows] instance through.
+/// An [OwnedFlowNegotiator] instance that simply passes the
+/// underlying traffic splitter instance through.
 ///
 /// This is used for channel types that do not need to perform any
 /// actual negotiation.
 #[derive(Clone, Default)]
 pub struct PassthruNegotiator;
 
-/// Errors that can occur for [flow](OwnedFlows::flow) for
+/// Errors that can occur for [flow](OwnedFlowsOutbound::flow) for
 /// [ThreadedFlows].
 #[derive(Clone, Debug)]
 pub enum ThreadedFlowsFlowError {
@@ -867,7 +896,7 @@ pub enum ThreadedFlowsFlowError {
     MutexPoison
 }
 
-/// Errors that can occur for [listen](OwnedFlowsListener::listen) for
+/// Errors that can occur for [listen](OwnedFlowsInbound::listen) for
 /// [ThreadedFlows].
 pub enum ThreadedFlowsListenError {
     /// Listener thread was shut down.

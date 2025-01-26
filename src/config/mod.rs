@@ -131,45 +131,6 @@ pub struct AddrsConfig {
     resolver: ResolverConfig
 }
 
-/// Parameters used to create a
-/// [BufferedFlows](crate::far::flows::BufferedFlows).
-///
-/// This allows the size of the various components of `BufferedFlows`
-/// to be configured.
-///
-/// All fields of this configuration object are optional, and in most
-/// use cases, this object does not need to be configured.
-///
-/// # YAML Format
-///
-/// The YAML format has four fields, all of which are optional:
-///
-///  - `flow-buf-size`: Size of ring buffers that will be created for each flow.
-///
-///  - `backlog-size`: Size of the ring buffer for storing new incoming flows.
-///
-///  - `flows-size-hint`: Size hint, should be roughly equal to the maximum
-///    number of live flows.
-///
-///  - `packet-size`: Maximum size of incoming messages.
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename = "buffered-flows-params")]
-#[serde(rename_all = "kebab-case")]
-pub struct BufferedFlowsParams {
-    /// Size of ring buffers that will be created for each flow.
-    #[serde(default = "BufferedFlowsParams::default_flow_buf_size")]
-    flow_buf_size: usize,
-    /// Size of the ring buffer for storing new incoming flows.
-    #[serde(default = "BufferedFlowsParams::default_backlog_size")]
-    backlog_size: usize,
-    /// Size hint, should be roughly equal to the maximum number of live flows.
-    #[serde(default)]
-    flows_size_hint: Option<usize>,
-    /// Maximum size of incoming messages.
-    #[serde(default = "BufferedFlowsParams::default_packet_size")]
-    packet_size: usize
-}
-
 /// Configuration for a channel registry.
 ///
 /// This is used to create one or more channel endpoints, which can be
@@ -186,9 +147,9 @@ pub struct BufferedFlowsParams {
 ///  - `resolve`: An [AddrsConfig] structure.  This is optional, and set to the
 ///    default value if not present.
 ///
-///  - `flows-params`: A configuration object for creating the type of base
-///    [Flows](crate::far::flows::Flows) used for managing flows. This is
-///    optional, and set to the default value if not present.
+///  - `flows-params`: A configuration object for creating the type of traffic
+///    splitters used for managing flows. This is optional, and set to the
+///    default value if not present.
 ///
 ///  - `context-params`: A configuration object for creating the type of base
 ///    [DatagramXfrm](constellation_common::net::DatagramXfrm) used to create
@@ -2230,87 +2191,6 @@ impl ResolverConfig {
     }
 }
 
-impl BufferedFlowsParams {
-    /// Create a [BufferedFlowsParams] from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// The following example shows the equivalence between this
-    /// function and parsing a YAML configuration:
-    ///
-    /// ```
-    /// # use constellation_channels::config::BufferedFlowsParams;
-    /// #
-    /// let yaml = concat!("flows-size-hint: 36\n",
-    ///                    "backlog-size: 64\n",
-    ///                    "flow-buf-size: 128\n",
-    ///                    "packet-size: 1500\n");
-    ///
-    /// assert_eq!(
-    ///     BufferedFlowsParams::new(128, 64, Some(36), 1500),
-    ///     serde_yaml::from_str(yaml).unwrap()
-    /// );
-    /// ```
-    #[inline]
-    pub fn new(
-        flow_buf_size: usize,
-        backlog_size: usize,
-        flows_size_hint: Option<usize>,
-        packet_size: usize
-    ) -> Self {
-        BufferedFlowsParams {
-            flows_size_hint: flows_size_hint,
-            flow_buf_size: flow_buf_size,
-            backlog_size: backlog_size,
-            packet_size: packet_size
-        }
-    }
-
-    /// Get the size of ring buffers that will be created for each
-    /// flow.
-    #[inline]
-    pub fn flows_size_hint(&self) -> Option<usize> {
-        self.flows_size_hint
-    }
-
-    /// Get the maximum size of incoming messages.
-    #[inline]
-    pub fn packet_size(&self) -> usize {
-        self.packet_size
-    }
-
-    /// Get the size of the ring buffer for storing new incoming
-    /// flows.
-    #[inline]
-    pub fn backlog_size(&self) -> usize {
-        self.backlog_size
-    }
-
-    /// Get the size hint for the live flows.
-    #[inline]
-    pub fn flow_buf_size(&self) -> usize {
-        self.flow_buf_size
-    }
-
-    #[inline]
-    fn default_flow_buf_size() -> usize {
-        128
-    }
-
-    #[inline]
-    fn default_packet_size() -> usize {
-        1536
-    }
-
-    #[inline]
-    fn default_backlog_size() -> usize {
-        256
-    }
-}
-
 impl ThreadedFlowsParams {
     /// Create a [ThreadedFlowsParams] from its components.
     ///
@@ -2451,18 +2331,6 @@ impl Default for AddrsConfig {
         AddrsConfig {
             addr_policy: vec![AddrKind::IPv6, AddrKind::IPv4],
             resolver: ResolverConfig::default()
-        }
-    }
-}
-
-impl Default for BufferedFlowsParams {
-    #[inline]
-    fn default() -> Self {
-        BufferedFlowsParams {
-            flow_buf_size: BufferedFlowsParams::default_flow_buf_size(),
-            backlog_size: BufferedFlowsParams::default_backlog_size(),
-            packet_size: ThreadedFlowsParams::default_packet_size(),
-            flows_size_hint: None
         }
     }
 }

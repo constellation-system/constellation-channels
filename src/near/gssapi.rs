@@ -18,10 +18,9 @@
 
 //! GSSAPI-authenticated [NearChannel]s.
 //!
-//! This module provides [NearChannelAcceptor] and
-//! [NearChannelConnector] instances that perform GSSAPI negotiation
-//! and session establishment.  This provides an authenticated
-//! channel.
+//! This module provides [NearChannel] and [NearConnector] instances
+//! that perform GSSAPI negotiation and session establishment.  This
+//! provides an authenticated channel.
 //!
 //! GSSAPI-based authentication is somewhat unique among
 //! authentication methods, as it has implications at the channel
@@ -33,7 +32,8 @@
 //! channel level.
 //!
 //! GSSAPI channels are deliberately *not* included in
-//! [CompoundNearChannel](crate::near::compound::CompoundNearChannel),
+//! [CompoundNearConnector](crate::near::compound::CompoundNearConnector) and
+//! [CompoundNearAcceptor](crate::near::compound::CompoundNearAcceptor),
 //! as it generally doesn't make sense to include them anywhere but at
 //! the top level of a configuration.
 use std::convert::Infallible;
@@ -147,7 +147,7 @@ pub struct GSSAPIStream<Stream: Read + Write, Ctx: SecurityContext> {
     stream: Stream
 }
 
-/// [NearChannelAcceptor] instance that performs GSSAPI session negotiation.
+/// [NearChannel] instance that performs GSSAPI session negotiation.
 pub struct GSSAPINearAcceptor<A: NearChannel> {
     config: ServerGSSAPIConfig,
     /// Server credential name.
@@ -166,7 +166,7 @@ pub struct GSSAPINearConnectorParams<Conn: NearConnector> {
     security: GSSAPISecurity
 }
 
-/// [NearChannelConnector] instance that performs GSSAPI session negotiation.
+/// [NearConnector] instance that performs GSSAPI session negotiation.
 pub type GSSAPINearConnector<Conn> =
     NearSessionConnector<GSSAPINearConnectorParams<Conn>, Conn>;
 

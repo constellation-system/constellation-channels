@@ -442,7 +442,7 @@ pub enum CompoundFarChannelAcquired {
     }
 }
 
-/// Multiplexer for [Param](FarChannel::Param)s for
+/// Multiplexer for [Param](FarChannelSocket::Param)s for
 /// [CompoundFarIPChannel].
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub enum CompoundFarIPChannelParam {
@@ -460,7 +460,7 @@ pub enum CompoundFarIPChannelParam {
     }
 }
 
-/// Multiplexer for [Param](FarChannel::Param)s for
+/// Multiplexer for [Param](FarChannelSocket::Param)s for
 /// [CompoundFarChannel].
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub enum CompoundFarChannelParam {
@@ -530,13 +530,13 @@ pub enum CompoundFarChannelCreateError {
     }
 }
 
-/// Multiplexer for [Socket](FarChannel::Socket)s for
+/// Multiplexer for [Socket](FarChannelSocket::Socket)s for
 /// [CompoundFarIPChannel].
 pub enum CompoundFarIPChannelSocket {
     UDP { udp: UDPFarSocket }
 }
 
-/// Multiplexer for [Socket](FarChannel::Socket)s for
+/// Multiplexer for [Socket](FarChannelSocket::Socket)s for
 /// [CompoundFarChannel].
 pub enum CompoundFarChannelSocket {
     #[cfg(feature = "unix")]
@@ -597,7 +597,7 @@ pub enum CompoundFarChannelSizeError<Unix, UDP> {
     }
 }
 
-/// Multiplexer for [SocketError](FarChannel::SocketError)s for
+/// Multiplexer for [SocketError](FarChannelSocket::SocketError)s for
 /// [CompoundFarIPChannel].
 pub enum CompoundFarIPChannelSocketError {
     UDP {
@@ -610,7 +610,7 @@ pub enum CompoundFarIPChannelSocketError {
     Mismatch
 }
 
-/// Multiplexer for [SocketError](FarChannel::SocketError)s for
+/// Multiplexer for [SocketError](FarChannelSocket::SocketError)s for
 /// [CompoundFarChannel].
 pub enum CompoundFarChannelSocketError {
     #[cfg(feature = "unix")]
@@ -622,7 +622,7 @@ pub enum CompoundFarChannelSocketError {
     }
 }
 
-/// Multiplexer for [XfrmError](FarChannelOwnedFlows::XfrmError)s for
+/// Multiplexer for [XfrmError](FarChannelXfrm::XfrmError)s for
 /// [CompoundFarChannel].
 pub enum CompoundFarChannelXfrmError {
     #[cfg(feature = "socks5")]
@@ -632,7 +632,7 @@ pub enum CompoundFarChannelXfrmError {
     Mismatch
 }
 
-/// Multiplexer for [XfrmError](FarChannelOwnedFlows::XfrmError)s for
+/// Multiplexer for [XfrmError](FarChannelXfrm::XfrmError)s for
 /// [CompoundFarChannel].
 pub enum CompoundFarIPChannelXfrmWrapError<UDP> {
     UDP {
@@ -645,7 +645,7 @@ pub enum CompoundFarIPChannelXfrmWrapError<UDP> {
     Mismatch
 }
 
-/// Multiplexer for [XfrmError](FarChannelOwnedFlows::XfrmError)s for
+/// Multiplexer for [XfrmError](FarChannelXfrm::XfrmError)s for
 /// [CompoundFarChannel].
 pub enum CompoundFarChannelXfrmWrapError<Unix, UDP> {
     Unix {
@@ -671,7 +671,8 @@ pub type CompoundFarChannelSingleFlow<'a, Unix, UDP> =
 pub type CompoundFarChannelMultiFlows<'a, Unix, UDP> =
     MultiFlows<'a, CompoundFarChannelSocket, CompoundFarChannelXfrm<Unix, UDP>>;
 
-/// [Negotiator] instance for [CompoundFarChannel]s.
+/// [OwnedFlowNegotiator] and [BorrowedFlowNegotiator] instance for
+/// [CompoundFarChannel]s.
 #[derive(Clone)]
 pub enum CompoundNegotiator {
     Basic,
@@ -712,18 +713,12 @@ pub enum CompoundFarCredentialError<Cred> {
     Basic { error: Cred }
 }
 
-/// Multiplexer for
-/// [ListenError](crate::far::flows::OwnedFlowsListener::ListenError)s
-/// for [CompoundFarChannel].
 pub enum CompoundNegotiateError {
     DTLS {
         error: Box<DTLSNegotiateError<CompoundNegotiateError>>
     }
 }
 
-/// Multiplexer for [ListenError](
-/// crate::far::flows::OwnedFlowsListener::ListenError)s for
-/// [CompoundFarIPChannel].
 pub enum CompoundOwnedIPFlowsNegotiateError {
     DTLS {
         error: Box<DTLSNegotiateError<CompoundOwnedIPFlowsNegotiateError>>

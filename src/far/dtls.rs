@@ -295,7 +295,8 @@ pub enum DTLSNegotiateError<Inner> {
     NoName
 }
 
-/// [Negotiator] instance for [DTLSFlows].
+/// [OwnedFlowNegotiator] and [BorrowedFlowNegotiator] instance for
+/// [DTLSFarChannel].
 #[derive(Clone)]
 pub struct DTLSNegotiator<Inner> {
     /// Negotiator for the underlying flow.
