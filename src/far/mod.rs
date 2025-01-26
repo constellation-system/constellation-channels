@@ -61,10 +61,10 @@
 //! used to conduct any initial negotiations (as with SOCKS5) and
 //! obtain information specifying the creation of one or more sockets.
 //! Raw sockets can be obtained through the
-//! [socket](FarChannel::socket) function, though for more common use,
+//! [socket](FarChannelSocket::socket) function, though for more common use,
 //! [owned_flows](FarChannelOwnedFlows) or
 //! [borrowed_flows](FarChannelBorrowFlows) will be used to obtain a
-//! [Flows] instance.
+//! traffic splitter instance.
 //!
 //! This more complex workflow is a consequence of the nature of
 //! far-links, and the operating demands of various protocols.  See
@@ -75,24 +75,26 @@
 //! As far-link channels are connectionless, traffic on a socket must
 //! be split out into separate traffic flows for each peer, which then
 //! may need to conduct protocol negotiations of their own.  This is
-//! accomplished through the [Flows] trait, and its two sub-traits,
-//! [OwnedFlows] and [BorrowedFlows], both of which allow for traffic
-//! flows (represented by the [Flow](crate::far::flows::Flow) trait)
-//! with a single endpoint to be created.  Both sub-traits have
+//! accomplished through two separate APIs, both of which allow for
+//! traffic flows (represented by the [Flow](crate::far::flows::Flow)
+//! trait) with a single endpoint to be created.  Both sub-traits have
 //! similar behavior, but represent different usage patterns:
 //!
-//! - [BorrowedFlows] supports very simple implementations, and is intended for
-//!   simple usage patterns, such as "one-shot" clients. Implementations
-//!   generally represent a thin abstraction, do not have internal buffering,
-//!   and do not support sharing.
+//! - The borrowed flows API (characterized by
+//!   [BorrowedFlows](crate::far::flows::BorrowedFlows)) supports very simple
+//!   implementations, and is intended for simple usage patterns, such as
+//!   "one-shot" clients. Implementations generally represent a thin
+//!   abstraction, do not have internal buffering, and do not support sharing.
 //!
-//! - [OwnedFlows] supports more complicated implementations, and is suitable
-//!   for general use.  Implementations support sharing and potentially
-//!   inter-thread communication, and thus will generally have internal
-//!   buffering and possibly synchronization of some kind. `OwnedFlows` is
-//!   typically appropriate for components of larger systems,
-//!   continuously-running peer services or connectors, or anything acting like
-//!   a server.
+//! - The owned flows API (characterized by
+//!   [OwnedFlowsInbound](crate::far::flows::OwnedFlowsInbound) and
+//!   [OwnedFlowsOutbound](crate::far::flows::OwnedFlowsOutbound)) supports more
+//!   complicated implementations, and is suitable for general use.
+//!   Implementations support sharing and potentially inter-thread
+//!   communication, and thus will generally have internal buffering and
+//!   possibly synchronization of some kind. `OwnedFlows` is typically
+//!   appropriate for components of larger systems, continuously-running peer
+//!   services or connectors, or anything acting like a server.
 //!
 //! Both traits support a `listen` function, which will listen for a
 //! packet and return a [Flow](crate::far::flows::Flow) corresponding
@@ -100,15 +102,15 @@
 //! which will obtain a `Flow` for a given peer address.
 //!
 //! Depending on the nature of the channels (and by extension, on the
-//! [Flows] instance obtained from it), the `listen` and `flow`
-//! functions may also conduct underlying protocol negotations (as
-//! with DTLS).  In general, `OwnedFlows` instances will block and
+//! traffic splitter instance obtained from it), the `listen` and
+//! `flow` functions may also conduct underlying protocol negotations
+//! (as with DTLS).  In general, `OwnedFlows` instances will block and
 //! retry any failed negotation attempts, whereas `BorrowedFlows`
 //! instances will only make one attempt, and will return an error if
 //! it fails (this is a consequence of the Rust type system's
 //! restrictions on owned vs. mutable borrowed types).
 //!
-//! See [flows] for more information on specific [Flows]
+//! See [flows] for more information on specific traffic splitter
 //! implementations.
 //!
 //! # Channel Types
@@ -166,12 +168,11 @@ use constellation_common::sched::SelectError;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
-use crate::far::flows::BorrowedFlows;
-use crate::far::flows::CreateBorrowedFlows;
-use crate::far::flows::CreateOwnedFlows;
-use crate::far::flows::Flows;
-use crate::far::flows::Negotiator;
-use crate::far::flows::OwnedFlows;
+use crate::far::flows::BorrowedFlowNegotiator;
+use crate::far::flows::BorrowedFlowsCreate;
+use crate::far::flows::BorrowedFlowsFlow;
+use crate::far::flows::OwnedFlowNegotiator;
+use crate::far::flows::OwnedFlowsCreate;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
@@ -193,7 +194,7 @@ pub mod unix;
 pub trait FarChannelAcquired {
     /// Type of resolved values.
     ///
-    /// This will be aligned to [Param](FarChannel::Param).
+    /// This will be aligned to [Param](FarChannelSocket::Param).
     type Resolved;
     /// Type of errors that can occur when wrapping a resolved [SocketAddr].
     type WrapError: Display + ScopedError;
@@ -207,7 +208,7 @@ pub trait FarChannelAcquired {
 }
 
 /// Helper trait for converting [Acquired](FarChannel::Acquired) types
-/// to [Param](FarChannel::Param)s.
+/// to [Param](FarChannelSocket::Param)s.
 pub trait FarChannelAcquiredResolve: FarChannelAcquired {
     /// Type of errors that can occur when obtaining a resolver.
     type ResolverError: Display + ScopedError;
@@ -290,7 +291,8 @@ pub trait FarChannelAcquiredResolve: FarChannelAcquired {
 /// `FarChannel` instance.
 ///
 /// 1. The channel is created with the [new](FarChannelCreate::new) function.
-///    This takes both a [Config](FarChannel::Config) and a binding address.
+///    This takes both a [Config](FarChannelCreate::Config) and a binding
+///    address.
 ///
 /// 2. The acquisition phase is executed in order to perform any precursor
 ///    out-of-band negotiation requried to set up the channel. This will return
@@ -298,36 +300,28 @@ pub trait FarChannelAcquiredResolve: FarChannelAcquired {
 ///
 /// 3. The upstream user of the channel uses the
 ///    [Acquired](FarChannel::Acquired) result to create one or more
-///    [Param](FarChannel::Param) values, which represent information for
+///    [Param](FarChannelSocket::Param) values, which represent information for
 ///    creating sockets and/or flows.  This is external to the channel, and may
 ///    use functionality such as [Resolver].
 ///
-/// 4. Each [Param](FarChannel::Param) value is used to create a [Flows]
-///    instance using the [owned_flows](FarChannelOwnedFlows::owned_flows) or
-///    [borrowed_flows](FarChannelBorrowFlows::borrowed_flows) functionss.  In
+/// 4. Each [Param](FarChannelSocket::Param) value is used to create a traffic
+///    flow instance using the [owned_flows](FarChannelOwnedFlows::owned_flows)
+///    or [borrowed_flows](FarChannelBorrowFlows::borrowed_flows) functionss. In
 ///    most cases, obtaining `Flows` in this way will be the preferable option.
 ///
 /// 5. If [borrowed_flows](FarChannelBorrowFlows::borrowed_flows) or
 ///    [borrowed_flows](FarChannelOwnedFlows::owned_flows) is used, traffic will
-///    be split into distinct flows using the APIs in either [BorrowedFlows] or
-///    [OwnedFlows].  This may involve session negotiations once a flow is
+///    be split into distinct flows using the borrowed or owned flows APIs (see
+///    [flows]).  This may involve session negotiations once a flow is
 ///    established.
 pub trait FarChannel: Sized {
     /// The result of the acquisition phase.
     ///
     /// This will be processed by the channel's upstream user to
-    /// create one or more [Param](FarChannel::Param)s.
+    /// create one or more [Param](FarChannelSocket::Param)s.
     type Acquired;
-    /// Configuration information used to create the channel.
-    type Config;
-    /// Type of basic sockets created by the channel.
-    type Socket: Receiver + Sender + Socket + Send + Sync;
-    /// Type of parameters used to create sockets.
-    type Param;
     /// Type of errors that can occur in the acquisition phase.
     type AcquireError: Display + ScopedError;
-    /// Type of errors that can occur in socket creation.
-    type SocketError: Display + ScopedError;
 
     /// Perform the acquisition phase of establishing the channel.
     ///
@@ -335,8 +329,8 @@ pub trait FarChannel: Sized {
     /// negotiation necessary to establish the channel, and return the
     /// information resulting from this process.  This information
     /// will then be used to produce one or more
-    /// [Param](FarChannel::Param)s for use in the
-    /// [socket](FarChannel::socket) and flows steps.
+    /// [Param](FarChannelSocket::Param)s for use in the
+    /// [socket](FarChannelSocket::socket) and flows steps.
     ///
     /// In the SOCKS5 channel implementation, this step performs the
     /// SOCKS5 negotiation necessary to establish the UDP association.
@@ -357,7 +351,15 @@ pub trait FarChannel: Sized {
         &self,
         val: &Self::Acquired
     ) -> Result<IPEndpoint, Error>;
+}
 
+pub trait FarChannelSocket: Sized {
+    /// Type of parameters used to create sockets.
+    type Param;
+    /// Type of basic sockets created by the channel.
+    type Socket: Receiver + Sender + Socket + Send + Sync;
+    /// Type of errors that can occur in socket creation.
+    type SocketError: Display + ScopedError;
     /// Create a basic socket.
     ///
     /// This will create a socket from a [Param](Self::Param).  In
@@ -377,6 +379,8 @@ pub trait FarChannel: Sized {
 
 /// Subtrait for creating [FarChannel]s from configuration parameters.
 pub trait FarChannelCreate: FarChannel {
+    /// Configuration information used to create the channel.
+    type Config;
     /// Type of errors that can occur in channel creation.
     type CreateError: Display + ScopedError;
 
@@ -393,72 +397,20 @@ pub trait FarChannelCreate: FarChannel {
         Ctx: NSNameCachesCtx;
 }
 
-/// Trait for [FarChannel]s that can construct [BorrowedFlows] instances.
-///
-/// This trait represents channels that can construct a
-/// [BorrowedFlows] instance around a socket created by the channel.
-/// Depending on the nature of the channel, this can involve wrapping
-/// an inner `BorrowedFlows` instance (specificed by the type
-/// parameter `F`), which is wrapped in a separate outer
-/// `BorrowedFlows` instance dependent on the nature of the channel
-/// (an example of this case can be found with
-/// [DTLSFarChannel](crate::far::dtls::DTLSFarChannel)).  In most
-/// cases, however, the "inner" and "outer" flows will be the same.
-///
-/// # Usage
-///
-/// The [borrowed_flows](FarChannelBorrowFlows::borrowed_flows)
-/// function is called to obtain a
-/// [Borrowed](FarChannelBorrowFlows::Borrowed) instance, created
-/// from a socket obtained from the implementing channel.  Once this
-/// is done, the [BorrowedFlows] trait's API can be used to obtain
-/// individual [Flow](crate::far::flows::Flow)s
-///
-/// # Implementation
-///
-/// Channels should generally implement both this trait as well as
-/// [FarChannelOwnedFlows].  See [BorrowedFlows] and [OwnedFlows] for
-/// details on the differences between the two traits.
-///
-/// Most implementations will only need to provide the
-/// [wrap_borrowed_flows](FarChannelBorrowFlows::wrap_borrowed_flows)
-/// implementation (as well as the associated types).
-pub trait FarChannelBorrowFlows<F, InnerXfrm>: FarChannel
+pub trait FarChannelXfrm<InnerXfrm>: FarChannelSocket
 where
-    InnerXfrm: DatagramXfrm,
-    InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
-    F: Flows + CreateBorrowedFlows + BorrowedFlows,
-    F::Xfrm: From<Self::Xfrm>,
-    F::Socket: From<Self::Socket> {
-    /// Type of borrowed flows created by this channel.
-    ///
-    /// This will be an instance of [BorrowedFlows] derived from `F`.
-    /// In most cases, this will be `F` itself.
-    type Borrowed: Flows<Xfrm = F::Xfrm> + BorrowedFlows<Xfrm = F::Xfrm>;
-    /// Type of errors that can occur when creating borrowed flows.
-    type BorrowedFlowsError: Display + ScopedError;
+    InnerXfrm: DatagramXfrm {
     /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
     ///
     /// This can be the same as `InnerXfrm`, or it can be its own
     /// type derived from `InnerXfrme`
     type Xfrm: DatagramXfrm;
     /// Type of errors that can be returned from
-    /// [wrap_xfrm](FarChannelBorrowFlows::wrap_xfrm).
+    /// [wrap_xfrm](FarChannelXfrm::wrap_xfrm).
     type XfrmError: Display + ScopedError;
 
-    /// Internal function to wrap a basic flows instance.
-    ///
-    /// This should wrap the type `F` to obtain a
-    /// [FarChannelBorrowFlows::Borrowed] instance.  This is not
-    /// intended to be used directly, but should be provided by any
-    /// implementation.
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Borrowed, Self::BorrowedFlowsError>;
-
     /// Create an instance of
-    /// [Xfrm](FarChannelBorrowFlows::Xfrm) from `xfrm`.
+    /// [Xfrm](FarChannelXfrm::Xfrm) from `xfrm`.
     ///
     /// This should wrap the type `InnerXfrm` to obtain an instance
     /// of `Xfrm`.  If `Xfrm` is the same as `InnerXfrm`,
@@ -468,14 +420,57 @@ where
         param: Self::Param,
         xfrm: InnerXfrm
     ) -> Result<Self::Xfrm, Self::XfrmError>;
+}
 
-    /// Create a [BorrowedFlows] instance around a socket created by
+/// Trait for obtaining an instance of a negotiator for a [FarChannel].
+pub trait FarChannelNegotiator<Nego> {
+    /// Create a negotiator for establishing a traffic splitter instance.
+    fn negotiator(&self) -> Nego;
+}
+
+/// Trait for [FarChannel]s that can construct
+/// [BorrowedFlows](crate::far::flows::BorrowedFlows) instances.
+///
+/// This trait represents channels that can construct a traffic
+/// splitter instance around a socket created by the channel.  The
+/// type of the traffic splitter is given by `F`, though the exact
+/// type of [Flow](crate::far::flows::Flow) instances the resulting
+/// `F` instance will produce depends on the [BorrowedFlowNegotiator]
+/// type [Nego](FarChannelBorrowFlows::Nego) that is defined in this
+/// trait.
+///
+/// # Usage
+///
+/// The [owned_flows](FarChannelBorrowFlows::borrowed_flows) function
+/// is called to obtain a traffic splitter instance of type `F`,
+/// created from a socket obtained from the implementing channel.
+/// Once this is done, the
+/// [BorrowedFlows](crate::far::flows::BorrowedFlows) trait's API can
+/// be used to obtain individual [Flow](crate::far::flows::Flow)s
+///
+/// # Implementation
+///
+/// Channels should generally implement both this trait as well as
+/// [FarChannelOwnedFlows].  See [flows] for details on the
+/// differences between the two traits.
+///
+/// Most implementations will only need to provide the
+/// [Nego](FarChannelBorrowFlows::Nego) type definition; the default
+/// implementation of [owned_flows](FarChannelBorrowFlows::borrowed_flows)
+/// shoul be sufficient for all purposes.
+pub trait FarChannelBorrowFlows<'a, F, InnerXfrm>:
+    FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
+where
+    InnerXfrm: DatagramXfrm,
+    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm> + BorrowedFlowsFlow {
+    type Nego: BorrowedFlowNegotiator<F::Flow>;
+
+    /// Create a traffic splitter instance around a socket created by
     /// this channel.
     ///
-    /// This will create an instance of
-    /// [FarChannelBorrowFlows::Borrowed] derived from the type `F`,
-    /// using a socket created from `param`.  Once created, the flows
-    /// structure can be used to split traffic into distinct traffic
+    /// This will create an instance of the type `F`, using a socket
+    /// created from `param`.  Once created, the flows structure can
+    /// be used to split traffic into distinct traffic
     /// [Flow](crate::far::flows::Flow)s for each peer address.
     fn borrowed_flows(
         &self,
@@ -483,113 +478,69 @@ where
         xfrm: InnerXfrm,
         flow: F::CreateParam
     ) -> Result<
-        Self::Borrowed,
+        F,
         FarChannelFlowsError<
             Self::SocketError,
             F::CreateError,
-            Self::XfrmError,
-            Self::BorrowedFlowsError
+            Self::XfrmError
         >
     > {
         let socket = self
             .socket(&param)
             .map_err(|e| FarChannelFlowsError::Socket { socket: e })?;
-        let socket = F::Socket::from(socket);
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let xfrm = F::Xfrm::from(xfrm);
-        let flows = F::create(socket, xfrm, flow)
-            .map_err(|e| FarChannelFlowsError::Flows { flows: e })?;
 
-        self.wrap_borrowed_flows(flows)
-            .map_err(|e| FarChannelFlowsError::Wrap { wrap: e })
+        F::create(socket, xfrm, flow)
+            .map_err(|e| FarChannelFlowsError::Flows { flows: e })
     }
 }
 
-/// Trait for [FarChannel]s that can construct [OwnedFlows] instances.
+/// Trait for [FarChannel]s that can construct traffic splitter
+/// instances.
 ///
-/// This trait represents channels that can construct an [OwnedFlows]
-/// instance around a socket created by the channel.  Depending on the
-/// nature of the channel, this can involve wrapping an inner
-/// `OwnedFlows` instance (specificed by the type parameter `F`),
-/// which is wrapped in a separate outer `OwnedFlows` instance
-/// dependent on the nature of the channel (an example of this case
-/// can be found with
-/// [DTLSFarChannel](crate::far::dtls::DTLSFarChannel)).  In most
-/// cases, however, the "inner" and "outer" flows will be the same.
+/// This trait represents channels that can construct a traffic
+/// splitter instance around a socket created by the channel.  The
+/// type of the traffic splitter is given by `F`, though the exact
+/// type of [Flow](crate::far::flows::Flow) instances the resulting
+/// `F` instance will produce depends on the [OwnedFlowNegotiator]
+/// type [Nego](FarChannelOwnedFlows::Nego) that is defined in this
+/// trait.
 ///
 /// # Usage
 ///
-/// The [owned_flows](FarChannelOwnedFlows::owned_flows)
-/// function is called to obtain an
-/// [Owned](FarChannelOwnedFlows::Owned) instance, created
+/// The [owned_flows](FarChannelOwnedFlows::owned_flows) function is
+/// called to obtain a traffic splitter instance of type `F`, created
 /// from a socket obtained from the implementing channel.  Once this
-/// is done, the [OwnedFlows] trait's API can be used to obtain
-/// individual [Flow](crate::far::flows::Flow)s
+/// is done, the
+/// [OwnedFlowsInbound](crate::far::flows::OwnedFlowsInbound) and
+/// [OwnedFlowsOutbound](crate::far::flows::OwnedFlowsOutbound)
+/// traits' APIs can be used to obtain individual
+/// [Flow](crate::far::flows::Flow)s
 ///
 /// # Implementation
 ///
 /// Channels should generally implement both this trait as well as
-/// [FarChannelBorrowFlows].  See [BorrowedFlows] and [OwnedFlows] for
-/// details on the differences between the two traits.
+/// [FarChannelBorrowFlows].  See [flows] for details on the
+/// differences between the two traits.
 ///
 /// Most implementations will only need to provide the
-/// [wrap_owned_flows](FarChannelOwnedFlows::wrap_owned_flows)
-/// implementation (as well as the associated types).
-pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>: FarChannel
+/// [Nego](FarChannelOwnedFlows::Nego) type definition; the default
+/// implementation of [owned_flows](FarChannelOwnedFlows::owned_flows)
+/// shoul be sufficient for all purposes.
+pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>:
+    FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
 where
-    AuthN: SessionAuthN<<Self::Nego as Negotiator>::Flow>,
     InnerXfrm: DatagramXfrm,
-    InnerXfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
-    F: Flows + CreateOwnedFlows<Self::Nego, AuthN> + OwnedFlows,
-    F::Xfrm: From<Self::Xfrm>,
-    F::Socket: From<Self::Socket> {
-    /// Type of owned flows created by this channel.
-    type Owned: Flows<Xfrm = F::Xfrm> + OwnedFlows<Xfrm = F::Xfrm>;
-    /// Type of errors that can occur when creating owned flows.
-    type OwnedFlowsError: Display + ScopedError;
-    /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
-    ///
-    /// This can be the same as `InnerXfrm`, or it can be its own
-    /// type derived from `InnerXfrm`
-    type Xfrm: DatagramXfrm;
-    /// Type of errors that can be returned from
-    /// [wrap_xfrm](FarChannelOwnedFlows::wrap_xfrm).
-    type XfrmError: Display + ScopedError;
-    type Nego: Negotiator<Inner = F::Flow>;
+    AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
+    F: OwnedFlowsCreate<Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
+    type Nego: OwnedFlowNegotiator<F::Flow>;
 
-    /// Create a negotiator for establishing a [CreateOwnedFlows] instance.
-    fn negotiator(&self) -> Self::Nego;
-
-    /// Internal function to wrap a basic flows instance.
-    ///
-    /// This should wrap the type `F` to obtain a
-    /// [FarChannelOwnedFlows::Owned] instance.  This is not
-    /// intended to be used directly, but should be provided by any
-    /// implementation.
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError>;
-
-    /// Create an instance of
-    /// [Xfrm](FarChannelOwnedFlows::Xfrm) from `xfrm`.
-    ///
-    /// This should wrap the type `InnerXfrm` to obtain an instance
-    /// of `Xfrm`.  If `Xfrm` is the same as `InnerXfrm`,
-    /// this can be a simple passthrough function.
-    fn wrap_xfrm(
-        &self,
-        param: Self::Param,
-        xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError>;
-
-    /// Create an [OwnedFlows] instance around a socket created by
+    /// Create traffic splitter instance around a socket created by
     /// this channel.
     ///
-    /// This will create an instance of
-    /// [FarChannelOwnedFlows::Owned] derived from the type `F`,
+    /// This will create an instance of the traffic splitter type `F`,
     /// using a socket created from `param`.  Once created, the flows
     /// structure can be used to split traffic into distinct traffic
     /// [Flow](crate::far::flows::Flow)s for each peer address.
@@ -602,30 +553,25 @@ where
         reporter: F::Reporter,
         flow: F::CreateParam
     ) -> Result<
-        Self::Owned,
+        F,
         FarChannelFlowsError<
             Self::SocketError,
             F::CreateError,
-            Self::XfrmError,
-            Self::OwnedFlowsError
+            Self::XfrmError
         >
     > {
         let socket = self
             .socket(&param)
             .map_err(|e| FarChannelFlowsError::Socket { socket: e })?;
-        let socket = F::Socket::from(socket);
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let xfrm = F::Xfrm::from(xfrm);
         let negotiator = self.negotiator();
-        let flows = F::create_with_reporter(
+
+        F::create_with_reporter(
             channel_id, socket, authn, negotiator, reporter, xfrm, flow
         )
-        .map_err(|e| FarChannelFlowsError::Flows { flows: e })?;
-
-        self.wrap_owned_flows(flows)
-            .map_err(|e| FarChannelFlowsError::Wrap { wrap: e })
+        .map_err(|e| FarChannelFlowsError::Flows { flows: e })
     }
 }
 
@@ -658,25 +604,20 @@ pub enum AcquiredResolveStaticError {
 }
 
 /// Multiplexer for errors that can occur when creating a
-/// [Flows] instance.
+/// traffic splitter instance.
 #[derive(Debug)]
-pub enum FarChannelFlowsError<Socket, Flows, Xfrm, Wrap> {
-    /// Error occurred while wrapping the inner [Flows] instance.
-    Wrap {
-        /// The error that occurred while wrapping the inner [Flows]
-        /// instance.
-        wrap: Wrap
-    },
+pub enum FarChannelFlowsError<Socket, Flows, Xfrm> {
     /// Error occurred while wrapping the inner [DatagramXfrm] instance.
     Xfrm {
         /// The error occurred while wrapping the inner
         /// [DatagramXfrm] instance.
         xfrm: Xfrm
     },
-    /// Error occurred while obtaining the inner [Flows] instance.
+    /// Error occurred while obtaining the inner traffic splitter
+    /// instance.
     Flows {
-        /// The error that occurred while obtaining the inner [Flows]
-        /// instance.
+        /// The error that occurred while obtaining the inner traffic
+        /// splitter instance.
         flows: Flows
     },
     /// Error occurred while obtaining the socket.
@@ -759,17 +700,15 @@ impl FarChannelAcquiredResolve for UnixSocketAddr {
     }
 }
 
-impl<Socket, Flows, Xfrm, Wrap> ScopedError
-    for FarChannelFlowsError<Socket, Flows, Xfrm, Wrap>
+impl<Socket, Flows, Xfrm> ScopedError
+    for FarChannelFlowsError<Socket, Flows, Xfrm>
 where
     Socket: ScopedError,
     Flows: ScopedError,
-    Xfrm: ScopedError,
-    Wrap: ScopedError
+    Xfrm: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            FarChannelFlowsError::Wrap { wrap } => wrap.scope(),
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.scope(),
             FarChannelFlowsError::Flows { flows } => flows.scope(),
             FarChannelFlowsError::Socket { socket } => socket.scope()
@@ -777,10 +716,8 @@ where
     }
 }
 
-impl<Socket, Flows, Xfrm, Wrap> Display
-    for FarChannelFlowsError<Socket, Flows, Xfrm, Wrap>
+impl<Socket, Flows, Xfrm> Display for FarChannelFlowsError<Socket, Flows, Xfrm>
 where
-    Wrap: Display,
     Xfrm: Display,
     Flows: Display,
     Socket: Display
@@ -790,7 +727,6 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            FarChannelFlowsError::Wrap { wrap } => wrap.fmt(f),
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.fmt(f),
             FarChannelFlowsError::Flows { flows } => flows.fmt(f),
             FarChannelFlowsError::Socket { socket } => socket.fmt(f)

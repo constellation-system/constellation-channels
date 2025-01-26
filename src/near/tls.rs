@@ -538,8 +538,10 @@ where
     S: Credentials + Read + Write,
     Endpoint: Display
 {
-    type Cred<'a> = SSLCred<'a, S::Cred<'a>>
-    where Self: 'a;
+    type Cred<'a>
+        = SSLCred<'a, S::Cred<'a>>
+    where
+        Self: 'a;
     type CredError = S::CredError;
 
     #[inline]
@@ -553,8 +555,10 @@ where
     S: Credentials + Read + Write,
     Endpoint: Display
 {
-    type Cred<'a> = SSLCred<'a, S::Cred<'a>>
-    where Self: 'a;
+    type Cred<'a>
+        = SSLCred<'a, S::Cred<'a>>
+    where
+        Self: 'a;
     type CredError = S::CredError;
 
     #[inline]
@@ -731,11 +735,7 @@ where
 #[cfg(test)]
 use std::fs::metadata;
 #[cfg(test)]
-use std::thread::sleep;
-#[cfg(test)]
 use std::thread::spawn;
-#[cfg(test)]
-use std::time::Duration;
 
 #[cfg(test)]
 use crate::config::tls::TLSClientConfig;

@@ -221,9 +221,11 @@ impl<Params> NearConnector for NearSocketConnector<Params>
 where
     Params: NearSocketParams
 {
-    type EndpointRef<'a> = &'a Params::Endpoint
-    where Params::Endpoint: 'a,
-          Params: 'a;
+    type EndpointRef<'a>
+        = &'a Params::Endpoint
+    where
+        Params::Endpoint: 'a,
+        Params: 'a;
     type Reader = NearReader<Params::Stream>;
     type Writer = NearWriter<Params::Stream>;
 
