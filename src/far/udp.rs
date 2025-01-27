@@ -28,13 +28,16 @@
 //! receiving over UDP:
 //!
 //! ```
+//! # use constellation_auth::authn::PassthruSessionAuthN;
 //! # use constellation_common::net::PassthruDatagramXfrm;
+//! # use constellation_common::retry::RetryResult;
 //! # use constellation_channels::config::UDPFarChannelConfig;
 //! # use constellation_channels::far::FarChannel;
-//! # use constellation_channels::far::FarChannelCreate;
 //! # use constellation_channels::far::FarChannelBorrowFlows;
+//! # use constellation_channels::far::FarChannelCreate;
+//! # use constellation_channels::far::FarChannelNegotiator;
 //! # use constellation_channels::far::flows::BorrowedFlows;
-//! # use constellation_channels::far::flows::CreateFlows;
+//! # use constellation_channels::far::flows::BorrowedFlowsCreate;
 //! # use constellation_channels::far::flows::MultiFlows;
 //! # use constellation_channels::far::flows::SingleFlow;
 //! # use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -75,22 +78,26 @@
 //!     let mut listener =
 //!         UDPFarChannel::new(&mut client_nscaches, channel_config)
 //!             .expect("Expected success");
+//!     let nego = FarChannelNegotiator::negotiator(&listener);
 //!     let param = listener.acquire().unwrap();
 //!     let xfrm = PassthruDatagramXfrm::new();
 //!     let mut flows: MultiFlows<
-//!         UDPFarChannel,
+//!         UDPFarSocket,
 //!         PassthruDatagramXfrm<SocketAddr>
 //!     > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 //!
 //! #   client_barrier.wait();
 //!
 //!     let mut buf = [0; FIRST_BYTES.len()];
-//!     let (peer_addr, mut flow) = flows.listen().unwrap();
+//!     let (mut flow, peer_addr, NullCred) =
+//!         match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+//!             RetryResult::Success(flow) => flow,
+//!             _ => panic!("Shouldn't see retry")
+//!         };
 //!
 //! #   client_barrier.wait();
 //!
 //!     let nbytes = flow.read(&mut buf).unwrap();
-//!     let mut flow = flows.flow(client_addr.clone(), None).unwrap();
 //!
 //!     flow.write_all(&SECOND_BYTES).expect("Expected success");
 //!
@@ -106,10 +113,11 @@
 //! let send = spawn(move || {
 //!     let mut conn = UDPFarChannel::new(&mut channel_nscaches, client_config)
 //!         .expect("expected success");
+//!     let nego = FarChannelNegotiator::negotiator(&conn);
 //!     let param = conn.acquire().unwrap();
 //!     let xfrm = PassthruDatagramXfrm::new();
 //!     let mut flows: SingleFlow<
-//!         UDPFarChannel,
+//!         UDPFarSocket,
 //!         PassthruDatagramXfrm<SocketAddr>
 //!     > = conn
 //!         .borrowed_flows(param, xfrm, channel_addr.clone())
@@ -117,20 +125,24 @@
 //!
 //! #   channel_barrier.wait();
 //!
-//!     let mut flow = flows.flow(channel_addr.clone(), None).unwrap();
+//!     let (mut flow, NullCred) = match flows
+//!         .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
+//!         .unwrap()
+//!     {
+//!         RetryResult::Success(flow) => flow,
+//!         _ => panic!("Shouldn't see retry")
+//!     };
 //!
 //!     flow.write_all(&FIRST_BYTES).expect("Expected success");
 //!
 //! #   channel_barrier.wait();
 //!
 //!     let mut buf = [0; SECOND_BYTES.len()];
-//!     let (peer_addr, mut flow) = flows.listen().unwrap();
 //!
 //! #   channel_barrier.wait();
 //!
 //!     flow.read_exact(&mut buf).unwrap();
 //!
-//!     assert_eq!(peer_addr, channel_addr);
 //!     assert_eq!(SECOND_BYTES, buf);
 //! });
 //!
@@ -154,16 +166,17 @@ use constellation_common::net::Socket;
 use log::warn;
 
 use crate::config::UDPFarChannelConfig;
-use crate::far::flows::OwnedFlows;
 use crate::far::flows::PassthruNegotiator;
-use crate::far::BorrowedFlows;
-use crate::far::CreateFlows;
-use crate::far::CreateOwnedFlows;
+use crate::far::BorrowedFlowsCreate;
+use crate::far::BorrowedFlowsFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelOwnedFlows;
-use crate::far::Flows;
+use crate::far::FarChannelSocket;
+use crate::far::FarChannelXfrm;
+use crate::far::OwnedFlowsCreate;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// A UDP-based far-link channel.
@@ -302,10 +315,6 @@ impl DatagramXfrmCreateParam for UDPDatagramXfrm {
 impl FarChannel for UDPFarChannel {
     type AcquireError = Infallible;
     type Acquired = SocketAddr;
-    type Config = UDPFarChannelConfig;
-    type Param = SocketAddr;
-    type Socket = UDPFarSocket;
-    type SocketError = Error;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -327,6 +336,12 @@ impl FarChannel for UDPFarChannel {
     fn acquire(&mut self) -> Result<SocketAddr, Infallible> {
         Ok(self.bind)
     }
+}
+
+impl FarChannelSocket for UDPFarChannel {
+    type Param = SocketAddr;
+    type Socket = UDPFarSocket;
+    type SocketError = Error;
 
     #[inline]
     fn socket(
@@ -343,6 +358,7 @@ impl FarChannel for UDPFarChannel {
 }
 
 impl FarChannelCreate for UDPFarChannel {
+    type Config = UDPFarChannelConfig;
     type CreateError = Infallible;
 
     #[inline]
@@ -369,16 +385,10 @@ impl FarChannelCreate for UDPFarChannel {
     }
 }
 
-impl<F, Xfrm> FarChannelBorrowFlows<F, Xfrm> for UDPFarChannel
+impl<Xfrm> FarChannelXfrm<Xfrm> for UDPFarChannel
 where
-    F: Flows + CreateFlows + BorrowedFlows,
-    F::Socket: From<UDPFarSocket>,
-    F::Xfrm: From<Xfrm>,
-    Xfrm: DatagramXfrm,
-    Xfrm::LocalAddr: From<SocketAddr>
+    Xfrm: DatagramXfrm
 {
-    type Borrowed = F;
-    type BorrowedFlowsError = Infallible;
     type Xfrm = Xfrm;
     type XfrmError = Infallible;
 
@@ -387,58 +397,35 @@ where
         &self,
         _param: Self::Param,
         xfrm: Xfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
+    ) -> Result<Xfrm, Self::XfrmError> {
         Ok(xfrm)
-    }
-
-    #[inline]
-    fn wrap_borrowed_flows(
-        &self,
-        flows: F
-    ) -> Result<F, Infallible> {
-        Ok(flows)
     }
 }
 
-impl<F, AuthN, Xfrm> FarChannelOwnedFlows<F, AuthN, Xfrm> for UDPFarChannel
+impl FarChannelNegotiator<PassthruNegotiator> for UDPFarChannel {
+    #[inline]
+    fn negotiator(&self) -> PassthruNegotiator {
+        PassthruNegotiator
+    }
+}
+
+impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm> for UDPFarChannel
 where
-    F: Flows
-        + CreateOwnedFlows<PassthruNegotiator<Xfrm::PeerAddr, F>, AuthN>
-        + OwnedFlows,
-    F::Xfrm: From<Xfrm>,
-    F::Socket: From<UDPFarSocket>,
-    F::Flow: Send,
-    AuthN: SessionAuthN<F::Flow>,
-    Xfrm: DatagramXfrm,
-    Xfrm::LocalAddr: From<SocketAddr>
+    InnerXfrm: DatagramXfrm,
+    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm> + BorrowedFlowsFlow
 {
-    type Nego = PassthruNegotiator<Xfrm::PeerAddr, F>;
-    type Owned = F;
-    type OwnedFlowsError = Infallible;
-    type Xfrm = Xfrm;
-    type XfrmError = Infallible;
+    type Nego = PassthruNegotiator;
+}
 
-    #[inline]
-    fn negotiator(&self) -> Self::Nego {
-        PassthruNegotiator::default()
-    }
-
-    #[inline]
-    fn wrap_xfrm(
-        &self,
-        _param: Self::Param,
-        xfrm: Xfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
-        Ok(xfrm)
-    }
-
-    #[inline]
-    fn wrap_owned_flows(
-        &self,
-        flows: F
-    ) -> Result<Self::Owned, Self::OwnedFlowsError> {
-        Ok(flows)
-    }
+impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
+    for UDPFarChannel
+where
+    InnerXfrm: DatagramXfrm,
+    AuthN: SessionAuthN<F::Flow>,
+    F: OwnedFlowsCreate<UDPFarSocket, PassthruNegotiator, AuthN, InnerXfrm>,
+    F::Flow: Send
+{
+    type Nego = PassthruNegotiator;
 }
 
 impl Socket for UDPFarSocket {
@@ -528,8 +515,16 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
+use constellation_auth::authn::PassthruSessionAuthN;
+#[cfg(test)]
+use constellation_auth::cred::NullCred;
+#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use constellation_common::retry::RetryResult;
 
+#[cfg(test)]
+use crate::far::flows::BorrowedFlows;
 #[cfg(test)]
 use crate::far::flows::MultiFlows;
 #[cfg(test)]
@@ -566,22 +561,26 @@ fn test_send_recv() {
         let mut listener =
             UDPFarChannel::new(&mut client_nscaches, channel_config)
                 .expect("Expected success");
+        let nego = FarChannelNegotiator::negotiator(&listener);
         let param = listener.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: MultiFlows<
-            UDPFarChannel,
+            UDPFarSocket,
             PassthruDatagramXfrm<SocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
         let mut buf = [0; FIRST_BYTES.len()];
 
         client_barrier.wait();
 
-        let (peer_addr, mut flow) = flows.listen().unwrap();
+        let (mut flow, peer_addr, NullCred) =
+            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
+                RetryResult::Success(flow) => flow,
+                _ => panic!("Shouldn't see retry")
+            };
 
         client_barrier.wait();
 
         let nbytes = flow.read(&mut buf).unwrap();
-        let mut flow = flows.flow(client_addr.clone(), None).unwrap();
 
         flow.write_all(&SECOND_BYTES).expect("Expected success");
 
@@ -597,10 +596,11 @@ fn test_send_recv() {
     let send = spawn(move || {
         let mut conn = UDPFarChannel::new(&mut channel_nscaches, client_config)
             .expect("expected success");
+        let nego = FarChannelNegotiator::negotiator(&conn);
         let param = conn.acquire().unwrap();
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows: SingleFlow<
-            UDPFarChannel,
+            UDPFarSocket,
             PassthruDatagramXfrm<SocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())
@@ -608,20 +608,24 @@ fn test_send_recv() {
 
         channel_barrier.wait();
 
-        let mut flow = flows.flow(channel_addr.clone(), None).unwrap();
+        let (mut flow, NullCred) = match flows
+            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
+            .unwrap()
+        {
+            RetryResult::Success(flow) => flow,
+            _ => panic!("Shouldn't see retry")
+        };
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
         channel_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let (peer_addr, mut flow) = flows.listen().unwrap();
 
         channel_barrier.wait();
 
         flow.read_exact(&mut buf).unwrap();
 
-        assert_eq!(peer_addr, channel_addr);
         assert_eq!(SECOND_BYTES, buf);
     });
 

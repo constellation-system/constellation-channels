@@ -37,6 +37,7 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::retry::Retry;
+use constellation_common::shutdown::ShutdownFlag;
 use log::debug;
 use log::error;
 use log::info;
@@ -426,13 +427,16 @@ impl ThreadedNSNameCachesNotify {
 fn run_refresh_thread(
     cache: Weak<RwLock<HashMap<String, Weak<RwLock<NSNameCache>>>>>,
     notify: Arc<ThreadedNSNameCachesNotify>,
+    shutdown: ShutdownFlag,
     renewal: Duration,
     retry: Retry
 ) {
     debug!(target: "ns-name-cache-refresh",
            "launching refresher thread for name caches");
 
-    while let Some(cache) = cache.upgrade() {
+    while let Some(cache) = cache.upgrade() &&
+        shutdown.is_live()
+    {
         debug!(target: "ns-name-cache-refresh",
                "checking name caches for refresh");
 
@@ -749,7 +753,8 @@ impl NSNameCachesCtx for ThreadedNSNameCaches {
 
 impl ThreadedNSNameCaches {
     pub fn create(
-        config: ThreadedNSNameCachesConfig
+        config: ThreadedNSNameCachesConfig,
+        shutdown: ShutdownFlag
     ) -> (Self, JoinHandle<()>) {
         info!(target: "ns-name-cache",
               "creating name caches");
@@ -765,7 +770,13 @@ impl ThreadedNSNameCaches {
 
         // Start the refresher thread.
         let handle = std::thread::spawn(move || {
-            run_refresh_thread(thread_caches, thread_notify, renewal, retry)
+            run_refresh_thread(
+                thread_caches,
+                thread_notify,
+                shutdown,
+                renewal,
+                retry
+            )
         });
 
         (
