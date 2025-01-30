@@ -234,6 +234,8 @@ use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
+#[cfg(feature = "unix")]
+use std::os::unix::net::UCred;
 use std::sync::Arc;
 use std::sync::Condvar;
 
@@ -681,13 +683,47 @@ pub enum CompoundNegotiator {
     }
 }
 
-/// Credentials that can be harvested from [CompoundFarChannel]s.
-pub enum CompoundFarCredential<'a, Basic> {
+/// Message credentials that can be harvested from
+/// [CompoundFarChannel]s.
+#[derive(Clone)]
+pub enum CompoundFarChannelMsgCred {
+    /// Credential harvested from a [UnixFarChannel].
+    Unix {
+        /// Unix socket message credentials.
+        unix: UCred
+    },
+    /// Credential harvested from a [CompoundFarIPChannel].
+    IP {
+        /// IP credentials.
+        ///
+        /// Note that UDP credentials are unsafe.
+        ip: CompoundFarIPChannelMsgCred
+    }
+}
+
+/// Message credentials that can be harvested from
+/// [CompoundFarIPChannel]s.
+#[derive(Clone)]
+pub enum CompoundFarIPChannelMsgCred {
+    /// Credentials harvested from a [UDPFarChannel].
+    ///
+    /// These are unsafe.
+    UDP {
+        /// Peer address.
+        ///
+        /// This is unsafe to use as a credential.
+        unsafe_udp: SocketAddr
+    }
+}
+
+/// Session credentials that can be harvested from
+/// [CompoundFarChannel]s.
+pub enum CompoundFarChannelSessionCred<'a, Basic> {
     /// Credential harvested from DTLS sessions.
     #[cfg(feature = "dtls")]
     DTLS {
         /// DTLS credentials.
-        dtls: Box<SSLCred<'a, CompoundFarCredential<'a, Basic>>>
+        dtls: Box<SSLCred<'a, CompoundFarChannelSessionCred<'a, Basic>>>
     },
     /// Credentials harvested from basic channels.
     Basic {
@@ -709,7 +745,7 @@ where
 }
 
 /// Errors that can occur harvesting credentials.
-pub enum CompoundFarCredentialError<Cred> {
+pub enum CompoundFarChannelSessionCredError<Cred> {
     Basic { error: Cred }
 }
 
@@ -783,33 +819,35 @@ where
     F: Credentials + Flow
 {
     type Cred<'a>
-        = CompoundFarCredential<'a, F::Cred<'a>>
+        = CompoundFarChannelSessionCred<'a, F::Cred<'a>>
     where
         F: 'a;
-    type CredError = CompoundFarCredentialError<<F as Credentials>::CredError>;
+    type CredError =
+        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred<'_>>,
-        CompoundFarCredentialError<<F as Credentials>::CredError>
+        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>
     > {
         match self {
             CompoundFlow::DTLS { flow } => {
                 let cred = flow.creds()?;
 
-                Ok(cred.map(|cred| CompoundFarCredential::DTLS {
+                Ok(cred.map(|cred| CompoundFarChannelSessionCred::DTLS {
                     dtls: Box::new(cred)
                 }))
             }
             CompoundFlow::Basic { flow } => {
                 let cred = flow.creds().map_err(|err| {
-                    CompoundFarCredentialError::Basic { error: err }
+                    CompoundFarChannelSessionCredError::Basic { error: err }
                 })?;
 
-                Ok(cred
-                    .map(|cred| CompoundFarCredential::Basic { basic: cred }))
+                Ok(cred.map(|cred| CompoundFarChannelSessionCred::Basic {
+                    basic: cred
+                }))
             }
         }
     }
@@ -830,17 +868,18 @@ where
     F: Credentials + Flow
 {
     type Cred<'a>
-        = CompoundFarCredential<'a, F::Cred<'a>>
+        = CompoundFarChannelSessionCred<'a, F::Cred<'a>>
     where
         F: 'a;
-    type CredError = CompoundFarCredentialError<<F as Credentials>::CredError>;
+    type CredError =
+        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred<'_>>,
-        CompoundFarCredentialError<<F as Credentials>::CredError>
+        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>
     > {
         self.as_ref().creds()
     }
@@ -1590,6 +1629,19 @@ impl Sender for CompoundFarIPChannelSocket {
     }
 
     #[inline]
+    fn send_to_vectored(
+        &self,
+        addr: &Self::Addr,
+        buf: &[IoSlice<'_>]
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundFarIPChannelSocket::UDP { udp } => {
+                udp.send_to_vectored(addr, buf)
+            }
+        }
+    }
+
+    #[inline]
     fn flush(&self) -> Result<(), Error> {
         match self {
             CompoundFarIPChannelSocket::UDP { udp } => udp.flush()
@@ -1606,7 +1658,6 @@ impl Sender for CompoundFarChannelSocket {
         }
     }
 
-    #[inline]
     fn send_to(
         &self,
         addr: &Self::Addr,
@@ -1621,6 +1672,27 @@ impl Sender for CompoundFarChannelSocket {
                 CompoundFarChannelSocket::IP { ip },
                 CompoundFarChannelAddr::IP { ip: addr }
             ) => ip.send_to(addr, buf),
+            _ => Err(Error::new(
+                ErrorKind::Other,
+                "socket and address type mismatch"
+            ))
+        }
+    }
+
+    fn send_to_vectored(
+        &self,
+        addr: &Self::Addr,
+        bufs: &[IoSlice<'_>]
+    ) -> Result<usize, Error> {
+        match (self, addr) {
+            (
+                CompoundFarChannelSocket::Unix { unix },
+                CompoundFarChannelAddr::Unix { unix: addr }
+            ) => unix.send_to_vectored(addr, bufs),
+            (
+                CompoundFarChannelSocket::IP { ip },
+                CompoundFarChannelAddr::IP { ip: addr }
+            ) => ip.send_to_vectored(addr, bufs),
             _ => Err(Error::new(
                 ErrorKind::Other,
                 "socket and address type mismatch"
@@ -1688,26 +1760,52 @@ impl Socket for CompoundFarChannelSocket {
 }
 
 impl Receiver for CompoundFarChannelSocket {
-    #[inline]
+    type MsgCred = CompoundFarChannelMsgCred;
+
     fn recv_from(
         &self,
         buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
+    ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
         match self {
             CompoundFarChannelSocket::Unix { unix } => {
-                let (nbytes, addr) = unix.recv_from(buf)?;
+                let (nbytes, addr, cred) = unix.recv_from(buf)?;
+                let cred = cred
+                    .map(|cred| CompoundFarChannelMsgCred::Unix { unix: cred });
 
-                Ok((nbytes, CompoundFarChannelAddr::Unix { unix: addr }))
+                Ok((nbytes, CompoundFarChannelAddr::Unix { unix: addr }, cred))
             }
             CompoundFarChannelSocket::IP { ip } => {
-                let (nbytes, addr) = ip.recv_from(buf)?;
+                let (nbytes, addr, cred) = ip.recv_from(buf)?;
+                let cred =
+                    cred.map(|cred| CompoundFarChannelMsgCred::IP { ip: cred });
 
-                Ok((nbytes, CompoundFarChannelAddr::IP { ip: addr }))
+                Ok((nbytes, CompoundFarChannelAddr::IP { ip: addr }, cred))
             }
         }
     }
 
-    #[inline]
+    fn recv_from_vectored(
+        &self,
+        bufs: &mut [IoSliceMut<'_>]
+    ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
+        match self {
+            CompoundFarChannelSocket::Unix { unix } => {
+                let (nbytes, addr, cred) = unix.recv_from_vectored(bufs)?;
+                let cred = cred
+                    .map(|cred| CompoundFarChannelMsgCred::Unix { unix: cred });
+
+                Ok((nbytes, CompoundFarChannelAddr::Unix { unix: addr }, cred))
+            }
+            CompoundFarChannelSocket::IP { ip } => {
+                let (nbytes, addr, cred) = ip.recv_from_vectored(bufs)?;
+                let cred =
+                    cred.map(|cred| CompoundFarChannelMsgCred::IP { ip: cred });
+
+                Ok((nbytes, CompoundFarChannelAddr::IP { ip: addr }, cred))
+            }
+        }
+    }
+
     fn peek_from(
         &self,
         buf: &mut [u8]
@@ -1728,16 +1826,36 @@ impl Receiver for CompoundFarChannelSocket {
 }
 
 impl Receiver for CompoundFarIPChannelSocket {
-    #[inline]
+    type MsgCred = CompoundFarIPChannelMsgCred;
+
     fn recv_from(
         &self,
         buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
+    ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
         match self {
             CompoundFarIPChannelSocket::UDP { udp } => {
-                let (nbytes, addr) = udp.recv_from(buf)?;
+                let (nbytes, addr, cred) = udp.recv_from(buf)?;
+                let cred = cred.map(|cred| CompoundFarIPChannelMsgCred::UDP {
+                    unsafe_udp: cred
+                });
 
-                Ok((nbytes, addr))
+                Ok((nbytes, addr, cred))
+            }
+        }
+    }
+
+    fn recv_from_vectored(
+        &self,
+        bufs: &mut [IoSliceMut<'_>]
+    ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
+        match self {
+            CompoundFarIPChannelSocket::UDP { udp } => {
+                let (nbytes, addr, cred) = udp.recv_from_vectored(bufs)?;
+                let cred = cred.map(|cred| CompoundFarIPChannelMsgCred::UDP {
+                    unsafe_udp: cred
+                });
+
+                Ok((nbytes, addr, cred))
             }
         }
     }
@@ -1797,13 +1915,13 @@ impl ScopedError for CompoundFarIPChannelXfrmPeerAddrError {
     }
 }
 
-impl<Cred> ScopedError for CompoundFarCredentialError<Cred>
+impl<Cred> ScopedError for CompoundFarChannelSessionCredError<Cred>
 where
     Cred: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            CompoundFarCredentialError::Basic { error } => error.scope()
+            CompoundFarChannelSessionCredError::Basic { error } => error.scope()
         }
     }
 }
@@ -3380,7 +3498,7 @@ impl Display for CompoundFarChannelAcquiredResolverError {
     }
 }
 
-impl<F> Display for CompoundFarCredentialError<F>
+impl<F> Display for CompoundFarChannelSessionCredError<F>
 where
     F: Display
 {
@@ -3389,12 +3507,12 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundFarCredentialError::Basic { error } => error.fmt(f)
+            CompoundFarChannelSessionCredError::Basic { error } => error.fmt(f)
         }
     }
 }
 
-impl<F> Debug for CompoundFarCredentialError<F>
+impl<F> Debug for CompoundFarChannelSessionCredError<F>
 where
     F: Display
 {
@@ -3403,7 +3521,7 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundFarCredentialError::Basic { error } => error.fmt(f)
+            CompoundFarChannelSessionCredError::Basic { error } => error.fmt(f)
         }
     }
 }

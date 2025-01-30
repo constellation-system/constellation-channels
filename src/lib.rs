@@ -25,6 +25,7 @@
 #![feature(get_mut_unchecked)]
 #![feature(let_chains)]
 #![feature(unix_socket_peek)]
+#![feature(unix_socket_ancillary_data)]
 
 //! Low-level communications API for Constellation.
 //!
