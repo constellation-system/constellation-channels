@@ -731,9 +731,9 @@ pub struct ThreadedFlowsReporter<F, ID, Prin> {
 }
 
 #[derive(Clone)]
-struct ThreadedFlowEntry {
+struct ThreadedFlowEntry<Cred> {
     /// Send half of the message buffer.
-    send: mpsc::Sender<Vec<u8>>,
+    send: mpsc::Sender<(Vec<u8>, Option<Cred>)>,
     /// Condition variable used to signal readiness.
     cond: Weak<Condvar>
 }
@@ -758,7 +758,8 @@ where
     /// Xfrm used to unwrap messages.
     xfrm: Arc<Mutex<Xfrm>>,
     /// Table holding existing flows.
-    flows: Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry>>>,
+    flows:
+        Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry<Sock::MsgCred>>>>,
     /// Table of negotiator threads.
     // ISSUE #9: this should eventually get replaced with some kind of
     // thread pool mechanism.
@@ -853,7 +854,8 @@ where
         AuthN::Prin
     )>,
     /// Table holding existing flows.
-    flows: Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry>>>,
+    flows:
+        Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry<Sock::MsgCred>>>>,
     /// Negotiator for new flows.
     negotiator: Nego,
     /// Table of negotiator threads.
@@ -865,7 +867,7 @@ where
 pub struct ThreadedFlow<Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Sock: Socket {
+    Sock: Socket + Receiver {
     /// Peer address.
     addr: Xfrm::PeerAddr,
     /// Xfrm used to unwrap messages.
@@ -873,7 +875,7 @@ where
     /// Socket used to send messages.
     socket: Arc<Sock>,
     /// Strong reference to the consumer half of the message buffer.
-    buf: mpsc::Receiver<Vec<u8>>,
+    buf: mpsc::Receiver<(Vec<u8>, Option<Sock::MsgCred>)>,
     /// Condition variable used to signal readiness.
     cond: Arc<Condvar>
 }
@@ -1327,6 +1329,7 @@ where
     Xfrm: 'static + DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: 'static + Eq + Hash,
     Sock: 'static + Socket + Sender + Receiver,
+    Sock::MsgCred: 'static + Send,
     Param: 'static + Clone + Display + Eq + Hash + Send,
     Nego: 'static
         + OwnedFlowNegotiator<ThreadedFlow<Sock, Xfrm>>
@@ -1488,10 +1491,11 @@ where
         negotiators: &Arc<
             Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowsNegotiateEntry>>
         >,
-        ent: VacantEntry<Xfrm::PeerAddr, ThreadedFlowEntry>,
+        ent: VacantEntry<Xfrm::PeerAddr, ThreadedFlowEntry<Sock::MsgCred>>,
         channel: &ID,
         param: &Param,
         addr: &Xfrm::PeerAddr,
+        cred: Option<Sock::MsgCred>,
         msg: Vec<u8>
     ) -> Result<(), Error> {
         let (send, recv) = mpsc::channel();
@@ -1502,7 +1506,7 @@ where
                msg.len(), addr);
 
         // Deliver the first message.
-        send.send(msg).map_err(|_| {
+        send.send((msg, cred)).map_err(|_| {
             Error::new(ErrorKind::Other, "per-flow channel closed unexpectedly")
         })?;
 
@@ -1544,10 +1548,14 @@ where
         negotiators: &Arc<
             Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowsNegotiateEntry>>
         >,
-        ent: &mut OccupiedEntry<Xfrm::PeerAddr, ThreadedFlowEntry>,
+        ent: &mut OccupiedEntry<
+            Xfrm::PeerAddr,
+            ThreadedFlowEntry<Sock::MsgCred>
+        >,
         channel: &ID,
         param: &Param,
         addr: &Xfrm::PeerAddr,
+        cred: Option<Sock::MsgCred>,
         msg: Vec<u8>
     ) -> Result<(), Error> {
         let (send, recv) = mpsc::channel();
@@ -1557,7 +1565,7 @@ where
                "buffering {} bytes to {}",
                msg.len(), addr);
 
-        send.send(msg).map_err(|_| {
+        send.send((msg, cred)).map_err(|_| {
             Error::new(ErrorKind::Other, "per-flow channel closed unexpectedly")
         })?;
         ent.insert(ThreadedFlowEntry {
@@ -1586,7 +1594,9 @@ where
     }
 
     fn handle_msg(
-        flows: &Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry>>>,
+        flows: &Arc<
+            Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowEntry<Sock::MsgCred>>>
+        >,
         socket: &Arc<Sock>,
         xfrm: &Arc<Mutex<Xfrm>>,
         authn: &AuthN,
@@ -1602,6 +1612,7 @@ where
         channel: &ID,
         param: &Param,
         addr: &Xfrm::PeerAddr,
+        cred: Option<Sock::MsgCred>,
         msg: Vec<u8>
     ) -> Result<(), Error> {
         trace!(target: "flows-threaded-listen",
@@ -1615,7 +1626,7 @@ where
                     let flow = ent.get_mut();
 
                     // Check if the flow has expired.
-                    let msg = match flow.cond.upgrade() {
+                    let res = match flow.cond.upgrade() {
                         Some(cond) => {
                             trace!(target: "flows-threaded-listen",
                                    concat!("buffering {} bytes to ",
@@ -1623,18 +1634,18 @@ where
                                    msg.len(), addr);
 
                             // Try to deliver the message.
-                            let out = match flow.send.send(msg) {
+                            let out = match flow.send.send((msg, cred)) {
                                 // Done, we're good.
                                 Ok(()) => None,
                                 // The per-flow send buffer
                                 // closed; recreate the flow.
-                                Err(mpsc::SendError(msg)) => {
+                                Err(mpsc::SendError(payload)) => {
                                     debug!(target: "flows-threaded-listen",
                                            concat!("send buffer to {} ",
                                                    "closed, replacing"),
                                            addr);
 
-                                    Some(msg)
+                                    Some(payload)
                                 }
                             };
 
@@ -1649,12 +1660,12 @@ where
                                    "replacing expired flow for {}",
                                    addr);
 
-                            Some(msg)
+                            Some((msg, cred))
                         }
                     };
 
-                    match msg {
-                        Some(msg) => Self::replace_flow(
+                    match res {
+                        Some((msg, cred)) => Self::replace_flow(
                             socket,
                             xfrm,
                             authn,
@@ -1665,6 +1676,7 @@ where
                             channel,
                             param,
                             addr,
+                            cred,
                             msg
                         ),
                         None => Ok(())
@@ -1687,6 +1699,7 @@ where
                         channel,
                         param,
                         addr,
+                        cred,
                         msg
                     )
                 }
@@ -1717,7 +1730,7 @@ where
                    param);
 
             let mut msg = vec![0; self.msgsize];
-            let (n, addr) = socket.recv_from(&mut msg)?;
+            let (n, addr, cred) = socket.recv_from(&mut msg)?;
 
             if n != 0 {
                 trace!(target: "flows-threaded-listen",
@@ -1752,6 +1765,7 @@ where
                     &channel,
                     &param,
                     &addr,
+                    cred,
                     msg
                 ) {
                     match err.scope() {
@@ -2012,6 +2026,7 @@ where
     Xfrm::PeerAddr: Eq + Hash,
     Xfrm::Param: Clone + Display + Eq + Hash + Send,
     Sock: 'static + Socket + Sender + Receiver + Send,
+    Sock::MsgCred: 'static + Send,
     ID: 'static + Clone + Display + Eq + Hash + Send
 {
     type ChannelID = ID;
@@ -2076,6 +2091,7 @@ where
     Xfrm::PeerAddr: 'static + Eq + Hash,
     Xfrm::Param: Clone + Display + Eq + Hash + Send,
     Sock: 'static + Socket + Sender + Receiver + Send,
+    Sock::MsgCred: 'static + Send,
     ID: 'static + Clone + Display + Eq + Hash + Send
 {
     type ChannelID = ID;
@@ -2195,7 +2211,7 @@ where
     }
 }
 
-impl Drop for ThreadedFlowEntry {
+impl<Cred> Drop for ThreadedFlowEntry<Cred> {
     fn drop(&mut self) {
         if let Some(cond) = self.cond.upgrade() {
             cond.notify_all()
@@ -2922,7 +2938,7 @@ impl<Sock, Xfrm> ConcurrentStream for ThreadedFlow<Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Hash,
-    Sock: Socket
+    Sock: Socket + Receiver
 {
     #[inline]
     fn condvar(&self) -> Arc<Condvar> {
@@ -3110,7 +3126,7 @@ where
         let mut nbytes = 0;
 
         while {
-            let (n, peer) = self.socket.recv_from(buf)?;
+            let (n, peer, _) = self.socket.recv_from(buf)?;
 
             if self.addr != peer {
                 warn!(target: "far-multi-flow",
@@ -3171,7 +3187,7 @@ impl<Sock, Xfrm> Read for ThreadedFlow<Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Hash,
-    Sock: Socket
+    Sock: Socket + Receiver
 {
     #[inline]
     fn read(
@@ -3180,7 +3196,7 @@ where
     ) -> Result<usize, Error> {
         match self.buf.try_recv() {
             // There's a buffered message; deliver it.
-            Ok(msg) => {
+            Ok((msg, _)) => {
                 let len = msg.len();
 
                 trace!(target: "flow-buffered",
@@ -3217,7 +3233,7 @@ where
         &mut self,
         buf: &mut [u8]
     ) -> Result<usize, Error> {
-        let (n, peer) = self.socket.recv_from(buf)?;
+        let (n, peer, _) = self.socket.recv_from(buf)?;
 
         if self.addr != peer {
             warn!(target: "far-multi-flow",
@@ -3270,7 +3286,7 @@ impl<Sock, Xfrm> Write for ThreadedFlow<Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
     Xfrm::PeerAddr: Hash,
-    Sock: Socket + Sender
+    Sock: Socket + Sender + Receiver
 {
     #[inline]
     fn write(

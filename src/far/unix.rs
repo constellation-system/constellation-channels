@@ -183,6 +183,11 @@ use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::fs::remove_file;
 use std::io::Error;
+use std::io::IoSlice;
+use std::io::IoSliceMut;
+use std::os::unix::net::AncillaryData;
+use std::os::unix::net::SocketAncillary;
+use std::os::unix::net::UCred;
 use std::os::unix::net::UnixDatagram;
 
 use constellation_auth::authn::SessionAuthN;
@@ -506,6 +511,25 @@ impl Sender for UnixDatagramSocket {
         self.socket.send_to_addr(buf, addr.as_ref())
     }
 
+    fn send_to_vectored(
+        &self,
+        addr: &Self::Addr,
+        bufs: &[IoSlice<'_>]
+    ) -> Result<usize, Error> {
+        let mut ancillary = SocketAncillary::new(&mut []);
+
+        if let Some(path) = addr.as_ref().as_pathname() {
+            self.socket.send_vectored_with_ancillary_to(
+                bufs,
+                &mut ancillary,
+                path
+            )
+        } else {
+            self.socket
+                .send_vectored_with_ancillary(bufs, &mut ancillary)
+        }
+    }
+
     #[inline]
     fn flush(&self) -> Result<(), Error> {
         Ok(())
@@ -513,14 +537,47 @@ impl Sender for UnixDatagramSocket {
 }
 
 impl Receiver for UnixDatagramSocket {
+    type MsgCred = UCred;
+
     #[inline]
     fn recv_from(
         &self,
         buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
-        let (nbytes, addr) = self.socket.recv_from(buf)?;
+    ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
+        self.recv_from_vectored(&mut [IoSliceMut::new(buf)])
+    }
 
-        Ok((nbytes, UnixSocketAddr::from(addr)))
+    fn recv_from_vectored(
+        &self,
+        bufs: &mut [IoSliceMut<'_>]
+    ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
+        let mut buf = [0; 128];
+        let mut ancillary = SocketAncillary::new(&mut buf);
+        let (nbytes, _, addr) = self
+            .socket
+            .recv_vectored_with_ancillary_from(bufs, &mut ancillary)?;
+        let mut cred = None;
+
+        for msg in ancillary.messages().flatten() {
+            if let AncillaryData::ScmCredentials(creds) = msg {
+                for curr in creds {
+                    if cred.is_none() {
+                        let _ = cred.insert(UCred {
+                            uid: curr.get_uid(),
+                            gid: curr.get_gid(),
+                            pid: Some(curr.get_pid())
+                        });
+                    } else {
+                        warn!(target: "unix-far-channel",
+                              concat!("neglecting extra credential uid: {},",
+                                      "gid: {}, pid: {}"),
+                              curr.get_uid(), curr.get_gid(), curr.get_pid());
+                    }
+                }
+            }
+        }
+
+        Ok((nbytes, UnixSocketAddr::from(addr), cred))
     }
 
     #[inline]
