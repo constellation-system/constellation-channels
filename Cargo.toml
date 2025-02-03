@@ -1,4 +1,4 @@
-# Copyright © 2024 The Johns Hopkins Applied Physics Laboratory LLC.
+# Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License, version
@@ -22,7 +22,7 @@ description = "Low-level communications for the Constellation distributed system
 repository = "https://github.com/constellation-system/constellation-channels"
 version = "0.0.0"
 authors = [ "Eric McCorkle <eric.mccorkle@jhuapl.edu>" ]
-rust-version = "1.81"
+rust-version = "1.83"
 license = "AGPL-3.0-only"
 keywords = ["networking", "distributed systems"]
 categories = ["network-programming"]
@@ -36,7 +36,6 @@ default = ["gssapi", "log", "openssl", "socks5", "unix"]
 dtls = []
 gssapi = [
     "dep:libgssapi",
-    "dep:libgssapi-sys",
     "constellation-auth/gssapi",
     "constellation-common/gssapi",
     "constellation-socks5?/gssapi",
@@ -76,9 +75,7 @@ constellation-auth = { git = "https://github.com/constellation-system/constellat
 constellation-common = { git = "https://github.com/constellation-system/constellation-common.git", branch = "devel", default-features = false }
 constellation-socks5 = { git = "https://github.com/constellation-system/constellation-socks5.git", branch = "devel", default-features = false, optional = true }
 constellation-streams = { git = "https://github.com/constellation-system/constellation-streams.git", branch = "devel", default-features = false }
-# ISSUE #19: GSSAPI versions pinned due to dependence on nightly-07-21-2024
-libgssapi = { version = "=0.8.1", optional = true }
-libgssapi-sys = { version = "=0.3.2", optional = true }
+libgssapi = { version = "0.8", optional = true }
 log = { version = "0.4", optional = true }
 openssl = { version = "0.10", optional = true }
 serde = { version = "1.0", features = ["derive"] }
