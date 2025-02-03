@@ -22,7 +22,6 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(incomplete_features)]
 #![feature(peer_credentials_unix_socket)]
-#![feature(generic_const_exprs)]
 #![feature(get_mut_unchecked)]
 #![feature(let_chains)]
 #![feature(unix_socket_peek)]

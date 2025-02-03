@@ -714,8 +714,7 @@ where
     Codec: Clone + DatagramCodec<Msg>,
     F: Flow + Credentials + Read + Write,
     Prin: Clone + Display + Eq + Hash,
-    ID: Clone + Display + Eq + Hash,
-    [(); Codec::MAX_BYTES]: {
+    ID: Clone + Display + Eq + Hash {
     msg: PhantomData<Msg>,
     codec: Codec,
     inner: ThreadedFlowsListener<F, ID, Prin>
@@ -2319,7 +2318,6 @@ where
     Addr: Clone + Display + Eq + Hash,
     Prin: Clone + Display + Eq + Hash,
     Msg: Send,
-    [(); Codec::MAX_BYTES]:
 {
     type Addr = Addr;
     type ListenError = ThreadedFlowsListenError;
@@ -2350,7 +2348,6 @@ where
     F: Flow + Credentials + Read + Write,
     Addr: Clone + Display + Eq + Hash,
     Prin: Clone + Display + Eq + Hash,
-    [(); Codec::MAX_BYTES]:
 {
     #[inline]
     pub fn create(
@@ -2372,7 +2369,6 @@ where
     F: Flow + Credentials + Read + Write,
     Addr: Clone + Display + Eq + Hash,
     Prin: Clone + Display + Eq + Hash,
-    [(); Codec::MAX_BYTES]:
 {
     #[inline]
     fn clone(&self) -> Self {
