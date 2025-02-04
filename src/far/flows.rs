@@ -2317,7 +2317,7 @@ where
     F: Credentials + Flow + Read + Write + Send,
     Addr: Clone + Display + Eq + Hash,
     Prin: Clone + Display + Eq + Hash,
-    Msg: Send,
+    Msg: Send
 {
     type Addr = Addr;
     type ListenError = ThreadedFlowsListenError;
@@ -2347,7 +2347,7 @@ where
     Codec: Clone + DatagramCodec<Msg>,
     F: Flow + Credentials + Read + Write,
     Addr: Clone + Display + Eq + Hash,
-    Prin: Clone + Display + Eq + Hash,
+    Prin: Clone + Display + Eq + Hash
 {
     #[inline]
     pub fn create(
@@ -2368,7 +2368,7 @@ where
     Codec: Clone + DatagramCodec<Msg>,
     F: Flow + Credentials + Read + Write,
     Addr: Clone + Display + Eq + Hash,
-    Prin: Clone + Display + Eq + Hash,
+    Prin: Clone + Display + Eq + Hash
 {
     #[inline]
     fn clone(&self) -> Self {
