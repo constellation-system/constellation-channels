@@ -1,4 +1,4 @@
-// Copyright © 2024 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -714,8 +714,7 @@ where
     Codec: Clone + DatagramCodec<Msg>,
     F: Flow + Credentials + Read + Write,
     Prin: Clone + Display + Eq + Hash,
-    ID: Clone + Display + Eq + Hash,
-    [(); Codec::MAX_BYTES]: {
+    ID: Clone + Display + Eq + Hash {
     msg: PhantomData<Msg>,
     codec: Codec,
     inner: ThreadedFlowsListener<F, ID, Prin>
@@ -2318,8 +2317,7 @@ where
     F: Credentials + Flow + Read + Write + Send,
     Addr: Clone + Display + Eq + Hash,
     Prin: Clone + Display + Eq + Hash,
-    Msg: Send,
-    [(); Codec::MAX_BYTES]:
+    Msg: Send
 {
     type Addr = Addr;
     type ListenError = ThreadedFlowsListenError;
@@ -2349,8 +2347,7 @@ where
     Codec: Clone + DatagramCodec<Msg>,
     F: Flow + Credentials + Read + Write,
     Addr: Clone + Display + Eq + Hash,
-    Prin: Clone + Display + Eq + Hash,
-    [(); Codec::MAX_BYTES]:
+    Prin: Clone + Display + Eq + Hash
 {
     #[inline]
     pub fn create(
@@ -2371,8 +2368,7 @@ where
     Codec: Clone + DatagramCodec<Msg>,
     F: Flow + Credentials + Read + Write,
     Addr: Clone + Display + Eq + Hash,
-    Prin: Clone + Display + Eq + Hash,
-    [(); Codec::MAX_BYTES]:
+    Prin: Clone + Display + Eq + Hash
 {
     #[inline]
     fn clone(&self) -> Self {
