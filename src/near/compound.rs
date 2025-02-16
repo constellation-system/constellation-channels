@@ -1481,9 +1481,9 @@ where
     where
         Ctx: NSNameCachesCtx {
         match config {
-            CompoundNearAcceptorConfig::Unix { unix } => {
+            CompoundNearAcceptorConfig::Unix { unix_stream } => {
                 let acc =
-                    UnixNearAcceptor::new(caches, unix).map_err(|err| {
+                    UnixNearAcceptor::new(caches, unix_stream).map_err(|err| {
                         CompoundNearAcceptorCreateError::Unix { unix: err }
                     })?;
 
@@ -1631,8 +1631,8 @@ where
     where
         Ctx: NSNameCachesCtx {
         match config {
-            CompoundNearConnectorConfig::Unix { unix } => {
-                let acc = UnixNearConnector::new(caches, unix).unwrap();
+            CompoundNearConnectorConfig::Unix { unix_stream } => {
+                let acc = UnixNearConnector::new(caches, unix_stream).unwrap();
 
                 Ok(CompoundNearConnector::Unix { unix: acc })
             }
@@ -1654,8 +1654,8 @@ where
 
                 Ok(CompoundNearConnector::TLS { tls: acc })
             }
-            CompoundNearConnectorConfig::SOCKS5 { socks5 } => {
-                let acc = SOCKS5NearConnector::new(caches, socks5).map_err(
+            CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
+                let acc = SOCKS5NearConnector::new(caches, socks5_tcp).map_err(
                     |err| CompoundNearConnectorCreateError::SOCKS5 {
                         socks5: Box::new(err)
                     }
@@ -1743,8 +1743,8 @@ where
     #[inline]
     fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
         match conf {
-            CompoundNearConnectorConfig::Unix { unix } => {
-                UnixNearConnector::verify_endpoint(unix)
+            CompoundNearConnectorConfig::Unix { unix_stream } => {
+                UnixNearConnector::verify_endpoint(unix_stream)
             }
             CompoundNearConnectorConfig::TCP { tcp } => {
                 TCPNearConnector::verify_endpoint(tcp)
@@ -1752,8 +1752,8 @@ where
             CompoundNearConnectorConfig::TLS { tls } => {
                 TLSNearConnector::<Box<Self>, TLS>::verify_endpoint(tls)
             }
-            CompoundNearConnectorConfig::SOCKS5 { socks5 } => {
-                SOCKS5NearConnector::<Box<Self>>::verify_endpoint(socks5)
+            CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
+                SOCKS5NearConnector::<Box<Self>>::verify_endpoint(socks5_tcp)
             }
         }
     }
@@ -1840,8 +1840,8 @@ where
     #[inline]
     fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
         match conf.as_ref() {
-            CompoundNearConnectorConfig::Unix { unix } => {
-                UnixNearConnector::verify_endpoint(unix)
+            CompoundNearConnectorConfig::Unix { unix_stream } => {
+                UnixNearConnector::verify_endpoint(unix_stream)
             }
             CompoundNearConnectorConfig::TCP { tcp } => {
                 TCPNearConnector::verify_endpoint(tcp)
@@ -1849,8 +1849,8 @@ where
             CompoundNearConnectorConfig::TLS { tls } => {
                 TLSNearConnector::<Self, TLS>::verify_endpoint(tls)
             }
-            CompoundNearConnectorConfig::SOCKS5 { socks5 } => {
-                SOCKS5NearConnector::<Self>::verify_endpoint(socks5)
+            CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
+                SOCKS5NearConnector::<Self>::verify_endpoint(socks5_tcp)
             }
         }
     }
@@ -1914,7 +1914,7 @@ fn test_compound_tls_unix() {
         "      crls: []\n",
         "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
         "  key: test/data/certs/server/private/test_server_key.pem\n",
-        "  unix:\n",
+        "  unix-stream:\n",
         "    path: test_compound_tls_unix.sock"
     );
 
@@ -1933,7 +1933,7 @@ fn test_compound_tls_unix() {
         "  client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
         "  client-key: test/data/certs/client/private/test_client_key.pem\n",
         "  verify-endpoint: test-server.nowhere.com\n",
-        "  unix:\n",
+        "  unix-stream:\n",
         "    path: test_compound_tls_unix.sock"
     );
 

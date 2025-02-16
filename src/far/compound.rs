@@ -267,7 +267,7 @@ use constellation_streams::stream::ConcurrentStream;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::tls::TLSPeerConfig;
-use crate::config::CompoundEndpoint;
+use crate::config::CompoundFarEndpoint;
 use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundFarIPChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
@@ -1112,26 +1112,26 @@ impl From<SocketAddr> for CompoundFarChannelXfrmPeerAddr {
     }
 }
 
-impl From<CompoundEndpoint> for Option<IPEndpointAddr> {
-    fn from(val: CompoundEndpoint) -> Option<IPEndpointAddr> {
+impl From<CompoundFarEndpoint> for Option<IPEndpointAddr> {
+    fn from(val: CompoundFarEndpoint) -> Option<IPEndpointAddr> {
         match val {
-            CompoundEndpoint::IP { ip } => Some(ip.ip_endpoint().clone()),
-            CompoundEndpoint::Unix { .. } => None
+            CompoundFarEndpoint::UDP { udp } => Some(udp.ip_endpoint().clone()),
+            CompoundFarEndpoint::Unix { .. } => None
         }
     }
 }
 
-impl TryFrom<CompoundEndpoint> for Resolution<CompoundFarChannelXfrmPeerAddr> {
+impl TryFrom<CompoundFarEndpoint> for Resolution<CompoundFarChannelXfrmPeerAddr> {
     type Error = Error;
 
     fn try_from(
-        val: CompoundEndpoint
+        val: CompoundFarEndpoint
     ) -> Result<Resolution<CompoundFarChannelXfrmPeerAddr>, Error> {
         match val {
-            CompoundEndpoint::IP { ip } => {
-                let (ip, port) = ip.take();
+            CompoundFarEndpoint::UDP { udp } => {
+                let (udp, port) = udp.take();
 
-                match ip {
+                match udp {
                     IPEndpointAddr::Name(name) => Ok(Resolution::NSLookup {
                         name: name,
                         port: port
@@ -1143,9 +1143,9 @@ impl TryFrom<CompoundEndpoint> for Resolution<CompoundFarChannelXfrmPeerAddr> {
                     })
                 }
             }
-            CompoundEndpoint::Unix { unix } => Ok(Resolution::Static {
+            CompoundFarEndpoint::Unix { unix_datagram } => Ok(Resolution::Static {
                 addr: CompoundFarChannelXfrmPeerAddr::Unix {
-                    unix: UnixSocketAddr::try_from(unix)?
+                    unix: UnixSocketAddr::try_from(unix_datagram)?
                 }
             })
         }
@@ -2067,9 +2067,9 @@ impl FarChannelCreate for CompoundFarIPChannel {
 
                 Ok(CompoundFarIPChannel::DTLS { dtls: dtls })
             }
-            CompoundFarIPChannelConfig::SOCKS5 { socks5 } => {
+            CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
                 let socks5 =
-                    SOCKS5FarChannel::new(caches, socks5).map_err(|err| {
+                    SOCKS5FarChannel::new(caches, socks5_udp).map_err(|err| {
                         CompoundFarChannelCreateError::SOCKS5 {
                             socks5: Box::new(err)
                         }
@@ -2173,8 +2173,8 @@ impl FarChannelCreate for CompoundFarChannel {
     where
         Ctx: NSNameCachesCtx {
         match config {
-            CompoundFarChannelConfig::Unix { unix } => {
-                let unix = UnixFarChannel::new(caches, unix).unwrap();
+            CompoundFarChannelConfig::Unix { unix_datagram } => {
+                let unix = UnixFarChannel::new(caches, unix_datagram).unwrap();
 
                 Ok(CompoundFarChannel::Unix { unix: unix })
             }
@@ -2190,9 +2190,9 @@ impl FarChannelCreate for CompoundFarChannel {
 
                 Ok(CompoundFarChannel::DTLS { dtls: dtls })
             }
-            CompoundFarChannelConfig::SOCKS5 { socks5 } => {
+            CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
                 let socks5 =
-                    SOCKS5FarChannel::new(caches, socks5).map_err(|err| {
+                    SOCKS5FarChannel::new(caches, socks5_udp).map_err(|err| {
                         CompoundFarChannelCreateError::SOCKS5 {
                             socks5: Box::new(err)
                         }
@@ -3814,7 +3814,7 @@ fn test_compound_dtls_unix() {
         "    crls: []\n",
         "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
         "  key: test/data/certs/server/private/test_server_key.pem\n",
-        "  unix:\n",
+        "  unix-datagram:\n",
         "    path: test_compound_dtls_unix_server.sock\n",
     );
 
@@ -3833,7 +3833,7 @@ fn test_compound_dtls_unix() {
         "    crls: []\n",
         "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
         "  key: test/data/certs/client/private/test_client_key.pem\n",
-        "  unix:\n",
+        "  unix-datagram:\n",
         "    path: test_compound_dtls_unix_client.sock\n",
     );
 
@@ -4150,7 +4150,7 @@ fn test_compound_dtls_double() {
         "      crls: []\n",
         "    cert: test/data/certs/server/certs/test_server_cert.pem\n",
         "    key: test/data/certs/server/private/test_server_key.pem\n",
-        "    unix:\n",
+        "    unix-datagram:\n",
         "      path: test_compound_dtls_double_server.sock\n",
     );
 
@@ -4183,7 +4183,7 @@ fn test_compound_dtls_double() {
         "      crls: []\n",
         "    cert: test/data/certs/client/certs/test_client_cert.pem\n",
         "    key: test/data/certs/client/private/test_client_key.pem\n",
-        "    unix:\n",
+        "    unix-datagram:\n",
         "      path: test_compound_dtls_double_client.sock\n",
     );
 
