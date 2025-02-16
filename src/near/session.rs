@@ -37,10 +37,9 @@ use log::warn;
 
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearConn;
 use crate::near::NearConnectError;
 use crate::near::NearConnector;
-use crate::near::NearReader;
-use crate::near::NearWriter;
 use crate::resolve::cache::NSNameCachesCtx;
 
 pub trait NearSessionParams<Conn: NearConnector>: Sized {
@@ -62,7 +61,7 @@ pub trait NearSessionParams<Conn: NearConnector>: Sized {
 
     fn negotiate(
         &mut self,
-        stream: Conn::Stream,
+        stream: Conn::OwnedConn,
         endpoint: &Conn::Endpoint
     ) -> Result<Self::Value, Self::NegotiateError>;
 }
@@ -78,11 +77,11 @@ pub enum NearSessionCreateError<Session, Channel> {
 }
 
 /// Session states for near connectors.
-enum NearSession<Stream> {
+enum NearSession<Conn> {
     /// Session is live, and was not transferred.
     Live {
         /// The underlying stream.
-        stream: Arc<Mutex<Option<Stream>>>
+        conn: Arc<Mutex<Option<Conn>>>
     },
     /// Session is dead, with `nretries` prior retries having happened.
     Dead {
@@ -212,8 +211,8 @@ where
         loop {
             let reset = match &self.session {
                 // Connection is live; return the underlying stream.
-                NearSession::Live { stream, .. } => {
-                    let guard = match stream.lock() {
+                NearSession::Live { conn, .. } => {
+                    let guard = match conn.lock() {
                         Ok(guard) => Ok(guard),
                         Err(_) => Err(NearConnectError::MutexPoison)
                     }?;
@@ -263,12 +262,12 @@ where
 
     pub(crate) fn shutdown(&mut self) -> Result<(), Error> {
         match &self.session {
-            NearSession::Live { stream, .. } => {
+            NearSession::Live { conn, .. } => {
                 info!(target: "near-session",
                       "shutting down {} session to {}",
                       Params::NAME, self.inner.endpoint());
 
-                let newstate = match stream.lock() {
+                let newstate = match conn.lock() {
                     // Figure out whether we need to shut down the stream.
                     Ok(mut guard) => match &*guard {
                         // Shut it down.
@@ -326,7 +325,7 @@ where
         nretries: usize
     ) -> Result<(), Error> {
         let state = match &mut self.session {
-            NearSession::Live { stream, .. } => match stream.lock() {
+            NearSession::Live { conn, .. } => match conn.lock() {
                 Ok(mut guard) => {
                     debug!(target: "near-session",
                            "resetting connection to {}, with {} retries",
@@ -401,13 +400,13 @@ where
 {
     type Config = Params::Config;
     type Endpoint = Conn::Endpoint;
-    type Stream = Params::Value;
+    type OwnedConn = Params::Value;
     type TakeConnectError = NearConnectError;
 
     #[inline]
     fn take_connection(
         &mut self
-    ) -> Result<(Self::Stream, Conn::Endpoint), NearConnectError> {
+    ) -> Result<(Self::OwnedConn, Conn::Endpoint), NearConnectError> {
         self.connect_owned()
     }
 }
@@ -438,14 +437,13 @@ where
     Params::Value: CredentialsMut + Read + Write,
     Conn: NearConnector
 {
+    type Conn = NearConn<Params::Value>;
     type EndpointRef<'a>
         = Conn::EndpointRef<'a>
     where
         Conn::Endpoint: 'a,
         Params: 'a,
         Conn: 'a;
-    type Reader = NearReader<Params::Value>;
-    type Writer = NearWriter<Params::Value>;
 
     #[inline]
     fn endpoint(&self) -> Conn::EndpointRef<'_> {
@@ -472,14 +470,11 @@ where
 
     fn connection(
         &mut self
-    ) -> Result<
-        (Self::Reader, Self::Writer, Conn::EndpointRef<'_>),
-        NearConnectError
-    > {
+    ) -> Result<(Self::Conn, Conn::EndpointRef<'_>), NearConnectError> {
         loop {
             let reset = match &self.session {
-                NearSession::Live { stream } => {
-                    let guard = match stream.lock() {
+                NearSession::Live { conn } => {
+                    let guard = match conn.lock() {
                         Ok(guard) => Ok(guard),
                         Err(_) => {
                             error!(target: "near-session",
@@ -496,28 +491,25 @@ where
                     // Check to see if one of the readers or writers
                     // closed the connection.
                     if guard.is_some() {
-                        // We're good, we can return.
-                        let reader = NearReader::from(stream.clone());
-                        let writer = NearWriter::from(stream.clone());
-
-                        return Ok((reader, writer, self.inner.endpoint()));
+                        return Ok((
+                            NearConn::from(conn.clone()),
+                            self.inner.endpoint()
+                        ));
                     } else {
                         Some(1)
                     }
                 }
                 NearSession::Dead { nretries } => {
                     match self.try_connect(*nretries) {
-                        Ok((stream, _)) => {
-                            let stream = Some(stream);
-                            let stream = Arc::new(Mutex::new(stream));
+                        Ok((conn, _)) => {
+                            let conn = Some(conn);
+                            let conn = Arc::new(Mutex::new(conn));
 
-                            self.session = NearSession::Live {
-                                stream: stream.clone()
-                            };
+                            self.session =
+                                NearSession::Live { conn: conn.clone() };
 
                             return Ok((
-                                NearReader::from(stream.clone()),
-                                NearWriter::from(stream),
+                                NearConn::from(conn.clone()),
                                 self.inner.endpoint()
                             ));
                         }

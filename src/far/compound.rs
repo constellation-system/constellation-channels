@@ -718,12 +718,12 @@ pub enum CompoundFarIPChannelMsgCred {
 
 /// Session credentials that can be harvested from
 /// [CompoundFarChannel]s.
-pub enum CompoundFarChannelSessionCred<'a, Basic> {
+pub enum CompoundFarChannelSessionCred<Basic> {
     /// Credential harvested from DTLS sessions.
     #[cfg(feature = "dtls")]
     DTLS {
         /// DTLS credentials.
-        dtls: Box<SSLCred<'a, CompoundFarChannelSessionCred<'a, Basic>>>
+        dtls: Box<SSLCred<CompoundFarChannelSessionCred<Basic>>>
     },
     /// Credentials harvested from basic channels.
     Basic {
@@ -818,10 +818,7 @@ impl<F> Credentials for CompoundFlow<F>
 where
     F: Credentials + Flow
 {
-    type Cred<'a>
-        = CompoundFarChannelSessionCred<'a, F::Cred<'a>>
-    where
-        F: 'a;
+    type Cred = CompoundFarChannelSessionCred<F::Cred>;
     type CredError =
         CompoundFarChannelSessionCredError<<F as Credentials>::CredError>;
 
@@ -829,7 +826,7 @@ where
     fn creds(
         &self
     ) -> Result<
-        Option<Self::Cred<'_>>,
+        Option<Self::Cred>,
         CompoundFarChannelSessionCredError<<F as Credentials>::CredError>
     > {
         match self {
@@ -867,10 +864,7 @@ impl<F> Credentials for Box<CompoundFlow<F>>
 where
     F: Credentials + Flow
 {
-    type Cred<'a>
-        = CompoundFarChannelSessionCred<'a, F::Cred<'a>>
-    where
-        F: 'a;
+    type Cred = CompoundFarChannelSessionCred<F::Cred>;
     type CredError =
         CompoundFarChannelSessionCredError<<F as Credentials>::CredError>;
 
@@ -878,7 +872,7 @@ where
     fn creds(
         &self
     ) -> Result<
-        Option<Self::Cred<'_>>,
+        Option<Self::Cred>,
         CompoundFarChannelSessionCredError<<F as Credentials>::CredError>
     > {
         self.as_ref().creds()

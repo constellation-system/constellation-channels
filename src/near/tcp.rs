@@ -75,14 +75,13 @@
 //!     let mut conn =
 //!         TCPNearConnector::new(&mut client_nscaches, connect_config)
 //!             .expect("expected success");
-//!     let (mut receiver, mut sender, _) =
-//!         conn.connection().expect("expected success");
+//!     let (mut stream, _) = conn.connection().expect("expected success");
 //!
-//!     sender.write_all(&FIRST_BYTES).expect("Expected success");
+//!     stream.write_all(&FIRST_BYTES).expect("Expected success");
 //!
 //!     let mut buf = [0; SECOND_BYTES.len()];
 //!
-//!     receiver.read_exact(&mut buf).unwrap();
+//!     stream.read_exact(&mut buf).unwrap();
 //!
 //!     assert_eq!(SECOND_BYTES, buf);
 //! });
@@ -251,7 +250,7 @@ pub struct TCPStream {
 }
 
 impl Credentials for TCPStream {
-    type Cred<'a> = SocketAddr;
+    type Cred = SocketAddr;
     type CredError = Error;
 
     #[inline]
@@ -265,7 +264,7 @@ impl Credentials for TCPStream {
 }
 
 impl CredentialsMut for TCPStream {
-    type Cred<'a> = SocketAddr;
+    type Cred = SocketAddr;
     type CredError = Error;
 
     #[inline]
@@ -362,13 +361,13 @@ impl ScopedError for TCPConnectError {
 impl NearChannel for TCPNearAcceptor {
     type Config = TCPNearAcceptorConfig;
     type Endpoint = SocketAddr;
-    type Stream = TCPStream;
+    type OwnedConn = TCPStream;
     type TakeConnectError = Error;
 
     #[inline]
     fn take_connection(
         &mut self
-    ) -> Result<(Self::Stream, Self::Endpoint), Error> {
+    ) -> Result<(Self::OwnedConn, Self::Endpoint), Error> {
         let (stream, addr) = self.listener.accept()?;
         let stream = TCPStream {
             unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
@@ -465,10 +464,10 @@ impl TCPNearConnectorParams {
 
 impl NearSocketParams for TCPNearConnectorParams {
     type Config = TCPNearConnectorConfig;
+    type Conn = TCPStream;
     type CreateError = TCPNearConnectorError;
     type Endpoint = IPEndpoint;
     type Error = TCPConnectError;
-    type Stream = TCPStream;
 
     const NAME: &'static str = "TCP";
 
@@ -548,7 +547,7 @@ impl NearSocketParams for TCPNearConnectorParams {
     #[inline]
     fn shutdown(
         &self,
-        stream: &Self::Stream
+        stream: &Self::Conn
     ) -> Result<(), Error> {
         stream.inner.shutdown(Shutdown::Both)
     }
@@ -618,14 +617,13 @@ fn test_send_recv() {
         let mut conn =
             TCPNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        receiver.read_exact(&mut buf).unwrap();
+        stream.read_exact(&mut buf).unwrap();
 
         assert_eq!(SECOND_BYTES, buf);
     });

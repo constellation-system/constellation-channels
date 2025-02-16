@@ -198,7 +198,7 @@ where
     type Config = SOCKS5ConnectConfig<Conn::Config>;
     type CreateError = Infallible;
     type NegotiateError = SOCKS5Error;
-    type Value = SOCKS5Stream<Conn::Stream>;
+    type Value = SOCKS5Stream<Conn::OwnedConn>;
 
     const NAME: &'static str = "SOCKS5";
 
@@ -235,9 +235,9 @@ where
     #[inline]
     fn negotiate(
         &mut self,
-        mut stream: Conn::Stream,
+        mut stream: Conn::OwnedConn,
         _endpoint: &Conn::Endpoint
-    ) -> Result<SOCKS5Stream<Conn::Stream>, SOCKS5Error> {
+    ) -> Result<SOCKS5Stream<Conn::OwnedConn>, SOCKS5Error> {
         let machine: RawStateMachine<SOCKS5State> =
             RawStateMachine::new(self.params.clone());
         let socks5 = machine.run(&mut stream)?;

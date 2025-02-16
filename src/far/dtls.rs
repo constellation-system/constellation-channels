@@ -840,17 +840,14 @@ impl<F> Credentials for DTLSFlow<F>
 where
     F: Credentials + Flow + Read + Write
 {
-    type Cred<'a>
-        = SSLCred<'a, <F as Credentials>::Cred<'a>>
-    where
-        Self: 'a;
+    type Cred = SSLCred<<F as Credentials>::Cred>;
     type CredError = <F as Credentials>::CredError;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
-        Option<SSLCred<<F as Credentials>::Cred<'_>>>,
+        Option<SSLCred<<F as Credentials>::Cred>>,
         <F as Credentials>::CredError
     > {
         self.ssl.creds()
