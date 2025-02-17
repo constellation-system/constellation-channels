@@ -1482,10 +1482,9 @@ where
         Ctx: NSNameCachesCtx {
         match config {
             CompoundNearAcceptorConfig::Unix { unix_stream } => {
-                let acc =
-                    UnixNearAcceptor::new(caches, unix_stream).map_err(|err| {
-                        CompoundNearAcceptorCreateError::Unix { unix: err }
-                    })?;
+                let acc = UnixNearAcceptor::new(caches, unix_stream).map_err(
+                    |err| CompoundNearAcceptorCreateError::Unix { unix: err }
+                )?;
 
                 Ok(CompoundNearAcceptor::Unix { unix: acc })
             }
@@ -1655,11 +1654,12 @@ where
                 Ok(CompoundNearConnector::TLS { tls: acc })
             }
             CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
-                let acc = SOCKS5NearConnector::new(caches, socks5_tcp).map_err(
-                    |err| CompoundNearConnectorCreateError::SOCKS5 {
-                        socks5: Box::new(err)
-                    }
-                )?;
+                let acc = SOCKS5NearConnector::new(caches, socks5_tcp)
+                    .map_err(|err| {
+                        CompoundNearConnectorCreateError::SOCKS5 {
+                            socks5: Box::new(err)
+                        }
+                    })?;
 
                 Ok(CompoundNearConnector::SOCKS5 { socks5: acc })
             }

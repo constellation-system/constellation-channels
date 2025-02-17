@@ -267,8 +267,8 @@ use constellation_streams::stream::ConcurrentStream;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::tls::TLSPeerConfig;
-use crate::config::CompoundFarEndpoint;
 use crate::config::CompoundFarChannelConfig;
+use crate::config::CompoundFarEndpoint;
 use crate::config::CompoundFarIPChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
 use crate::config::ResolverConfig;
@@ -1121,7 +1121,9 @@ impl From<CompoundFarEndpoint> for Option<IPEndpointAddr> {
     }
 }
 
-impl TryFrom<CompoundFarEndpoint> for Resolution<CompoundFarChannelXfrmPeerAddr> {
+impl TryFrom<CompoundFarEndpoint>
+    for Resolution<CompoundFarChannelXfrmPeerAddr>
+{
     type Error = Error;
 
     fn try_from(
@@ -1143,11 +1145,13 @@ impl TryFrom<CompoundFarEndpoint> for Resolution<CompoundFarChannelXfrmPeerAddr>
                     })
                 }
             }
-            CompoundFarEndpoint::Unix { unix_datagram } => Ok(Resolution::Static {
-                addr: CompoundFarChannelXfrmPeerAddr::Unix {
-                    unix: UnixSocketAddr::try_from(unix_datagram)?
-                }
-            })
+            CompoundFarEndpoint::Unix { unix_datagram } => {
+                Ok(Resolution::Static {
+                    addr: CompoundFarChannelXfrmPeerAddr::Unix {
+                        unix: UnixSocketAddr::try_from(unix_datagram)?
+                    }
+                })
+            }
         }
     }
 }
@@ -2068,11 +2072,9 @@ impl FarChannelCreate for CompoundFarIPChannel {
                 Ok(CompoundFarIPChannel::DTLS { dtls: dtls })
             }
             CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 =
-                    SOCKS5FarChannel::new(caches, socks5_udp).map_err(|err| {
-                        CompoundFarChannelCreateError::SOCKS5 {
-                            socks5: Box::new(err)
-                        }
+                let socks5 = SOCKS5FarChannel::new(caches, socks5_udp)
+                    .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
+                        socks5: Box::new(err)
                     })?;
 
                 Ok(CompoundFarIPChannel::SOCKS5 { socks5: socks5 })
@@ -2191,11 +2193,9 @@ impl FarChannelCreate for CompoundFarChannel {
                 Ok(CompoundFarChannel::DTLS { dtls: dtls })
             }
             CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 =
-                    SOCKS5FarChannel::new(caches, socks5_udp).map_err(|err| {
-                        CompoundFarChannelCreateError::SOCKS5 {
-                            socks5: Box::new(err)
-                        }
+                let socks5 = SOCKS5FarChannel::new(caches, socks5_udp)
+                    .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
+                        socks5: Box::new(err)
                     })?;
 
                 Ok(CompoundFarChannel::IP {
