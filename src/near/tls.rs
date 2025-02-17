@@ -110,13 +110,12 @@
 //!     let mut conn: TLSNearConnector<TCPNearConnector, TLSClientConfig> =
 //!         TLSNearConnector::new(&mut client_nscaches, client_conf)
 //!             .expect("expected success");
-//!     let (mut receiver, mut sender, _) =
-//!         conn.connection().expect("expected success");
-//!     let n = sender.write(&FIRST_BYTES).expect("Expected success");
+//!     let (mut stream, _) = conn.connection().expect("expected success");
+//!     let n = stream.write(&FIRST_BYTES).expect("Expected success");
 //!
 //!     let mut buf = [0; SECOND_BYTES.len()];
 //!
-//!     receiver.read_exact(&mut buf).unwrap();
+//!     stream.read_exact(&mut buf).unwrap();
 //!
 //!     assert_eq!(FIRST_BYTES.len(), n);
 //!     assert_eq!(SECOND_BYTES, buf);
@@ -168,7 +167,7 @@ use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Wrapper for TLS sessions.
-pub struct TLSStream<S: Read + Write, Endpoint: Display> {
+pub struct TLSConn<S: Read + Write, Endpoint: Display> {
     /// The underlying SSL stream.
     ssl: SslStream<S>,
     peer: Endpoint
@@ -388,21 +387,22 @@ impl<A, TLS> NearChannel for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannel,
-    A::Stream: Credentials
+    A::OwnedConn: Credentials
 {
     type Config = TLSChannelConfig<TLS, A::Config>;
     type Endpoint = A::Endpoint;
     #[cfg(feature = "openssl")]
-    type Stream = TLSStream<A::Stream, A::Endpoint>;
+    type OwnedConn = TLSConn<A::OwnedConn, A::Endpoint>;
     #[cfg(feature = "openssl")]
-    type TakeConnectError = TLSConnectionError<A::TakeConnectError, A::Stream>;
+    type TakeConnectError =
+        TLSConnectionError<A::TakeConnectError, A::OwnedConn>;
 
     #[cfg(feature = "openssl")]
     fn take_connection(
         &mut self
     ) -> Result<
-        (Self::Stream, Self::Endpoint),
-        TLSConnectionError<A::TakeConnectError, A::Stream>
+        (Self::OwnedConn, Self::Endpoint),
+        TLSConnectionError<A::TakeConnectError, A::OwnedConn>
     > {
         let (stream, endpoint) = self
             .inner
@@ -414,7 +414,7 @@ where
             .map_err(|err| TLSConnectionError::TLS { error: err })?;
 
         Ok((
-            TLSStream {
+            TLSConn {
                 ssl: stream,
                 peer: endpoint.clone()
             },
@@ -427,7 +427,7 @@ impl<A, TLS> NearChannelCreate for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannelCreate,
-    A::Stream: Credentials
+    A::OwnedConn: Credentials
 {
     type CreateError = NearSessionCreateError<TLSCreateError, A::CreateError>;
 
@@ -464,9 +464,9 @@ where
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSCreateError;
     #[cfg(feature = "openssl")]
-    type NegotiateError = HandshakeError<Conn::Stream>;
+    type NegotiateError = HandshakeError<Conn::OwnedConn>;
     #[cfg(feature = "openssl")]
-    type Value = TLSStream<Conn::Stream, Conn::Endpoint>;
+    type Value = TLSConn<Conn::OwnedConn, Conn::Endpoint>;
 
     const NAME: &'static str = "TLS";
 
@@ -518,56 +518,50 @@ where
     #[inline]
     fn negotiate(
         &mut self,
-        stream: Conn::Stream,
+        stream: Conn::OwnedConn,
         endpoint: &Conn::Endpoint
     ) -> Result<
-        TLSStream<Conn::Stream, Conn::Endpoint>,
-        HandshakeError<Conn::Stream>
+        TLSConn<Conn::OwnedConn, Conn::Endpoint>,
+        HandshakeError<Conn::OwnedConn>
     > {
         let stream = self.connector.connect(self.domain.as_str(), stream)?;
 
-        Ok(TLSStream {
+        Ok(TLSConn {
             ssl: stream,
             peer: endpoint.clone()
         })
     }
 }
 
-impl<S, Endpoint> Credentials for TLSStream<S, Endpoint>
+impl<S, Endpoint> Credentials for TLSConn<S, Endpoint>
 where
     S: Credentials + Read + Write,
     Endpoint: Display
 {
-    type Cred<'a>
-        = SSLCred<'a, S::Cred<'a>>
-    where
-        Self: 'a;
+    type Cred = SSLCred<S::Cred>;
     type CredError = S::CredError;
 
     #[inline]
-    fn creds(&self) -> Result<Option<SSLCred<S::Cred<'_>>>, S::CredError> {
+    fn creds(&self) -> Result<Option<SSLCred<S::Cred>>, S::CredError> {
         self.ssl.creds()
     }
 }
 
-impl<S, Endpoint> CredentialsMut for TLSStream<S, Endpoint>
+impl<S, Endpoint> CredentialsMut for TLSConn<S, Endpoint>
 where
     S: Credentials + Read + Write,
     Endpoint: Display
 {
-    type Cred<'a>
-        = SSLCred<'a, S::Cred<'a>>
-    where
-        Self: 'a;
+    type Cred = SSLCred<S::Cred>;
     type CredError = S::CredError;
 
     #[inline]
-    fn creds(&mut self) -> Result<Option<SSLCred<S::Cred<'_>>>, S::CredError> {
+    fn creds(&mut self) -> Result<Option<SSLCred<S::Cred>>, S::CredError> {
         <Self as Credentials>::creds(self)
     }
 }
 
-impl<S, Endpoint> Drop for TLSStream<S, Endpoint>
+impl<S, Endpoint> Drop for TLSConn<S, Endpoint>
 where
     S: Read + Write,
     Endpoint: Display
@@ -599,7 +593,7 @@ where
     }
 }
 
-impl<S, Endpoint> Read for TLSStream<S, Endpoint>
+impl<S, Endpoint> Read for TLSConn<S, Endpoint>
 where
     S: Read + Write,
     Endpoint: Display
@@ -645,7 +639,7 @@ where
     }
 }
 
-impl<S, Endpoint> Write for TLSStream<S, Endpoint>
+impl<S, Endpoint> Write for TLSConn<S, Endpoint>
 where
     S: Read + Write,
     Endpoint: Display
@@ -680,7 +674,7 @@ where
     }
 }
 
-impl<S, Endpoint> Debug for TLSStream<S, Endpoint>
+impl<S, Endpoint> Debug for TLSConn<S, Endpoint>
 where
     S: Read + Write + Debug,
     Endpoint: Display
@@ -689,11 +683,7 @@ where
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
-        write!(
-            f,
-            "TLSStream {{ ssl: {:?}, peer: {} }}",
-            self.ssl, self.peer
-        )
+        write!(f, "TLSConn {{ ssl: {:?}, peer: {} }}", self.ssl, self.peer)
     }
 }
 
@@ -888,7 +878,7 @@ fn test_tls_send() {
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
             TLSNearConnector::new(&mut client_nscaches, client_conf)
                 .expect("expected success");
-        let (_, mut sender, _) = conn.connection().expect("expected success");
+        let (mut sender, _) = conn.connection().expect("expected success");
         let n = sender.write(&FIRST_BYTES).expect("Expected success");
 
         sender.flush().expect("Expected success");
@@ -933,7 +923,7 @@ fn test_tls_recv() {
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
             TLSNearConnector::new(&mut client_nscaches, client_conf)
                 .expect("expected success");
-        let (mut receiver, _, _) = conn.connection().expect("expected success");
+        let (mut receiver, _) = conn.connection().expect("expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -982,13 +972,12 @@ fn test_tls_send_recv() {
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
             TLSNearConnector::new(&mut client_nscaches, client_conf)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
-        let n = sender.write(&FIRST_BYTES).expect("Expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
+        let n = stream.write(&FIRST_BYTES).expect("Expected success");
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        receiver.read_exact(&mut buf).unwrap();
+        stream.read_exact(&mut buf).unwrap();
 
         assert_eq!(FIRST_BYTES.len(), n);
         assert_eq!(SECOND_BYTES, buf);
@@ -1034,16 +1023,15 @@ fn test_tls_recv_send() {
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
             TLSNearConnector::new(&mut client_nscaches, client_conf)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
-        receiver.read_exact(&mut buf).unwrap();
+        stream.read_exact(&mut buf).unwrap();
 
-        let n = sender.write(&SECOND_BYTES).expect("Expected success");
+        let n = stream.write(&SECOND_BYTES).expect("Expected success");
 
-        sender.flush().unwrap();
+        stream.flush().unwrap();
 
         assert_eq!(SECOND_BYTES.len(), n);
         assert_eq!(FIRST_BYTES, buf);

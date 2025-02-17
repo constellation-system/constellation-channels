@@ -309,16 +309,17 @@ pub struct CompoundXfrmCreateParam<Unix, UDP> {
     Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(untagged)]
-pub enum CompoundEndpoint {
+pub enum CompoundFarEndpoint {
     /// Unix socket address.
+    #[serde(rename_all = "kebab-case")]
     Unix {
         /// Path to the Unix socket.
-        unix: PathBuf
+        unix_datagram: PathBuf
     },
-    /// IP endpoint.
-    IP {
+    /// UDP endpoint.
+    UDP {
         /// IP address and port
-        ip: IPEndpoint
+        udp: IPEndpoint
     }
 }
 
@@ -358,7 +359,7 @@ pub enum CompoundFarIPChannelConfig {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5: SOCKS5AssocConfig<
+        socks5_udp: SOCKS5AssocConfig<
             Box<CompoundNearConnectorConfig<TLSPeerConfig>>,
             Box<CompoundFarIPChannelConfig>
         >
@@ -386,7 +387,7 @@ pub enum CompoundFarIPChannelConfig {
 /// The YAML format has four options, each corresponding to the four
 /// different channel types:
 ///
-/// - `unix`: Contains a [UnixFarChannelConfig], and creates a
+/// - `unix-datagram`: Contains a [UnixFarChannelConfig], and creates a
 ///   [UnixFarChannel](crate::far::unix::UnixFarChannel).
 ///
 /// - `udp`: Contains a [UDPFarChannelConfig], and creates a
@@ -397,7 +398,7 @@ pub enum CompoundFarIPChannelConfig {
 ///   channel configuration of this structure is another instance of
 ///   `CompoundFarConnectorConfig`.
 ///
-/// - `socks5`: Contains a [SOCKS5AssocConfig], and creates a
+/// - `socks5-udp`: Contains a [SOCKS5AssocConfig], and creates a
 ///   [SOCKS5FarChannel](crate::far::socks5::SOCKS5FarChannel).  The channel
 ///   configuration under the `proxy` of this structure is an instance of
 ///   [CompoundNearConnectorConfig].
@@ -434,7 +435,7 @@ pub enum CompoundFarIPChannelConfig {
 ///       - /etc/ssl/crls/server-ca-crl.pem
 ///   socks5:
 ///     proxy:
-///       unix:
+///       unix-datagram:
 ///         path: /var/run/proxy/proxy.sock
 ///     addr: ::1
 ///     port: 5000
@@ -462,7 +463,7 @@ pub enum CompoundFarIPChannelConfig {
 ///   trust-root:
 ///     dirs:
 ///       - /etc/ssl/CA/
-///   socks5:
+///   socks5-udp:
 ///     proxy:
 ///       tls:
 ///         cipher-suites:
@@ -514,7 +515,7 @@ pub enum CompoundFarIPChannelConfig {
 /// proxy at `tor.nowhere.com`:
 ///
 /// ```yaml
-/// socks5:
+/// socks5-udp:
 ///   proxy:
 ///     socks5:
 ///       proxy:
@@ -528,7 +529,7 @@ pub enum CompoundFarIPChannelConfig {
 ///   auth:
 ///     username: test
 ///     password: abc123
-///   socks5:
+///   socks5-udp:
 ///     proxy:
 ///       tcp:
 ///         addr: proxy.example.com
@@ -548,7 +549,7 @@ pub enum CompoundFarChannelConfig {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix: UnixFarChannelConfig
+        unix_datagram: UnixFarChannelConfig
     },
     /// UDP Channel.
     ///
@@ -571,7 +572,7 @@ pub enum CompoundFarChannelConfig {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5: SOCKS5AssocConfig<
+        socks5_udp: SOCKS5AssocConfig<
             Box<CompoundNearConnectorConfig<TLSPeerConfig>>,
             Box<CompoundFarIPChannelConfig>
         >
@@ -605,7 +606,7 @@ pub enum CompoundFarChannelConfig {
 /// The YAML format has four options, each corresponding to the four
 /// different channel types:
 ///
-/// - `unix`: Contains a [UnixNearChannelConfig], and creates a
+/// - `unix-stream`: Contains a [UnixNearChannelConfig], and creates a
 ///   [UnixNearAcceptor](crate::near::unix::UnixNearAcceptor).
 ///
 /// - `tcp`: Contains a [TCPNearAcceptorConfig], and creates a
@@ -659,7 +660,7 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix: UnixNearChannelConfig
+        unix_stream: UnixNearChannelConfig
     },
     /// TCP Channel.
     ///
@@ -697,7 +698,7 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 /// The YAML format has four options, each corresponding to the four
 /// different channel types:
 ///
-/// - `unix`: Contains a [UnixNearConnectorConfig], and creates a
+/// - `unix-stream`: Contains a [UnixNearConnectorConfig], and creates a
 ///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
 ///
 /// - `tcp`: Contains a [TCPNearConnectorConfig], and creates a
@@ -708,7 +709,7 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 ///   channel configuration of this structure is another instance of
 ///   `CompoundNearConnectorConfig`.
 ///
-/// - `socks5`: Contains a [SOCKS5ConnectConfig], and creates a
+/// - `socks5-tcp`: Contains a [SOCKS5ConnectConfig], and creates a
 ///   [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector). The
 ///   channel configuration under the `proxy` of this structure is another
 ///   instance of `CompoundNearConnectorConfig`.
@@ -742,9 +743,9 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 ///       - /etc/ssl/certs/server-ca-cert.pem
 ///     crls:
 ///       - /etc/ssl/crls/server-ca-crl.pem
-///   socks5:
+///   socks5-tcp:
 ///     proxy:
-///       unix:
+///       unix-stream:
 ///         path: /var/run/proxy/proxy.sock
 ///     target:
 ///       addr: en.wikipedia.org
@@ -834,7 +835,7 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix: UnixNearConnectorConfig
+        unix_stream: UnixNearConnectorConfig
     },
     /// TCP Channel.
     ///
@@ -857,7 +858,7 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5: SOCKS5ConnectConfig<Box<Self>>
+        socks5_tcp: SOCKS5ConnectConfig<Box<Self>>
     }
 }
 
@@ -2131,10 +2132,10 @@ impl<Unix, UDP> CompoundXfrmCreateParam<Unix, UDP> {
     }
 }
 
-impl From<IPEndpoint> for CompoundEndpoint {
+impl From<IPEndpoint> for CompoundFarEndpoint {
     #[inline]
     fn from(val: IPEndpoint) -> Self {
-        CompoundEndpoint::IP { ip: val }
+        CompoundFarEndpoint::UDP { udp: val }
     }
 }
 

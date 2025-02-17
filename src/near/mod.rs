@@ -165,9 +165,11 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
+use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
 use log::error;
 
@@ -205,10 +207,10 @@ pub mod unix;
 /// instances function in this manner with regard to their underlying
 /// channels.
 pub trait NearChannel: Sized {
-    /// Type of streams where ownership is transferred.
+    /// Type of connections where ownership is transferred.
     ///
     /// See [take_connection](NearChannel::take_connection).
-    type Stream: CredentialsMut + Read + Write + Debug + Sized;
+    type OwnedConn: CredentialsMut + Read + Write + Debug + Sized;
     /// Type of connection endpoints.
     ///
     /// See [take_connection](NearChannel::take-connection)
@@ -234,7 +236,7 @@ pub trait NearChannel: Sized {
     /// [fail](NearConnector::fail) is called.
     fn take_connection(
         &mut self
-    ) -> Result<(Self::Stream, Self::Endpoint), Self::TakeConnectError>;
+    ) -> Result<(Self::OwnedConn, Self::Endpoint), Self::TakeConnectError>;
 }
 
 /// Trait for creating instances of near-link channels.
@@ -256,14 +258,10 @@ pub trait NearChannelCreate: NearChannel {
 /// This interface provides functionality for near-link channels that
 /// is specific to the client side.
 pub trait NearConnector: NearChannel {
-    /// Type of the write half for the split reader/writer interface.
+    /// Type of connections where ownership is transferred.
     ///
-    /// See [connection](NearConnector::connection).
-    type Writer: Write;
-    /// Type of the read half for the split reader/writer interface.
-    ///
-    /// See [connection](NearConnector::connection).
-    type Reader: Read;
+    /// See [take_connection](NearChannel::take_connection).
+    type Conn: CredentialsMut + Read + Write + Debug + Sized;
     /// Type of endpoint references.
     type EndpointRef<'a>: Display
     where
@@ -309,10 +307,7 @@ pub trait NearConnector: NearChannel {
     /// errors, not connection failures or misconfigurations.
     fn connection(
         &mut self
-    ) -> Result<
-        (Self::Reader, Self::Writer, Self::EndpointRef<'_>),
-        NearConnectError
-    >;
+    ) -> Result<(Self::Conn, Self::EndpointRef<'_>), NearConnectError>;
 }
 
 /// Errors that can occur for [connection](NearConnector::connection)
@@ -331,24 +326,12 @@ pub enum NearConnectError {
     MutexPoison
 }
 
-/// Wrapper for the read half of shared, split read/write streams.
+/// Wrapper for near-channel connections.
 ///
-/// This implements [Read] and [Clone] on an underlying stream
-/// that does not.  An instance can be created using the [From]
-/// instance.
-#[derive(Clone)]
-pub struct NearReader<Stream: Read> {
-    stream: Arc<Mutex<Option<Stream>>>
-}
-
-/// Wrapper for the write half of shared, split read/write streams.
-///
-/// This implements [Write] and [Clone] on an underlying stream
-/// that does not.  An instance can be created using the [From]
-/// instance.
-#[derive(Clone)]
-pub struct NearWriter<Stream: Write> {
-    stream: Arc<Mutex<Option<Stream>>>
+/// An instance can be created using the [From] instance.
+#[derive(Clone, Debug)]
+pub struct NearConn<Conn> {
+    conn: Arc<Mutex<Option<Conn>>>
 }
 
 impl ScopedError for NearConnectError {
@@ -362,75 +345,87 @@ impl ScopedError for NearConnectError {
     }
 }
 
-impl<Stream> From<Stream> for NearReader<Stream>
+impl<Conn> From<Conn> for NearConn<Conn>
 where
-    Stream: Read
+    Conn: Read + Write
 {
     #[inline]
-    fn from(stream: Stream) -> NearReader<Stream> {
-        NearReader::from(Some(stream))
+    fn from(conn: Conn) -> NearConn<Conn> {
+        NearConn::from(Some(conn))
     }
 }
 
-impl<Stream> From<Option<Stream>> for NearReader<Stream>
+impl<Conn> From<Option<Conn>> for NearConn<Conn>
 where
-    Stream: Read
+    Conn: Read + Write
 {
     #[inline]
-    fn from(stream: Option<Stream>) -> NearReader<Stream> {
-        NearReader::from(Arc::new(Mutex::new(stream)))
+    fn from(conn: Option<Conn>) -> NearConn<Conn> {
+        NearConn::from(Arc::new(Mutex::new(conn)))
     }
 }
 
-impl<Stream> From<Arc<Mutex<Option<Stream>>>> for NearReader<Stream>
+impl<Conn> From<Arc<Mutex<Option<Conn>>>> for NearConn<Conn>
 where
-    Stream: Read
+    Conn: Read + Write
 {
     #[inline]
-    fn from(stream: Arc<Mutex<Option<Stream>>>) -> NearReader<Stream> {
-        NearReader { stream: stream }
+    fn from(conn: Arc<Mutex<Option<Conn>>>) -> NearConn<Conn> {
+        NearConn { conn: conn }
     }
 }
 
-impl<Stream> From<Stream> for NearWriter<Stream>
+impl<Conn> Credentials for NearConn<Conn>
 where
-    Stream: Write
+    Conn: Credentials
 {
+    type Cred = Conn::Cred;
+    type CredError = WithMutexPoison<Conn::CredError>;
+
     #[inline]
-    fn from(stream: Stream) -> NearWriter<Stream> {
-        NearWriter::from(Some(stream))
+    fn creds(&self) -> Result<Option<Self::Cred>, Self::CredError> {
+        let guard =
+            self.conn.lock().map_err(|_| WithMutexPoison::MutexPoison)?;
+
+        match guard.as_ref() {
+            Some(conn) => conn
+                .creds()
+                .map_err(|err| WithMutexPoison::Inner { error: err }),
+            None => Ok(None)
+        }
     }
 }
 
-impl<Stream> From<Option<Stream>> for NearWriter<Stream>
+impl<Conn> CredentialsMut for NearConn<Conn>
 where
-    Stream: Write
+    Conn: CredentialsMut
 {
+    type Cred = Conn::Cred;
+    type CredError = WithMutexPoison<Conn::CredError>;
+
     #[inline]
-    fn from(stream: Option<Stream>) -> NearWriter<Stream> {
-        NearWriter::from(Arc::new(Mutex::new(stream)))
+    fn creds(&mut self) -> Result<Option<Self::Cred>, Self::CredError> {
+        let mut guard =
+            self.conn.lock().map_err(|_| WithMutexPoison::MutexPoison)?;
+
+        match guard.as_mut() {
+            Some(conn) => conn
+                .creds()
+                .map_err(|err| WithMutexPoison::Inner { error: err }),
+            None => Ok(None)
+        }
     }
 }
 
-impl<Stream> From<Arc<Mutex<Option<Stream>>>> for NearWriter<Stream>
+impl<Conn> Read for NearConn<Conn>
 where
-    Stream: Write
-{
-    #[inline]
-    fn from(stream: Arc<Mutex<Option<Stream>>>) -> NearWriter<Stream> {
-        NearWriter { stream: stream }
-    }
-}
-
-impl<Stream> Read for NearReader<Stream>
-where
-    Stream: Read
+    Conn: Read + Write
 {
     fn read(
         &mut self,
         buf: &mut [u8]
     ) -> Result<usize, Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.read(buf) {
                     Ok(out) => Ok(out),
@@ -469,7 +464,7 @@ where
         &mut self,
         buf: &mut [IoSliceMut<'_>]
     ) -> Result<usize, Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.read_vectored(buf) {
                     Ok(out) => Ok(out),
@@ -508,7 +503,7 @@ where
         &mut self,
         buf: &mut Vec<u8>
     ) -> Result<usize, Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.read_to_end(buf) {
                     Ok(out) => Ok(out),
@@ -547,7 +542,7 @@ where
         &mut self,
         buf: &mut String
     ) -> Result<usize, Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.read_to_string(buf) {
                     Ok(out) => Ok(out),
@@ -586,7 +581,7 @@ where
         &mut self,
         buf: &mut [u8]
     ) -> Result<(), Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.read_exact(buf) {
                     Ok(()) => Ok(()),
@@ -622,15 +617,15 @@ where
     }
 }
 
-impl<Stream> Write for NearWriter<Stream>
+impl<Conn> Write for NearConn<Conn>
 where
-    Stream: Write
+    Conn: Read + Write
 {
     fn write(
         &mut self,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.write(buf) {
                     Ok(out) => Ok(out),
@@ -669,7 +664,7 @@ where
         &mut self,
         buf: &[IoSlice<'_>]
     ) -> Result<usize, Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.write_vectored(buf) {
                     Ok(out) => Ok(out),
@@ -708,7 +703,7 @@ where
         &mut self,
         buf: &[u8]
     ) -> Result<(), Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.write_all(buf) {
                     Ok(out) => Ok(out),
@@ -744,7 +739,7 @@ where
     }
 
     fn flush(&mut self) -> Result<(), Error> {
-        match self.stream.lock() {
+        match self.conn.lock() {
             Ok(mut guard) => match &mut *guard {
                 Some(stream) => match stream.flush() {
                     Ok(()) => Ok(()),

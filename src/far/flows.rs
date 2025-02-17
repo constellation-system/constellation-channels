@@ -1904,10 +1904,7 @@ where
     Sock::Addr: TryFrom<Xfrm::PeerAddr>,
     <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type Cred<'b>
-        = Xfrm::PeerAddr
-    where
-        Self: 'b;
+    type Cred = Xfrm::PeerAddr;
     type CredError = Infallible;
 
     #[inline]
@@ -2948,10 +2945,7 @@ where
     Xfrm::PeerAddr: Hash,
     Sock: Socket + Sender + Receiver
 {
-    type Cred<'b>
-        = Xfrm::PeerAddr
-    where
-        Self: 'b;
+    type Cred = Xfrm::PeerAddr;
     type CredError = Infallible;
 
     #[inline]
@@ -2993,10 +2987,7 @@ where
     Sock::Addr: TryFrom<Xfrm::PeerAddr>,
     <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type Cred<'b>
-        = Xfrm::PeerAddr
-    where
-        Self: 'b;
+    type Cred = Xfrm::PeerAddr;
     type CredError = <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error;
 
     #[inline]
@@ -3040,10 +3031,7 @@ where
     Sock::Addr: TryFrom<Xfrm::PeerAddr>,
     <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type Cred<'b>
-        = Xfrm::PeerAddr
-    where
-        Self: 'b;
+    type Cred = Xfrm::PeerAddr;
     type CredError = Infallible;
 
     #[inline]
@@ -3066,10 +3054,7 @@ where
     Sock::Addr: TryFrom<Xfrm::PeerAddr>,
     <Sock::Addr as TryFrom<Xfrm::PeerAddr>>::Error: Display + ScopedError
 {
-    type Cred<'b>
-        = Xfrm::PeerAddr
-    where
-        Self: 'b;
+    type Cred = Xfrm::PeerAddr;
     type CredError = Infallible;
 
     #[inline]

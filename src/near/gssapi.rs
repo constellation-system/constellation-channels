@@ -240,18 +240,13 @@ impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
 where
     Stream: Credentials + Read + Write
 {
-    type Cred<'a>
-        = GSSAPIStreamCred<Stream::Cred<'a>>
-    where
-        Self: 'a,
-        Stream: 'a;
+    type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
 
     #[inline]
     fn creds(
         &mut self
-    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred<'_>>>, Self::CredError>
-    {
+    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred>>, Self::CredError> {
         let gssapi = self
             .ctx
             .creds()
@@ -275,18 +270,13 @@ impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
 where
     Stream: Credentials + Read + Write
 {
-    type Cred<'a>
-        = GSSAPIStreamCred<Stream::Cred<'a>>
-    where
-        Self: 'a,
-        Stream: 'a;
+    type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
 
     #[inline]
     fn creds(
         &mut self
-    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred<'_>>>, Self::CredError>
-    {
+    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred>>, Self::CredError> {
         let gssapi = self
             .ctx
             .creds()
@@ -636,7 +626,7 @@ impl<A: NearChannel> GSSAPINearAcceptor<A> {
 
     fn gssapi_negotiate(
         &self,
-        stream: &mut A::Stream
+        conn: &mut A::OwnedConn
     ) -> Result<ServerCtx, GSSAPIError> {
         let mut ctx = self
             .prepare_gssapi()
@@ -647,7 +637,7 @@ impl<A: NearChannel> GSSAPINearAcceptor<A> {
 
         // Do context negotiation.
         while let Some(msg) = {
-            let token = parse_gssapi_step(stream)
+            let token = parse_gssapi_step(conn)
                 .map_err(|err| GSSAPIError::IO { error: err })?;
 
             ctx.step(&token)
@@ -656,7 +646,7 @@ impl<A: NearChannel> GSSAPINearAcceptor<A> {
             trace!(target: "gssapi-near",
                    "continuing GSSAPI authentication");
 
-            write_gssapi_step(stream, &msg)
+            write_gssapi_step(conn, &msg)
                 .map_err(|err| GSSAPIError::IO { error: err })?;
         }
 
@@ -664,13 +654,13 @@ impl<A: NearChannel> GSSAPINearAcceptor<A> {
         debug!(target: "gssapi-near",
                "GSSAPI context established, negotiating security level");
 
-        let _ = parse_gssapi_seclvl(stream, &mut ctx)?;
+        let _ = parse_gssapi_seclvl(conn, &mut ctx)?;
 
         // The Rust bindings don't actually supply any means by
         // which to interrogate or set security levels.
         //
         // Since Kerberos uses DES (ick!), we'll just hardwire it to 56.
-        write_gssapi_seclvl(stream, &mut ctx, 56)?;
+        write_gssapi_seclvl(conn, &mut ctx, 56)?;
 
         Ok(ctx)
     }
@@ -679,17 +669,17 @@ impl<A: NearChannel> GSSAPINearAcceptor<A> {
 impl<A> NearChannel for GSSAPINearAcceptor<A>
 where
     A: NearChannel,
-    A::Stream: Credentials
+    A::OwnedConn: Credentials
 {
     type Config = GSSAPINearAcceptorConfig<A>;
     type Endpoint = A::Endpoint;
-    type Stream = GSSAPIStream<A::Stream, ServerCtx>;
+    type OwnedConn = GSSAPIStream<A::OwnedConn, ServerCtx>;
     type TakeConnectError = GSSAPIConnectionError<A::TakeConnectError>;
 
     fn take_connection(
         &mut self
     ) -> Result<
-        (Self::Stream, Self::Endpoint),
+        (Self::OwnedConn, Self::Endpoint),
         GSSAPIConnectionError<A::TakeConnectError>
     > {
         let (mut stream, endpoint) = self
@@ -713,7 +703,7 @@ where
 impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
 where
     A: NearChannelCreate,
-    A::Stream: Credentials
+    A::OwnedConn: Credentials
 {
     type CreateError = Infallible;
 
@@ -782,7 +772,7 @@ impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
 
     fn gssapi_negotiate(
         &self,
-        stream: &mut Conn::Stream
+        conn: &mut Conn::OwnedConn
     ) -> Result<ClientCtx, GSSAPIError> {
         let mut ctx = self
             .prepare_gssapi()
@@ -801,10 +791,10 @@ impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
             trace!(target: "gssapi-near",
                    "continuing GSSAPI authentication");
 
-            write_gssapi_step(stream, &msg)
+            write_gssapi_step(conn, &msg)
                 .map_err(|err| GSSAPIError::IO { error: err })?;
 
-            let token = parse_gssapi_step(stream)
+            let token = parse_gssapi_step(conn)
                 .map_err(|err| GSSAPIError::IO { error: err })?;
 
             res = ctx
@@ -816,9 +806,9 @@ impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
                "GSSAPI context established, negotiating security level");
 
         // Do security level negotiation.
-        write_gssapi_seclvl(stream, &mut ctx, self.security.seclvl())?;
+        write_gssapi_seclvl(conn, &mut ctx, self.security.seclvl())?;
 
-        let seclvl = parse_gssapi_seclvl(stream, &mut ctx)?;
+        let seclvl = parse_gssapi_seclvl(conn, &mut ctx)?;
 
         trace!(target: "gssapi-near",
                "server replied with security level {}",
@@ -842,12 +832,12 @@ impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
 impl<Conn: NearConnector> NearSessionParams<Conn>
     for GSSAPINearConnectorParams<Conn>
 where
-    Conn::Stream: Credentials
+    Conn::Conn: Credentials
 {
     type Config = GSSAPINearConnectorConfig<Conn>;
     type CreateError = Infallible;
     type NegotiateError = GSSAPIError;
-    type Value = GSSAPIStream<Conn::Stream, ClientCtx>;
+    type Value = GSSAPIStream<Conn::OwnedConn, ClientCtx>;
 
     const NAME: &'static str = "GSSAPI";
 
@@ -875,14 +865,14 @@ where
 
     fn negotiate(
         &mut self,
-        mut stream: Conn::Stream,
+        mut conn: Conn::OwnedConn,
         _endpoint: &Conn::Endpoint
-    ) -> Result<GSSAPIStream<Conn::Stream, ClientCtx>, GSSAPIError> {
-        let ctx = self.gssapi_negotiate(&mut stream)?;
+    ) -> Result<GSSAPIStream<Conn::OwnedConn, ClientCtx>, GSSAPIError> {
+        let ctx = self.gssapi_negotiate(&mut conn)?;
 
         Ok(GSSAPIStream {
             ctx: ctx,
-            stream: stream
+            stream: conn
         })
     }
 }
