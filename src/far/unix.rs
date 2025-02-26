@@ -185,8 +185,8 @@ use std::fs::remove_file;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
-use std::os::unix::net::AncillaryData;
-use std::os::unix::net::SocketAncillary;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::os::unix::net::UCred;
 use std::os::unix::net::UnixDatagram;
 
@@ -516,18 +516,21 @@ impl Sender for UnixDatagramSocket {
         addr: &Self::Addr,
         bufs: &[IoSlice<'_>]
     ) -> Result<usize, Error> {
-        let mut ancillary = SocketAncillary::new(&mut []);
+        // ISSUE #28: statically-allocated thread-local storage would
+        // be a better way to do this.
+        let size = bufs.iter().map(|buf| buf.len()).sum();
+        let mut msg = vec![0; size];
+        let mut curr = 0;
 
-        if let Some(path) = addr.as_ref().as_pathname() {
-            self.socket.send_vectored_with_ancillary_to(
-                bufs,
-                &mut ancillary,
-                path
-            )
-        } else {
-            self.socket
-                .send_vectored_with_ancillary(bufs, &mut ancillary)
+        for buf in bufs {
+            let buf = buf.deref();
+            let len = buf.len();
+
+            msg[curr..curr + len].copy_from_slice(buf);
+            curr += len;
         }
+
+        self.send_to(addr, &msg)
     }
 
     #[inline]
@@ -544,40 +547,34 @@ impl Receiver for UnixDatagramSocket {
         &self,
         buf: &mut [u8]
     ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
-        self.recv_from_vectored(&mut [IoSliceMut::new(buf)])
+        let (nbytes, addr) = self.socket.recv_from(buf)?;
+
+        Ok((nbytes, UnixSocketAddr::from(addr), None))
     }
 
     fn recv_from_vectored(
         &self,
         bufs: &mut [IoSliceMut<'_>]
     ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
-        let mut buf = [0; 128];
-        let mut ancillary = SocketAncillary::new(&mut buf);
-        let (nbytes, _, addr) = self
-            .socket
-            .recv_vectored_with_ancillary_from(bufs, &mut ancillary)?;
-        let mut cred = None;
+        let size = bufs.iter().map(|buf| buf.len()).sum();
+        let mut msg = vec![0; size];
+        let (nbytes, addr, cred) = self.recv_from(&mut msg)?;
+        let mut curr = 0;
+        let mut idx = 0;
 
-        for msg in ancillary.messages().flatten() {
-            if let AncillaryData::ScmCredentials(creds) = msg {
-                for curr in creds {
-                    if cred.is_none() {
-                        let _ = cred.insert(UCred {
-                            uid: curr.get_uid(),
-                            gid: curr.get_gid(),
-                            pid: Some(curr.get_pid())
-                        });
-                    } else {
-                        warn!(target: "unix-far-channel",
-                              concat!("neglecting extra credential uid: {},",
-                                      "gid: {}, pid: {}"),
-                              curr.get_uid(), curr.get_gid(), curr.get_pid());
-                    }
-                }
-            }
+        while curr < nbytes && idx < bufs.len() {
+            let buf = bufs[idx].deref_mut();
+            let len = buf.len();
+            let avail = nbytes - curr;
+            let len = len.min(avail);
+
+            buf[..len].copy_from_slice(&msg[curr..curr + len]);
+            bufs[idx].advance(len);
+            curr += len;
+            idx += 1;
         }
 
-        Ok((nbytes, UnixSocketAddr::from(addr), cred))
+        Ok((nbytes, addr, cred))
     }
 
     #[inline]

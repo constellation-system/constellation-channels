@@ -484,8 +484,8 @@ impl Sender for UDPFarSocket {
         addr: &Self::Addr,
         bufs: &[IoSlice<'_>]
     ) -> Result<usize, Error> {
-        // XXX statically-allocated thread-local storage would be a
-        // better way to do this.
+        // ISSUE #28: statically-allocated thread-local storage would
+        // be a better way to do this.
         let size = bufs.iter().map(|buf| buf.len()).sum();
         let mut msg = vec![0; size];
         let mut curr = 0;
