@@ -37,10 +37,9 @@ use log::warn;
 
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearConn;
 use crate::near::NearConnectError;
 use crate::near::NearConnector;
-use crate::near::NearReader;
-use crate::near::NearWriter;
 use crate::resolve::cache::NSNameCachesCtx;
 
 pub trait NearSocketParams: Sized {
@@ -50,7 +49,7 @@ pub trait NearSocketParams: Sized {
     type CreateError: Display + ScopedError;
     type Endpoint: Clone + Display;
     type Error: Display + ScopedError;
-    type Stream: CredentialsMut + Debug + Read + Write;
+    type Conn: CredentialsMut + Debug + Read + Write;
 
     fn create<Ctx>(
         caches: &mut Ctx,
@@ -70,16 +69,16 @@ pub trait NearSocketParams: Sized {
         retry: &Retry,
         until: &mut Instant,
         nretries: &mut usize
-    ) -> Result<Self::Stream, Self::Error>;
+    ) -> Result<Self::Conn, Self::Error>;
 
     fn shutdown(
         &self,
-        stream: &Self::Stream
+        stream: &Self::Conn
     ) -> Result<(), Error>;
 }
 
-enum NearSocketConnection<Stream> {
-    Live { stream: Arc<Mutex<Option<Stream>>> },
+enum NearSocketConnection<Conn> {
+    Live { conn: Arc<Mutex<Option<Conn>>> },
     Dead { retry: Instant, nretries: usize },
     Transferred,
     Shutdown
@@ -87,7 +86,7 @@ enum NearSocketConnection<Stream> {
 
 pub struct NearSocketConnector<Params: NearSocketParams> {
     /// The connection state.
-    state: NearSocketConnection<Params::Stream>,
+    state: NearSocketConnection<Params::Conn>,
     params: Params,
     /// The retry configuration.
     retry: Retry
@@ -98,7 +97,7 @@ where
     Params: NearSocketParams
 {
     #[inline]
-    fn reset_state(&self) -> NearSocketConnection<Params::Stream> {
+    fn reset_state(&self) -> NearSocketConnection<Params::Conn> {
         let duration = self.retry.retry_delay(0);
         let now = Instant::now();
         let retry = now + duration;
@@ -121,16 +120,16 @@ where
 {
     type Config = Params::Config;
     type Endpoint = Params::Endpoint;
-    type Stream = Params::Stream;
+    type OwnedConn = Params::Conn;
     type TakeConnectError = NearConnectError;
 
     fn take_connection(
         &mut self
-    ) -> Result<(Self::Stream, Self::Endpoint), Self::TakeConnectError> {
+    ) -> Result<(Self::OwnedConn, Self::Endpoint), Self::TakeConnectError> {
         loop {
             let reset = match &mut self.state {
-                NearSocketConnection::Live { stream } => {
-                    let guard = match stream.lock() {
+                NearSocketConnection::Live { conn } => {
+                    let guard = match conn.lock() {
                         Ok(guard) => Ok(guard),
                         Err(_) => {
                             error!(target: "near-socket",
@@ -221,13 +220,12 @@ impl<Params> NearConnector for NearSocketConnector<Params>
 where
     Params: NearSocketParams
 {
+    type Conn = NearConn<Params::Conn>;
     type EndpointRef<'a>
         = &'a Params::Endpoint
     where
         Params::Endpoint: 'a,
         Params: 'a;
-    type Reader = NearReader<Params::Stream>;
-    type Writer = NearWriter<Params::Stream>;
 
     #[inline]
     fn endpoint(&self) -> &'_ Params::Endpoint {
@@ -241,12 +239,12 @@ where
 
     fn shutdown(&mut self) -> Result<(), Error> {
         match &self.state {
-            NearSocketConnection::Live { stream } => {
+            NearSocketConnection::Live { conn } => {
                 info!(target: "near-socket",
                       "shutting down {} socket connecting to {}",
                       Params::NAME, self.params.endpoint());
 
-                let newstate = match stream.lock() {
+                let newstate = match conn.lock() {
                     // Figure out whether we need to shut down the stream.
                     Ok(mut guard) => match &*guard {
                         // Shut it down.
@@ -313,7 +311,7 @@ where
         nretries: usize
     ) -> Result<(), Error> {
         let state = match &mut self.state {
-            NearSocketConnection::Live { stream } => match stream.lock() {
+            NearSocketConnection::Live { conn } => match conn.lock() {
                 Ok(mut guard) => {
                     debug!(target: "unix-near",
                            concat!("resetting {} socket connection ",
@@ -401,18 +399,12 @@ where
 
     fn connection(
         &mut self
-    ) -> Result<
-        (
-            NearReader<Params::Stream>,
-            NearWriter<Params::Stream>,
-            &'_ Params::Endpoint
-        ),
-        NearConnectError
-    > {
+    ) -> Result<(NearConn<Params::Conn>, &'_ Params::Endpoint), NearConnectError>
+    {
         loop {
             let reset = match &mut self.state {
-                NearSocketConnection::Live { stream } => {
-                    let guard = match stream.lock() {
+                NearSocketConnection::Live { conn } => {
+                    let guard = match conn.lock() {
                         Ok(guard) => Ok(guard),
                         Err(_) => {
                             error!(target: "near-socket",
@@ -426,10 +418,9 @@ where
                     // closed the connection.
                     if guard.is_some() {
                         // We're good, we can return.
-                        let reader = NearReader::from(stream.clone());
-                        let writer = NearWriter::from(stream.clone());
+                        let conn = NearConn::from(conn.clone());
 
-                        return Ok((reader, writer, self.params.endpoint()));
+                        return Ok((conn, self.params.endpoint()));
                     } else {
                         true
                     }
@@ -438,23 +429,20 @@ where
                     match self.params.try_connect(&self.retry, retry, nretries)
                     {
                         // Connection successful.
-                        Ok(stream) => {
+                        Ok(conn) => {
                             info!(target: "near-socket",
                                   "established {} connection to {}",
                                   Params::NAME, self.params.endpoint());
 
-                            let stream = Arc::new(Mutex::new(Some(stream)));
-                            let reader = NearReader::from(stream.clone());
-                            let writer = NearWriter::from(stream.clone());
+                            let conn = Arc::new(Mutex::new(Some(conn)));
 
-                            self.state =
-                                NearSocketConnection::Live { stream: stream };
+                            self.state = NearSocketConnection::Live {
+                                conn: conn.clone()
+                            };
 
-                            return Ok((
-                                reader,
-                                writer,
-                                self.params.endpoint()
-                            ));
+                            let conn = NearConn::from(conn.clone());
+
+                            return Ok((conn, self.params.endpoint()));
                         }
                         // Connection failed, try again.
                         Err(err) => {

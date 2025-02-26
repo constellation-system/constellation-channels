@@ -103,14 +103,13 @@
 //!     let mut conn =
 //!         UnixNearConnector::new(&mut client_nscaches, connect_config)
 //!             .expect("expected success");
-//!     let (mut receiver, mut sender, _) =
-//!         conn.connection().expect("expected success");
+//!     let (mut stream, _) = conn.connection().expect("expected success");
 //!
-//!     sender.write_all(&FIRST_BYTES).expect("Expected success");
+//!     stream.write_all(&FIRST_BYTES).expect("Expected success");
 //!
 //!     let mut buf = [0; SECOND_BYTES.len()];
 //!
-//!     receiver.read_exact(&mut buf).unwrap();
+//!     stream.read_exact(&mut buf).unwrap();
 //!
 //!     assert_eq!(SECOND_BYTES, buf);
 //! });
@@ -294,13 +293,13 @@ impl Drop for UnixNearAcceptor {
 impl NearChannel for UnixNearAcceptor {
     type Config = UnixNearChannelConfig;
     type Endpoint = UnixSocketAddr;
-    type Stream = UnixStream;
+    type OwnedConn = UnixStream;
     type TakeConnectError = Error;
 
     #[inline]
     fn take_connection(
         &mut self
-    ) -> Result<(Self::Stream, Self::Endpoint), Error> {
+    ) -> Result<(Self::OwnedConn, Self::Endpoint), Error> {
         let (stream, addr) = self.listener.accept()?;
 
         Ok((stream, UnixSocketAddr::from(addr)))
@@ -325,10 +324,10 @@ impl NearChannelCreate for UnixNearAcceptor {
 
 impl NearSocketParams for UnixNearConnectorParams {
     type Config = UnixNearConnectorConfig;
+    type Conn = UnixStream;
     type CreateError = Infallible;
     type Endpoint = UnixSocketPath;
     type Error = Error;
-    type Stream = UnixStream;
 
     const NAME: &'static str = "unix";
 
@@ -389,7 +388,7 @@ impl NearSocketParams for UnixNearConnectorParams {
     #[inline]
     fn shutdown(
         &self,
-        stream: &Self::Stream
+        stream: &Self::Conn
     ) -> Result<(), Error> {
         stream.shutdown(Shutdown::Both)
     }
@@ -452,14 +451,13 @@ fn test_send_recv() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        receiver.read_exact(&mut buf).unwrap();
+        stream.read_exact(&mut buf).unwrap();
 
         assert_eq!(SECOND_BYTES, buf);
     });
@@ -520,21 +518,21 @@ fn test_reconnect() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (_, mut sender, _) = conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         client_barrier.wait();
 
-        let err = sender.write_all(&SECOND_BYTES);
+        let err = stream.write_all(&SECOND_BYTES);
 
         client_barrier.wait();
 
         assert!(err.is_err());
 
-        let (_, mut sender, _) = conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&SECOND_BYTES).expect("Expected success");
+        stream.write_all(&SECOND_BYTES).expect("Expected success");
     });
 
     send.join().unwrap();
@@ -579,17 +577,16 @@ fn test_send_close() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let err = receiver.read_exact(&mut buf);
+        let err = stream.read_exact(&mut buf);
 
         assert!(err.is_err());
 
-        let err = sender.write_all(&SECOND_BYTES);
+        let err = stream.write_all(&SECOND_BYTES);
 
         assert!(err.is_err());
     });
@@ -641,19 +638,18 @@ fn test_recv_close() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         client_barrier.wait();
 
-        let err = sender.write_all(&SECOND_BYTES);
+        let err = stream.write_all(&SECOND_BYTES);
 
         assert!(err.is_err());
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let err = receiver.read_exact(&mut buf);
+        let err = stream.read_exact(&mut buf);
 
         assert!(err.is_err());
     });
@@ -706,15 +702,15 @@ fn test_send_shutdown() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (_, mut sender, _) = conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         conn.shutdown().expect("Expected success");
 
         client_barrier.wait();
 
-        let err = sender.write_all(&SECOND_BYTES);
+        let err = stream.write_all(&SECOND_BYTES);
 
         assert!(err.is_err());
     });
@@ -767,17 +763,16 @@ fn test_recv_shutdown() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut receiver, mut sender, _) =
-            conn.connection().expect("expected success");
+        let (mut stream, _) = conn.connection().expect("expected success");
 
-        sender.write_all(&FIRST_BYTES).expect("Expected success");
+        stream.write_all(&FIRST_BYTES).expect("Expected success");
 
         conn.shutdown().expect("Expected success");
 
         client_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let err = receiver.read_exact(&mut buf);
+        let err = stream.read_exact(&mut buf);
 
         assert!(err.is_err());
     });
@@ -836,23 +831,22 @@ fn test_send_late_shutdown() {
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut receiver1, mut sender1, _) =
-            conn.connection().expect("expected success");
+        let (mut stream1, _) = conn.connection().expect("expected success");
 
-        sender1.write_all(&FIRST_BYTES).expect("Expected success");
+        stream1.write_all(&FIRST_BYTES).expect("Expected success");
 
         let mut buf = [0; SECOND_BYTES.len()];
-        let err = receiver1.read_exact(&mut buf);
+        let err = stream1.read_exact(&mut buf);
 
         assert!(err.is_err());
 
-        let (_, mut sender2, _) = conn.connection().expect("expected success");
+        let (mut stream2, _) = conn.connection().expect("expected success");
 
-        let err = sender1.write_all(&FIRST_BYTES);
+        let err = stream1.write_all(&FIRST_BYTES);
 
         assert!(err.is_err());
 
-        sender2.write_all(&SECOND_BYTES).expect("Expected success");
+        stream2.write_all(&SECOND_BYTES).expect("Expected success");
 
         client_barrier.wait();
     });
