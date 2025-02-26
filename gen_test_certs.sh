@@ -2,6 +2,7 @@
 
 CAS_DIR=test/data/certs
 CONFIG_FILE=${CAS_DIR}/openssl.cnf
+CA_CONFIG_FILE=${CAS_DIR}/openssl-ca.cnf
 SERVER_CA_DIR=${CAS_DIR}/server
 CLIENT_CA_DIR=${CAS_DIR}/client
 EC_CURVE=secp384r1
@@ -15,8 +16,9 @@ mkdir -p ${SERVER_CA_DIR}/reqs
 # Generate server CA cert
 
 openssl ecparam -out ${SERVER_CA_DIR}/ca_key.pem -name ${EC_CURVE} -genkey
-openssl req -config ${CONFIG_FILE} -new -key ${SERVER_CA_DIR}/ca_key.pem \
-    -x509 -utf8 -nodes -days 36500 -reqexts v3_CA -extensions v3_CA \
+
+openssl req -config ${CA_CONFIG_FILE} -new -key ${SERVER_CA_DIR}/ca_key.pem \
+    -x509 -utf8 -nodes -days 36500 \
     -out ${SERVER_CA_DIR}/ca_cert.pem \
     -subj "/C=US/O=Constellation/OU=Tests/CN=Test Server CA"
 
@@ -53,8 +55,8 @@ mkdir -p ${CLIENT_CA_DIR}/reqs
 # Generate client CA cert
 
 openssl ecparam -out ${CLIENT_CA_DIR}/ca_key.pem -name ${EC_CURVE} -genkey
-openssl req -config ${CONFIG_FILE} -new -key ${CLIENT_CA_DIR}/ca_key.pem \
-    -x509 -nodes -days 36500 -extensions v3_CA -reqexts v3_client \
+openssl req -config ${CA_CONFIG_FILE} -new -key ${CLIENT_CA_DIR}/ca_key.pem \
+    -x509 -nodes -days 36500 \
     -out ${CLIENT_CA_DIR}/ca_cert.pem \
     -subj "/C=US/O=Constellation/OU=Tests/CN=Test Client CA"
 
