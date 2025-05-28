@@ -77,6 +77,7 @@ constellation-socks5 = { git = "https://github.com/constellation-system/constell
 constellation-streams = { git = "https://github.com/constellation-system/constellation-streams.git", branch = "project/ioc", default-features = false }
 libgssapi = { version = "0.8", optional = true }
 log = { version = "0.4", optional = true }
+mio = { version = "1.0" }
 openssl = { version = "0.10", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 time = { version = "0.3" }
