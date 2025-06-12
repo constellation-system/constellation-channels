@@ -154,6 +154,7 @@ use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 #[cfg(feature = "tls")]
 use constellation_auth::cred::SSLCred;
+use constellation_auth::cred::UnixSocketCred;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::error::WithMutexPoison;
@@ -420,7 +421,7 @@ pub enum CompoundNearServerConn {
 /// Credentials harvested by [Credentials]
 pub enum CompoundNearCredential {
     #[cfg(feature = "unix")]
-    Unix { unix: UCred },
+    Unix { unix: UnixSocketCred<UCred> },
     /// TCP counterparty address (unsafe) "credential".
     ///
     /// This will only be generated on channels where
@@ -878,13 +879,9 @@ impl Credentials for CompoundNearClientConn {
         match self {
             CompoundNearClientConn::Unix { unix } => {
                 let cred = unix.creds().map_err(|err| match err {
-                    WithMutexPoison::Inner { error } => {
-                        WithMutexPoison::Inner {
-                            error: CompoundNearCredentialError::Unix {
-                                err: error
-                            }
-                        }
-                    }
+                    WithMutexPoison::Inner { err } => WithMutexPoison::Inner {
+                        err: CompoundNearCredentialError::Unix { err: err }
+                    },
                     WithMutexPoison::MutexPoison => WithMutexPoison::MutexPoison
                 })?;
 
@@ -892,13 +889,9 @@ impl Credentials for CompoundNearClientConn {
             }
             CompoundNearClientConn::TCP { tcp } => {
                 let cred = tcp.creds().map_err(|err| match err {
-                    WithMutexPoison::Inner { error } => {
-                        WithMutexPoison::Inner {
-                            error: CompoundNearCredentialError::Unix {
-                                err: error
-                            }
-                        }
-                    }
+                    WithMutexPoison::Inner { err } => WithMutexPoison::Inner {
+                        err: CompoundNearCredentialError::Unix { err: err }
+                    },
                     WithMutexPoison::MutexPoison => WithMutexPoison::MutexPoison
                 })?;
 

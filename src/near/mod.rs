@@ -390,7 +390,7 @@ where
         match guard.as_ref() {
             Some(conn) => conn
                 .creds()
-                .map_err(|err| WithMutexPoison::Inner { error: err }),
+                .map_err(|err| WithMutexPoison::Inner { err: err }),
             None => Ok(None)
         }
     }
@@ -411,7 +411,7 @@ where
         match guard.as_mut() {
             Some(conn) => conn
                 .creds()
-                .map_err(|err| WithMutexPoison::Inner { error: err }),
+                .map_err(|err| WithMutexPoison::Inner { err: err }),
             None => Ok(None)
         }
     }
