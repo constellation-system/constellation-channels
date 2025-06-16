@@ -2303,7 +2303,7 @@ impl<Session, Addr> Clone for ThreadedFlowsReporter<Session, Addr> {
         }
     }
 }
-
+/*
 impl<Session, Msg, Codec, Addr> PullStreamListener<Msg>
     for ThreadedFlowsPullStreamListener<Session, Msg, Codec, Addr>
 where
@@ -2334,7 +2334,7 @@ where
         }))
     }
 }
-
+*/
 impl<Session, Msg, Codec, Addr>
     ThreadedFlowsPullStreamListener<Session, Msg, Codec, Addr>
 where

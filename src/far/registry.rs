@@ -39,8 +39,10 @@ use std::thread::sleep;
 use std::time::Instant;
 use std::vec::IntoIter;
 
+use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::codec::DatagramCodec;
+use constellation_common::config::Create;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
@@ -646,10 +648,7 @@ where
         addr: &<Channel::Xfrm as DatagramXfrm>::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<(
-            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-            AuthN::Prin
-        )>,
+        RetryResult<AuthN::AuthNSession>,
         RegistryMutexPoison
     > {
         match ent.flows.lock() {
@@ -743,8 +742,7 @@ where
     ) -> Result<
         ReadOnlyResult<
             RetryResult<(
-                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                AuthN::Prin,
+                AuthN::AuthNSession,
                 Option<Instant>
             )>
         >,
@@ -755,7 +753,7 @@ where
                 Ok(ReadOnlyResult::Success(
                     Self::get_flow(retry, flows, param, addr, endpoint)
                         .map_err(|_| ReadOnlyErr::MutexPoison)?
-                        .map(|(flow, prin)| (flow, prin, refresh_when))
+                        .map(|session| (session, refresh_when))
                 ))
             }
             ReadOnlyResult::NeedsWrite => Ok(ReadOnlyResult::NeedsWrite)
@@ -824,8 +822,7 @@ where
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
         RetryResult<(
-            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-            AuthN::Prin,
+            AuthN::AuthNSession,
             Option<Vec<Channel::Param>>,
             Option<Instant>
         )>,
@@ -853,7 +850,7 @@ where
         .flat_map_ok(|(flows, addrs, refresh_when)| {
             Ok(Self::get_flow(retry, flows, param, addr, endpoint)
                 .map_err(|_| RegistryFlowsError::MutexPoison)?
-                .map(|(flow, prin)| (flow, prin, addrs, refresh_when)))
+                .map(|session| (session, addrs, refresh_when)))
         })
     }
 
@@ -1237,8 +1234,7 @@ where
     ) -> Result<
         ReadOnlyResult<
             RetryResult<(
-                <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                AuthN::Prin,
+                AuthN::AuthNSession,
                 Option<Instant>
             )>
         >,
@@ -1266,8 +1262,7 @@ where
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
         RetryResult<(
-            <Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-            AuthN::Prin,
+            AuthN::AuthNSession,
             Option<Vec<Channel::Param>>,
             Option<Instant>
         )>,
@@ -1689,8 +1684,7 @@ where
         addr: &<Channel::Xfrm as DatagramXfrm>::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<(<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow,
-                     AuthN::Prin)>,
+        RetryResult<AuthN::AuthNSession>,
         FarChannelRegistryFlowError<
             RegistryFlowsError<
                 RegistryAcquireError<
@@ -1725,7 +1719,7 @@ where
                     }
                 })? {
                 ReadOnlyResult::Success(out) => {
-                    Ok(out.map(|(flow, prin, _)| (flow, prin)))
+                    Ok(out.map(|(session, _)| session))
                 }
                 // Fall back to write mode.
                 ReadOnlyResult::NeedsWrite => match self.channels[idx].write() {
@@ -1746,7 +1740,7 @@ where
                         .map_err(|err| FarChannelRegistryFlowError::Acquire {
                             err: err
                         })?
-                        .map(|(flow, prin, _, _)| (flow, prin))),
+                        .map(|(session, _, _)| session)),
                     Err(_) => Err(FarChannelRegistryFlowError::MutexPoison)
                 }
             },
@@ -1943,7 +1937,8 @@ where
         self.registry
             .flow_nonblock_id(ctx, id, param, addr, endpoint)
             .map_err(|err| FarChannelRegistryStreamError::Flow { err: err })?
-            .map_ok(|(flow, prin)| {
+            .map_ok(|session| {
+                let (prin, flow) = session.take();
                 let stream =
                     DatagramCodecStream::create(self.codec.clone(), flow);
                 let stream = ThreadedStream::new(self.shutdown.clone(), stream);
@@ -1974,8 +1969,8 @@ impl<Msg, Codec, Reporter, Channel, F, AuthN, Xfrm, RegistryCtx>
 where
     AuthN: Clone
         + SessionAuthN<<Channel::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
-    Codec: Clone + DatagramCodec<Msg> + Send,
-    Codec::Param: Default,
+    Codec: Clone + Create + DatagramCodec<Msg> + Send,
+    Codec::Config: Default,
     Channel: FarChannelOwnedFlows<F, AuthN, Xfrm> + FarChannelCreate,
     Channel::Param: ChannelParam<<Channel::Xfrm as DatagramXfrm>::PeerAddr>,
     <Channel::Xfrm as DatagramXfrm>::PeerAddr: Eq + Hash,
@@ -2009,7 +2004,7 @@ where
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq
 {
-    type Config = ChannelRegistryChannelsConfig<Codec::Param>;
+    type Config = ChannelRegistryChannelsConfig<Codec::Config>;
     type CreateError =
         FarChannelRegistryChannelsCreateError<Codec::CreateError>;
     type Reporter = Reporter;

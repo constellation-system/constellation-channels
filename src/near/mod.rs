@@ -171,7 +171,10 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
+use constellation_streams::channels::PollChannel;
 use log::error;
+use mio::Registry;
+use mio::Token;
 
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -210,7 +213,7 @@ pub trait NearChannel: Sized {
     /// Type of connections where ownership is transferred.
     ///
     /// See [take_connection](NearChannel::take_connection).
-    type OwnedConn: CredentialsMut + Read + Write + Debug + Sized;
+    type OwnedConn: CredentialsMut + PollChannel + Read + Write + Debug + Sized;
     /// Type of connection endpoints.
     ///
     /// See [take_connection](NearChannel::take-connection)
@@ -261,7 +264,7 @@ pub trait NearConnector: NearChannel {
     /// Type of connections where ownership is transferred.
     ///
     /// See [take_connection](NearChannel::take_connection).
-    type Conn: CredentialsMut + Read + Write + Debug + Sized;
+    type Conn: CredentialsMut + PollChannel + Read + Write + Debug + Sized;
     /// Type of endpoint references.
     type EndpointRef<'a>: Display
     where
@@ -384,14 +387,34 @@ where
 
     #[inline]
     fn creds(&self) -> Result<Option<Self::Cred>, Self::CredError> {
-        let guard =
-            self.conn.lock().map_err(|_| WithMutexPoison::MutexPoison)?;
-
-        match guard.as_ref() {
+        match self.conn
+            .lock()
+            .map_err(|_| WithMutexPoison::MutexPoison)?
+            .as_ref() {
             Some(conn) => conn
                 .creds()
                 .map_err(|err| WithMutexPoison::Inner { err: err }),
             None => Ok(None)
+        }
+    }
+}
+
+impl<Conn> PollChannel for NearConn<Conn>
+where
+    Conn: PollChannel
+{
+   #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        match self.conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
+            .as_mut() {
+            Some(conn) => conn.register(registry, token),
+            None => Ok(())
         }
     }
 }
@@ -405,10 +428,10 @@ where
 
     #[inline]
     fn creds(&mut self) -> Result<Option<Self::Cred>, Self::CredError> {
-        let mut guard =
-            self.conn.lock().map_err(|_| WithMutexPoison::MutexPoison)?;
-
-        match guard.as_mut() {
+        match self.conn
+            .lock()
+            .map_err(|_| WithMutexPoison::MutexPoison)?
+            .as_mut() {
             Some(conn) => conn
                 .creds()
                 .map_err(|err| WithMutexPoison::Inner { err: err }),
@@ -449,9 +472,6 @@ where
             },
             // Mutex poisoned.
             Err(_) => {
-                error!(target: "near-read",
-                       "mutex poisoned, aborting read");
-
                 Err(Error::new(
                     ErrorKind::Other,
                     "mutex poisoned, aborting read"
@@ -488,9 +508,6 @@ where
             },
             // Mutex poisoned.
             Err(_) => {
-                error!(target: "near-read",
-                       "mutex poisoned, aborting read");
-
                 Err(Error::new(
                     ErrorKind::Other,
                     "mutex poisoned, aborting read"
@@ -527,9 +544,6 @@ where
             },
             // Mutex poisoned.
             Err(_) => {
-                error!(target: "near-read",
-                       "mutex poisoned, aborting read");
-
                 Err(Error::new(
                     ErrorKind::Other,
                     "mutex poisoned, aborting read"
@@ -566,9 +580,6 @@ where
             },
             // Mutex poisoned.
             Err(_) => {
-                error!(target: "near-read",
-                       "mutex poisoned, aborting read");
-
                 Err(Error::new(
                     ErrorKind::Other,
                     "mutex poisoned, aborting read"
@@ -605,9 +616,6 @@ where
             },
             // Mutex poisoned.
             Err(_) => {
-                error!(target: "near-read",
-                       "mutex poisoned, aborting read");
-
                 Err(Error::new(
                     ErrorKind::Other,
                     "mutex poisoned, aborting read"

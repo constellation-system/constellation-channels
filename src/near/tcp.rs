@@ -99,8 +99,6 @@ use std::iter::repeat;
 use std::iter::Repeat;
 use std::net::Shutdown;
 use std::net::SocketAddr;
-use std::net::TcpListener;
-use std::net::TcpStream;
 use std::thread::sleep;
 use std::time::Instant;
 
@@ -111,10 +109,16 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
+use constellation_streams::channels::PollChannel;
 use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::net::TcpListener;
+use mio::net::TcpStream;
 
 use crate::addrs::AddrMultiplexer;
 use crate::addrs::AddrsCreateError;
@@ -287,6 +291,17 @@ impl TCPStream {
     }
 }
 
+impl PollChannel for TCPStream {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        self.inner.register(registry, token)
+    }
+}
+
 impl Read for TCPStream {
     #[inline]
     fn read(
@@ -375,6 +390,17 @@ impl NearChannel for TCPNearAcceptor {
         };
 
         Ok((stream, addr))
+    }
+}
+
+impl PollChannel for TCPNearAcceptor {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+    ) -> Result<(), Error> {
+        registry.register(&mut self.listener, token, Interest::READABLE)
     }
 }
 

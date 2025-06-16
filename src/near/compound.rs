@@ -145,10 +145,6 @@ use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
-#[cfg(feature = "unix")]
-use std::os::unix::net::UCred;
-#[cfg(feature = "unix")]
-use std::os::unix::net::UnixStream;
 
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
@@ -163,6 +159,11 @@ use constellation_common::net::IPEndpointAddr;
 #[cfg(feature = "socks5")]
 use constellation_socks5::comm::SOCKS5Stream;
 use constellation_streams::channels::ChannelParam;
+use constellation_streams::channels::PollChannel;
+use mio::Registry;
+use mio::Token;
+#[cfg(feature = "unix")]
+use mio::net::UnixStream;
 
 #[cfg(feature = "tls")]
 use crate::config::tls::TLSLoadClient;
@@ -421,7 +422,7 @@ pub enum CompoundNearServerConn {
 /// Credentials harvested by [Credentials]
 pub enum CompoundNearCredential {
     #[cfg(feature = "unix")]
-    Unix { unix: UnixSocketCred<UCred> },
+    Unix { unix: UnixSocketCred<()> },
     /// TCP counterparty address (unsafe) "credential".
     ///
     /// This will only be generated on channels where
@@ -1460,6 +1461,81 @@ where
     }
 }
 
+impl PollChannel for CompoundNearClientOwnedConn {
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        match self {
+            CompoundNearClientOwnedConn::Unix { unix } =>
+                unix.register(registry, token),
+            CompoundNearClientOwnedConn::TCP { tcp } =>
+                tcp.register(registry, token),
+            CompoundNearClientOwnedConn::TLS { tls } =>
+                tls.register(registry, token),
+            CompoundNearClientOwnedConn::SOCKS5 { socks5 } =>
+                socks5.register(registry, token)
+        }
+    }
+}
+
+impl PollChannel for CompoundNearClientConn {
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        match self {
+            CompoundNearClientConn::Unix { unix } =>
+                unix.register(registry, token),
+            CompoundNearClientConn::TCP { tcp } =>
+                tcp.register(registry, token),
+            CompoundNearClientConn::TLS { tls } =>
+                tls.register(registry, token),
+            CompoundNearClientConn::SOCKS5 { socks5 } =>
+                socks5.register(registry, token)
+        }
+    }
+}
+
+impl PollChannel for CompoundNearServerConn {
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        match self {
+            CompoundNearServerConn::Unix { unix } =>
+                unix.register(registry, token),
+            CompoundNearServerConn::TCP { tcp } =>
+                tcp.register(registry, token),
+            CompoundNearServerConn::TLS { tls } =>
+                tls.register(registry, token)
+        }
+    }
+}
+
+impl<TLS> PollChannel for CompoundNearAcceptor<TLS>
+where
+    TLS: Clone + Debug + TLSLoadServer
+{
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        match self {
+            CompoundNearAcceptor::Unix { unix } =>
+                unix.register(registry, token),
+            CompoundNearAcceptor::TCP { tcp } =>
+                tcp.register(registry, token),
+            CompoundNearAcceptor::TLS { tls } =>
+                tls.register(registry, token)
+        }
+    }
+}
+
 impl<TLS> NearChannelCreate for CompoundNearAcceptor<TLS>
 where
     TLS: Clone + Debug + TLSLoadServer
@@ -1516,6 +1592,42 @@ where
         CompoundNearAcceptorTakeConnectError
     > {
         self.as_mut().take_connection()
+    }
+}
+
+impl PollChannel for Box<CompoundNearClientOwnedConn> {
+   #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        self.as_mut().register(registry, token)
+    }
+}
+
+impl PollChannel for Box<CompoundNearClientConn> {
+   #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        self.as_mut().register(registry, token)
+    }
+}
+
+impl<TLS> PollChannel for Box<CompoundNearAcceptor<TLS>>
+where
+    TLS: Clone + Debug + TLSLoadServer
+{
+   #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<(), std::io::Error> {
+        self.as_mut().register(registry, token)
     }
 }
 

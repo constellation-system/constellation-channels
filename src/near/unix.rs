@@ -122,15 +122,19 @@ use std::convert::Infallible;
 use std::fs::remove_file;
 use std::io::Error;
 use std::net::Shutdown;
-use std::os::unix::net::UnixListener;
-use std::os::unix::net::UnixStream;
 use std::thread::sleep;
 use std::time::Instant;
 
 use constellation_common::retry::Retry;
+use constellation_streams::channels::PollChannel;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::net::UnixListener;
+use mio::net::UnixStream;
 
 use crate::config::UnixNearChannelConfig;
 use crate::config::UnixNearConnectorConfig;
@@ -306,6 +310,17 @@ impl NearChannel for UnixNearAcceptor {
     }
 }
 
+impl PollChannel for UnixNearAcceptor {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+    ) -> Result<(), Error> {
+        registry.register(&mut self.listener, token, Interest::READABLE)
+    }
+}
+
 impl NearChannelCreate for UnixNearAcceptor {
     type CreateError = Error;
 
@@ -406,6 +421,11 @@ use std::sync::Arc;
 use std::sync::Barrier;
 #[cfg(test)]
 use std::thread::spawn;
+
+#[cfg(test)]
+use mio::Events;
+#[cfg(test)]
+use mio::Poll;
 
 #[cfg(test)]
 use crate::init;

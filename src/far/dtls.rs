@@ -990,6 +990,8 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
+use constellation_auth::authn::AuthNed;
+#[cfg(test)]
 use constellation_auth::authn::PassthruSessionAuthN;
 #[cfg(test)]
 use constellation_auth::cred::NullCred;
@@ -1093,11 +1095,12 @@ fn test_send_recv() {
 
         client_barrier.wait();
 
-        let (mut flow, peer_addr, NullCred) =
+        let (session, peer_addr) =
             match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
                 RetryResult::Success(flow) => flow,
                 _ => panic!("Shouldn't see retry")
             };
+        let (NullCred, mut flow) = session.take();
 
         client_barrier.wait();
 
@@ -1133,7 +1136,7 @@ fn test_send_recv() {
 
         channel_barrier.wait();
 
-        let (mut flow, NullCred) = match flows
+        let session = match flows
             .flow(
                 &nego,
                 &PassthruSessionAuthN,
@@ -1145,6 +1148,7 @@ fn test_send_recv() {
             RetryResult::Success(flow) => flow,
             _ => panic!("Shouldn't see retry")
         };
+        let (NullCred, mut flow) = session.take();
 
         flow.write_all(&FIRST_BYTES).expect("Expected success");
 
