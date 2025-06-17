@@ -171,8 +171,9 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
-use constellation_streams::channels::PollChannel;
 use log::error;
+use mio::event::Source;
+use mio::Interest;
 use mio::Registry;
 use mio::Token;
 
@@ -213,7 +214,7 @@ pub trait NearChannel: Sized {
     /// Type of connections where ownership is transferred.
     ///
     /// See [take_connection](NearChannel::take_connection).
-    type OwnedConn: CredentialsMut + PollChannel + Read + Write + Debug + Sized;
+    type OwnedConn: CredentialsMut + Source + Read + Write + Debug + Sized;
     /// Type of connection endpoints.
     ///
     /// See [take_connection](NearChannel::take-connection)
@@ -264,7 +265,7 @@ pub trait NearConnector: NearChannel {
     /// Type of connections where ownership is transferred.
     ///
     /// See [take_connection](NearChannel::take_connection).
-    type Conn: CredentialsMut + PollChannel + Read + Write + Debug + Sized;
+    type Conn: CredentialsMut + Source + Read + Write + Debug + Sized;
     /// Type of endpoint references.
     type EndpointRef<'a>: Display
     where
@@ -387,10 +388,12 @@ where
 
     #[inline]
     fn creds(&self) -> Result<Option<Self::Cred>, Self::CredError> {
-        match self.conn
+        match self
+            .conn
             .lock()
             .map_err(|_| WithMutexPoison::MutexPoison)?
-            .as_ref() {
+            .as_ref()
+        {
             Some(conn) => conn
                 .creds()
                 .map_err(|err| WithMutexPoison::Inner { err: err }),
@@ -399,21 +402,58 @@ where
     }
 }
 
-impl<Conn> PollChannel for NearConn<Conn>
+impl<Conn> Source for NearConn<Conn>
 where
-    Conn: PollChannel
+    Conn: Source
 {
-   #[inline]
+    #[inline]
     fn register(
         &mut self,
         registry: &Registry,
-        token: Token
+        token: Token,
+        interests: Interest
     ) -> Result<(), std::io::Error> {
-        match self.conn
+        match self
+            .conn
             .lock()
             .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
-            .as_mut() {
-            Some(conn) => conn.register(registry, token),
+            .as_mut()
+        {
+            Some(conn) => conn.register(registry, token, interests),
+            None => Ok(())
+        }
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), std::io::Error> {
+        match self
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
+            .as_mut()
+        {
+            Some(conn) => conn.reregister(registry, token, interests),
+            None => Ok(())
+        }
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), std::io::Error> {
+        match self
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
+            .as_mut()
+        {
+            Some(conn) => conn.deregister(registry),
             None => Ok(())
         }
     }
@@ -428,10 +468,12 @@ where
 
     #[inline]
     fn creds(&mut self) -> Result<Option<Self::Cred>, Self::CredError> {
-        match self.conn
+        match self
+            .conn
             .lock()
             .map_err(|_| WithMutexPoison::MutexPoison)?
-            .as_mut() {
+            .as_mut()
+        {
             Some(conn) => conn
                 .creds()
                 .map_err(|err| WithMutexPoison::Inner { err: err }),
@@ -471,12 +513,10 @@ where
                 ))
             },
             // Mutex poisoned.
-            Err(_) => {
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting read"
-                ))
-            }
+            Err(_) => Err(Error::new(
+                ErrorKind::Other,
+                "mutex poisoned, aborting read"
+            ))
         }
     }
 
@@ -507,12 +547,10 @@ where
                 ))
             },
             // Mutex poisoned.
-            Err(_) => {
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting read"
-                ))
-            }
+            Err(_) => Err(Error::new(
+                ErrorKind::Other,
+                "mutex poisoned, aborting read"
+            ))
         }
     }
 
@@ -543,12 +581,10 @@ where
                 ))
             },
             // Mutex poisoned.
-            Err(_) => {
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting read"
-                ))
-            }
+            Err(_) => Err(Error::new(
+                ErrorKind::Other,
+                "mutex poisoned, aborting read"
+            ))
         }
     }
 
@@ -579,12 +615,10 @@ where
                 ))
             },
             // Mutex poisoned.
-            Err(_) => {
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting read"
-                ))
-            }
+            Err(_) => Err(Error::new(
+                ErrorKind::Other,
+                "mutex poisoned, aborting read"
+            ))
         }
     }
 
@@ -615,12 +649,10 @@ where
                 ))
             },
             // Mutex poisoned.
-            Err(_) => {
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting read"
-                ))
-            }
+            Err(_) => Err(Error::new(
+                ErrorKind::Other,
+                "mutex poisoned, aborting read"
+            ))
         }
     }
 }

@@ -109,16 +109,16 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
-use constellation_streams::channels::PollChannel;
 use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::event::Source;
+use mio::net::TcpListener;
+use mio::net::TcpStream;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
-use mio::net::TcpListener;
-use mio::net::TcpStream;
 
 use crate::addrs::AddrMultiplexer;
 use crate::addrs::AddrsCreateError;
@@ -291,14 +291,33 @@ impl TCPStream {
     }
 }
 
-impl PollChannel for TCPStream {
+impl Source for TCPStream {
     #[inline]
     fn register(
         &mut self,
         registry: &Registry,
-        token: Token
-    ) -> Result<(), std::io::Error> {
-        self.inner.register(registry, token)
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.inner.deregister(registry)
     }
 }
 
@@ -393,14 +412,33 @@ impl NearChannel for TCPNearAcceptor {
     }
 }
 
-impl PollChannel for TCPNearAcceptor {
+impl Source for TCPNearAcceptor {
     #[inline]
     fn register(
         &mut self,
         registry: &Registry,
         token: Token,
+        interests: Interest
     ) -> Result<(), Error> {
-        registry.register(&mut self.listener, token, Interest::READABLE)
+        self.listener.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.listener.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.listener.deregister(registry)
     }
 }
 

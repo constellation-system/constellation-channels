@@ -126,15 +126,15 @@ use std::thread::sleep;
 use std::time::Instant;
 
 use constellation_common::retry::Retry;
-use constellation_streams::channels::PollChannel;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::event::Source;
+use mio::net::UnixListener;
+use mio::net::UnixStream;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
-use mio::net::UnixListener;
-use mio::net::UnixStream;
 
 use crate::config::UnixNearChannelConfig;
 use crate::config::UnixNearConnectorConfig;
@@ -310,14 +310,33 @@ impl NearChannel for UnixNearAcceptor {
     }
 }
 
-impl PollChannel for UnixNearAcceptor {
+impl Source for UnixNearAcceptor {
     #[inline]
     fn register(
         &mut self,
         registry: &Registry,
         token: Token,
+        interests: Interest
     ) -> Result<(), Error> {
-        registry.register(&mut self.listener, token, Interest::READABLE)
+        self.listener.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.listener.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.listener.deregister(registry)
     }
 }
 

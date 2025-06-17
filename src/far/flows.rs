@@ -2303,38 +2303,36 @@ impl<Session, Addr> Clone for ThreadedFlowsReporter<Session, Addr> {
         }
     }
 }
-/*
-impl<Session, Msg, Codec, Addr> PullStreamListener<Msg>
-    for ThreadedFlowsPullStreamListener<Session, Msg, Codec, Addr>
-where
-    Codec: Clone + DatagramCodec<Msg> + Send,
-    F: Credentials + Flow + Read + Write + Send,
-    Addr: Clone + Display + Eq + Hash,
-    Prin: Clone + Display + Eq + Hash,
-    Msg: Send
-{
-    type Addr = Addr;
-    type ListenError = ThreadedFlowsListenError;
-    type Prin = Prin;
-    type Stream = DatagramCodecStream<Msg, F, Codec>;
-
-    #[inline]
-    fn listen(
-        &mut self
-    ) -> Result<
-        RetryResult<(Self::Stream, Self::Addr, Self::Prin)>,
-        Self::ListenError
-    > {
-        Ok(self.inner.listen()?.map(|(flow, addr, prin)| {
-            (
-                DatagramCodecStream::create(self.codec.clone(), flow),
-                addr,
-                prin
-            )
-        }))
-    }
-}
-*/
+// impl<Session, Msg, Codec, Addr> PullStreamListener<Msg>
+// for ThreadedFlowsPullStreamListener<Session, Msg, Codec, Addr>
+// where
+// Codec: Clone + DatagramCodec<Msg> + Send,
+// F: Credentials + Flow + Read + Write + Send,
+// Addr: Clone + Display + Eq + Hash,
+// Prin: Clone + Display + Eq + Hash,
+// Msg: Send
+// {
+// type Addr = Addr;
+// type ListenError = ThreadedFlowsListenError;
+// type Prin = Prin;
+// type Stream = DatagramCodecStream<Msg, F, Codec>;
+//
+// #[inline]
+// fn listen(
+// &mut self
+// ) -> Result<
+// RetryResult<(Self::Stream, Self::Addr, Self::Prin)>,
+// Self::ListenError
+// > {
+// Ok(self.inner.listen()?.map(|(flow, addr, prin)| {
+// (
+// DatagramCodecStream::create(self.codec.clone(), flow),
+// addr,
+// prin
+// )
+// }))
+// }
+// }
 impl<Session, Msg, Codec, Addr>
     ThreadedFlowsPullStreamListener<Session, Msg, Codec, Addr>
 where

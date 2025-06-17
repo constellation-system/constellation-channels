@@ -30,11 +30,11 @@ use constellation_auth::cred::CredentialsMut;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
-use constellation_streams::channels::PollChannel;
 use log::debug;
 use log::error;
 use log::info;
 use log::warn;
+use mio::event::Source;
 
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
@@ -396,7 +396,7 @@ where
 impl<Params, Conn> NearChannel for NearSessionConnector<Params, Conn>
 where
     Params: NearSessionParams<Conn>,
-    Params::Value: CredentialsMut + PollChannel + Read + Write,
+    Params::Value: CredentialsMut + Source + Read + Write,
     Conn: NearConnector
 {
     type Config = Params::Config;
@@ -415,7 +415,7 @@ where
 impl<Params, Conn> NearChannelCreate for NearSessionConnector<Params, Conn>
 where
     Params: NearSessionParams<Conn>,
-    Params::Value: CredentialsMut + PollChannel + Read + Write,
+    Params::Value: CredentialsMut + Source + Read + Write,
     Conn: NearConnector + NearChannelCreate
 {
     type CreateError =
@@ -435,7 +435,7 @@ where
 impl<Params, Conn> NearConnector for NearSessionConnector<Params, Conn>
 where
     Params: NearSessionParams<Conn>,
-    Params::Value: CredentialsMut + PollChannel + Read + Write,
+    Params::Value: CredentialsMut + Source + Read + Write,
     Conn: NearConnector
 {
     type Conn = NearConn<Params::Value>;

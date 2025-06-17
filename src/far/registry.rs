@@ -647,10 +647,7 @@ where
         param: &Channel::Param,
         addr: &<Channel::Xfrm as DatagramXfrm>::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
-    ) -> Result<
-        RetryResult<AuthN::AuthNSession>,
-        RegistryMutexPoison
-    > {
+    ) -> Result<RetryResult<AuthN::AuthNSession>, RegistryMutexPoison> {
         match ent.flows.lock() {
             Ok(mut flows_guard) => match &mut *flows_guard {
                 // The flows are live, try creating the flow
@@ -740,12 +737,7 @@ where
         addr: &<Channel::Xfrm as DatagramXfrm>::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        ReadOnlyResult<
-            RetryResult<(
-                AuthN::AuthNSession,
-                Option<Instant>
-            )>
-        >,
+        ReadOnlyResult<RetryResult<(AuthN::AuthNSession, Option<Instant>)>>,
         ReadOnlyErr
     > {
         match self.try_flows_readonly(param)? {
@@ -1232,12 +1224,7 @@ where
         addr: &<Channel::Xfrm as DatagramXfrm>::PeerAddr,
         endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        ReadOnlyResult<
-            RetryResult<(
-                AuthN::AuthNSession,
-                Option<Instant>
-            )>
-        >,
+        ReadOnlyResult<RetryResult<(AuthN::AuthNSession, Option<Instant>)>>,
         ReadOnlyErr
     > {
         match self.try_acquired_readonly() {

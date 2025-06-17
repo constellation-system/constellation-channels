@@ -30,11 +30,11 @@ use constellation_auth::cred::CredentialsMut;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
-use constellation_streams::channels::PollChannel;
 use log::debug;
 use log::error;
 use log::info;
 use log::warn;
+use mio::event::Source;
 
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
@@ -50,7 +50,7 @@ pub trait NearSocketParams: Sized {
     type CreateError: Display + ScopedError;
     type Endpoint: Clone + Display;
     type Error: Display + ScopedError;
-    type Conn: CredentialsMut + PollChannel + Debug + Read + Write;
+    type Conn: CredentialsMut + Source + Debug + Read + Write;
 
     fn create<Ctx>(
         caches: &mut Ctx,

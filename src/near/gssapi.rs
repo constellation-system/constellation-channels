@@ -55,7 +55,6 @@ use constellation_common::config::authn::ServerGSSAPIConfig;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
-use constellation_streams::channels::PollChannel;
 use libgssapi::context::ClientCtx;
 use libgssapi::context::CtxFlags;
 use libgssapi::context::SecurityContext;
@@ -70,6 +69,8 @@ use libgssapi::util::Buf;
 use log::debug;
 use log::trace;
 use log::warn;
+use mio::event::Source;
+use mio::Interest;
 use mio::Registry;
 use mio::Token;
 
@@ -144,8 +145,9 @@ pub enum GSSAPICredError<Inner> {
 /// connections post-negotiation.
 #[derive(Debug)]
 pub struct GSSAPIStream<Stream, Ctx>
-where Stream: PollChannel + Read + Write,
-      Ctx: SecurityContext {
+where
+    Stream: Source + Read + Write,
+    Ctx: SecurityContext {
     /// The GSSAPI context.
     ctx: Ctx,
     /// The underlying stream.
@@ -153,7 +155,7 @@ where Stream: PollChannel + Read + Write,
 }
 
 /// [NearChannel] instance that performs GSSAPI session negotiation.
-pub struct GSSAPINearAcceptor<A: PollChannel + NearChannel> {
+pub struct GSSAPINearAcceptor<A: Source + NearChannel> {
     config: ServerGSSAPIConfig,
     /// Server credential name.
     inner: A
@@ -205,32 +207,70 @@ pub struct GSSAPIStreamCred<Stream> {
     inner: Option<Stream>
 }
 
-impl<A> PollChannel for GSSAPINearAcceptor<A>
+impl<A> Source for GSSAPINearAcceptor<A>
 where
-    A: PollChannel + NearChannel
+    A: Source + NearChannel
 {
-   #[inline]
+    #[inline]
     fn register(
         &mut self,
         registry: &Registry,
-        token: Token
-    ) -> Result<(), std::io::Error> {
-        self.inner.register(registry, token)
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.inner.deregister(registry)
     }
 }
 
-impl<Stream, Ctx> PollChannel for GSSAPIStream<Stream, Ctx>
+impl<Stream, Ctx> Source for GSSAPIStream<Stream, Ctx>
 where
-    Stream: PollChannel + Read + Write,
+    Stream: Source + Read + Write,
     Ctx: SecurityContext
 {
-   #[inline]
+    #[inline]
     fn register(
         &mut self,
         registry: &Registry,
-        token: Token
-    ) -> Result<(), std::io::Error> {
-        self.stream.register(registry, token)
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.stream.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.stream.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.stream.deregister(registry)
     }
 }
 
@@ -272,7 +312,7 @@ where
 
 impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
 where
-    Stream: PollChannel + Credentials + Read + Write
+    Stream: Source + Credentials + Read + Write
 {
     type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
@@ -302,7 +342,7 @@ where
 
 impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
 where
-    Stream: PollChannel + Credentials + Read + Write
+    Stream: Source + Credentials + Read + Write
 {
     type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
@@ -335,7 +375,7 @@ where
 
 impl<Stream, Ctx> Read for GSSAPIStream<Stream, Ctx>
 where
-    Stream: PollChannel + Read + Write,
+    Stream: Source + Read + Write,
     Ctx: SecurityContext
 {
     #[inline]
@@ -355,7 +395,7 @@ where
 
 impl<Stream, Ctx> Write for GSSAPIStream<Stream, Ctx>
 where
-    Stream: PollChannel + Read + Write,
+    Stream: Source + Read + Write,
     Ctx: SecurityContext
 {
     #[inline]
@@ -621,7 +661,7 @@ where
     }
 }
 
-impl<A: PollChannel + NearChannel> GSSAPINearAcceptor<A> {
+impl<A: Source + NearChannel> GSSAPINearAcceptor<A> {
     /// Prepare a GSSAPI context.
     fn prepare_gssapi(&self) -> Result<ServerCtx, libgssapi::error::Error> {
         // Prepare the mechanisms.
@@ -702,7 +742,7 @@ impl<A: PollChannel + NearChannel> GSSAPINearAcceptor<A> {
 
 impl<A> NearChannel for GSSAPINearAcceptor<A>
 where
-    A: PollChannel + NearChannel,
+    A: Source + NearChannel,
     A::OwnedConn: Credentials
 {
     type Config = GSSAPINearAcceptorConfig<A>;
@@ -736,7 +776,7 @@ where
 
 impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
 where
-    A: PollChannel + NearChannelCreate,
+    A: Source + NearChannelCreate,
     A::OwnedConn: Credentials
 {
     type CreateError = Infallible;

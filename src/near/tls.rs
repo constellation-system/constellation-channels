@@ -142,9 +142,10 @@ use constellation_auth::cred::SSLCred;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
-use constellation_streams::channels::PollChannel;
 use log::info;
 use log::warn;
+use mio::event::Source;
+use mio::Interest;
 use mio::Registry;
 use mio::Token;
 #[cfg(feature = "openssl")]
@@ -171,7 +172,7 @@ use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Wrapper for TLS sessions.
-pub struct TLSConn<S: PollChannel + Read + Write, Endpoint: Display> {
+pub struct TLSConn<S: Source + Read + Write, Endpoint: Display> {
     /// The underlying SSL stream.
     ssl: SslStream<S>,
     peer: Endpoint
@@ -268,7 +269,7 @@ pub enum TLSConnectionError<E, S> {
 /// Once a `TLSNearAcceptor` has been created, connections can be accepted
 /// using the [take_connection](NearChannel::take_connection)
 /// function.
-pub struct TLSNearAcceptor<A: NearChannel + PollChannel, TLS: TLSLoadServer> {
+pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
     tls: PhantomData<TLS>,
     /// The configuration for establishing TLS sessions.
     #[cfg(feature = "openssl")]
@@ -390,7 +391,7 @@ where
 impl<A, TLS> NearChannel for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
-    A: NearChannel + PollChannel,
+    A: NearChannel + Source,
     A::OwnedConn: Credentials
 {
     type Config = TLSChannelConfig<TLS, A::Config>;
@@ -427,9 +428,9 @@ where
     }
 }
 
-impl<S, Endpoint> PollChannel for TLSConn<S, Endpoint>
+impl<S, Endpoint> Source for TLSConn<S, Endpoint>
 where
-    S: PollChannel + Read + Write,
+    S: Source + Read + Write,
     Endpoint: Display
 {
     #[inline]
@@ -437,15 +438,34 @@ where
         &mut self,
         registry: &Registry,
         token: Token,
+        interests: Interest
     ) -> Result<(), Error> {
-        self.ssl.get_mut().register(registry, token)
+        self.ssl.get_mut().register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.ssl.get_mut().reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.ssl.get_mut().deregister(registry)
     }
 }
 
-impl<A, TLS> PollChannel for TLSNearAcceptor<A, TLS>
+impl<A, TLS> Source for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
-    A: NearChannel + PollChannel,
+    A: NearChannel + Source,
     A::OwnedConn: Credentials
 {
     #[inline]
@@ -453,15 +473,34 @@ where
         &mut self,
         registry: &Registry,
         token: Token,
+        interests: Interest
     ) -> Result<(), Error> {
-        self.inner.register(registry, token)
+        self.inner.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.inner.deregister(registry)
     }
 }
 
 impl<A, TLS> NearChannelCreate for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
-    A: NearChannelCreate + PollChannel,
+    A: NearChannelCreate + Source,
     A::OwnedConn: Credentials
 {
     type CreateError = NearSessionCreateError<TLSCreateError, A::CreateError>;
@@ -570,7 +609,7 @@ where
 
 impl<S, Endpoint> Credentials for TLSConn<S, Endpoint>
 where
-    S: Credentials + PollChannel + Read + Write,
+    S: Credentials + Source + Read + Write,
     Endpoint: Display
 {
     type Cred = SSLCred<S::Cred>;
@@ -584,7 +623,7 @@ where
 
 impl<S, Endpoint> CredentialsMut for TLSConn<S, Endpoint>
 where
-    S: Credentials + PollChannel + Read + Write,
+    S: Credentials + Source + Read + Write,
     Endpoint: Display
 {
     type Cred = SSLCred<S::Cred>;
@@ -598,7 +637,7 @@ where
 
 impl<S, Endpoint> Drop for TLSConn<S, Endpoint>
 where
-    S: PollChannel + Read + Write,
+    S: Source + Read + Write,
     Endpoint: Display
 {
     fn drop(&mut self) {
@@ -630,7 +669,7 @@ where
 
 impl<S, Endpoint> Read for TLSConn<S, Endpoint>
 where
-    S: PollChannel + Read + Write,
+    S: Source + Read + Write,
     Endpoint: Display
 {
     #[inline]
@@ -676,7 +715,7 @@ where
 
 impl<S, Endpoint> Write for TLSConn<S, Endpoint>
 where
-    S: PollChannel + Read + Write,
+    S: Source + Read + Write,
     Endpoint: Display
 {
     #[inline]
@@ -711,7 +750,7 @@ where
 
 impl<S, Endpoint> Debug for TLSConn<S, Endpoint>
 where
-    S: PollChannel + Read + Write + Debug,
+    S: Source + Read + Write + Debug,
     Endpoint: Display
 {
     fn fmt(
