@@ -43,7 +43,6 @@ use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use constellation_auth::cred::Credentials;
@@ -53,8 +52,10 @@ use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::config::authn::GSSAPISecurity;
 use constellation_common::config::authn::ServerGSSAPIConfig;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::retry::RetryResult;
 use libgssapi::context::ClientCtx;
 use libgssapi::context::CtxFlags;
 use libgssapi::context::SecurityContext;
@@ -74,8 +75,6 @@ use mio::Interest;
 use mio::Registry;
 use mio::Token;
 
-use crate::near::session::NearSessionConnector;
-use crate::near::session::NearSessionParams;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
@@ -112,7 +111,8 @@ pub enum GSSAPIError {
 }
 
 /// Errors that can occur when setting up a GSSAPI connection.
-pub enum GSSAPIConnectionError<E> {
+#[derive(Debug)]
+pub enum GSSAPINegotiationError<E> {
     /// Error in GSSAPI negotiation.
     GSSAPI {
         /// The error from GSSAPI negotiation.
@@ -126,6 +126,7 @@ pub enum GSSAPIConnectionError<E> {
 }
 
 /// Errors that can occur when obtaining GSSAPI credentials.
+#[derive(Debug)]
 pub enum GSSAPICredError<Inner> {
     /// Error in GSSAPI.
     GSSAPI {
@@ -161,8 +162,9 @@ pub struct GSSAPINearAcceptor<A: Source + NearChannel> {
     inner: A
 }
 
-pub struct GSSAPINearConnectorParams<Conn: NearConnector> {
-    conn: PhantomData<Conn>,
+/// [NearConnector] instance that performs GSSAPI session negotiation.
+pub struct GSSAPINearConnector<Conn: NearConnector> {
+    inner: Conn,
     /// Client credential name.
     name: Option<String>,
     /// Service name.
@@ -172,10 +174,6 @@ pub struct GSSAPINearConnectorParams<Conn: NearConnector> {
     bindings: Option<Vec<u8>>,
     security: GSSAPISecurity
 }
-
-/// [NearConnector] instance that performs GSSAPI session negotiation.
-pub type GSSAPINearConnector<Conn> =
-    NearSessionConnector<GSSAPINearConnectorParams<Conn>, Conn>;
 
 /// Configuration object for a [GSSAPINearAcceptor].
 #[derive(Clone)]
@@ -312,7 +310,7 @@ where
 
 impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
 where
-    Stream: Source + Credentials + Read + Write
+    Stream: Source + CredentialsMut + Read + Write
 {
     type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
@@ -342,7 +340,7 @@ where
 
 impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
 where
-    Stream: Source + Credentials + Read + Write
+    Stream: Source + CredentialsMut + Read + Write
 {
     type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
@@ -700,7 +698,7 @@ impl<A: Source + NearChannel> GSSAPINearAcceptor<A> {
 
     fn gssapi_negotiate(
         &self,
-        conn: &mut A::OwnedConn
+        conn: &mut A::Conn
     ) -> Result<ServerCtx, GSSAPIError> {
         let mut ctx = self
             .prepare_gssapi()
@@ -743,26 +741,53 @@ impl<A: Source + NearChannel> GSSAPINearAcceptor<A> {
 impl<A> NearChannel for GSSAPINearAcceptor<A>
 where
     A: Source + NearChannel,
-    A::OwnedConn: Credentials
 {
     type Config = GSSAPINearAcceptorConfig<A>;
     type Endpoint = A::Endpoint;
-    type OwnedConn = GSSAPIStream<A::OwnedConn, ServerCtx>;
-    type TakeConnectError = GSSAPIConnectionError<A::TakeConnectError>;
+    type Conn = GSSAPIStream<A::Conn, ServerCtx>;
+    type State = A::State;
+    type StartError = A::StartError;
+    type NegotiateError = GSSAPINegotiationError<A::NegotiateError>;
 
-    fn take_connection(
+    #[inline]
+    fn start(
         &mut self
-    ) -> Result<
-        (Self::OwnedConn, Self::Endpoint),
-        GSSAPIConnectionError<A::TakeConnectError>
-    > {
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        self.inner.start()
+    }
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
         let (mut stream, endpoint) = self
             .inner
-            .take_connection()
-            .map_err(|err| GSSAPIConnectionError::Connection { error: err })?;
+            .negotiate(state)
+            .map_err(|err| GSSAPINegotiationError::Connection { error: err })?;
         let ctx = self
             .gssapi_negotiate(&mut stream)
-            .map_err(|err| GSSAPIConnectionError::GSSAPI { error: err })?;
+            .map_err(|err| GSSAPINegotiationError::GSSAPI { error: err })?;
+
+        Ok((
+            GSSAPIStream {
+                ctx: ctx,
+                stream: stream
+            },
+            endpoint
+        ))
+    }
+
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (mut stream, endpoint) = self
+            .inner
+            .complete_negotiate(err)
+            .map_err(|err| GSSAPINegotiationError::Connection { error: err })?;
+        let ctx = self
+            .gssapi_negotiate(&mut stream)
+            .map_err(|err| GSSAPINegotiationError::GSSAPI { error: err })?;
 
         Ok((
             GSSAPIStream {
@@ -777,7 +802,6 @@ where
 impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
 where
     A: Source + NearChannelCreate,
-    A::OwnedConn: Credentials
 {
     type CreateError = Infallible;
 
@@ -795,7 +819,7 @@ where
     }
 }
 
-impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
+impl<Conn: NearConnector> GSSAPINearConnector<Conn> {
     /// Prepare a GSSAPI context.
     fn prepare_gssapi(&self) -> Result<ClientCtx, libgssapi::error::Error> {
         // Prepare the mechanisms.
@@ -846,7 +870,7 @@ impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
 
     fn gssapi_negotiate(
         &self,
-        conn: &mut Conn::OwnedConn
+        conn: &mut Conn::Conn
     ) -> Result<ClientCtx, GSSAPIError> {
         let mut ctx = self
             .prepare_gssapi()
@@ -903,17 +927,81 @@ impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
     }
 }
 
-impl<Conn: NearConnector> NearSessionParams<Conn>
-    for GSSAPINearConnectorParams<Conn>
+impl<Conn> NearChannel for GSSAPINearConnector<Conn>
 where
-    Conn::Conn: Credentials
+    Conn: Source + NearConnector,
 {
     type Config = GSSAPINearConnectorConfig<Conn>;
-    type CreateError = Infallible;
-    type NegotiateError = GSSAPIError;
-    type Value = GSSAPIStream<Conn::OwnedConn, ClientCtx>;
+    type Endpoint = Conn::Endpoint;
+    type Conn = GSSAPIStream<Conn::Conn, ClientCtx>;
+    type State = Conn::State;
+    type StartError = Conn::StartError;
+    type NegotiateError = GSSAPINegotiationError<Conn::NegotiateError>;
 
-    const NAME: &'static str = "GSSAPI";
+    #[inline]
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        self.inner.start()
+    }
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (mut stream, endpoint) = self
+            .inner
+            .negotiate(state)
+            .map_err(|err| GSSAPINegotiationError::Connection { error: err })?;
+        let ctx = self
+            .gssapi_negotiate(&mut stream)
+            .map_err(|err| GSSAPINegotiationError::GSSAPI { error: err })?;
+
+        Ok((
+            GSSAPIStream {
+                ctx: ctx,
+                stream: stream
+            },
+            endpoint
+        ))
+    }
+
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (mut stream, endpoint) = self
+            .inner
+            .complete_negotiate(err)
+            .map_err(|err| GSSAPINegotiationError::Connection { error: err })?;
+        let ctx = self
+            .gssapi_negotiate(&mut stream)
+            .map_err(|err| GSSAPINegotiationError::GSSAPI { error: err })?;
+
+        Ok((
+            GSSAPIStream {
+                ctx: ctx,
+                stream: stream
+            },
+            endpoint
+        ))
+    }
+}
+
+impl<Conn> NearConnector for GSSAPINearConnector<Conn>
+where
+    Conn: Source + NearConnector,
+    Conn::Conn: Source + Credentials + Read + Write
+{
+    /// Type of endpoint references.
+    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        self.inner.endpoint()
+    }
 
     #[inline]
     fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
@@ -921,33 +1009,8 @@ where
     }
 
     #[inline]
-    fn create(
-        config: Self::Config
-    ) -> Result<(Self, Conn::Config), Infallible> {
-        Ok((
-            GSSAPINearConnectorParams {
-                service: config.service,
-                name: config.name,
-                time_req: config.time_req,
-                bindings: config.bindings,
-                security: config.security,
-                conn: PhantomData
-            },
-            config.inner
-        ))
-    }
-
-    fn negotiate(
-        &mut self,
-        mut conn: Conn::OwnedConn,
-        _endpoint: &Conn::Endpoint
-    ) -> Result<GSSAPIStream<Conn::OwnedConn, ClientCtx>, GSSAPIError> {
-        let ctx = self.gssapi_negotiate(&mut conn)?;
-
-        Ok(GSSAPIStream {
-            ctx: ctx,
-            stream: conn
-        })
+    fn shutdown(&mut self) -> Result<(), Error> {
+        self.inner.shutdown()
     }
 }
 
@@ -964,14 +1027,37 @@ impl ScopedError for GSSAPIError {
     }
 }
 
-impl<E> ScopedError for GSSAPIConnectionError<E>
+impl<E> RecoverableError for GSSAPINegotiationError<E>
+where
+    E: RecoverableError
+{
+    type Completable = E::Completable;
+    type Permanent = GSSAPINegotiationError<E::Permanent>;
+
+    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
+        match self {
+            GSSAPINegotiationError::Connection { error } => {
+                let (completable, permanent) = error.split();
+
+                (completable,
+                 permanent.map(|err| GSSAPINegotiationError::Connection {
+                     error: err
+                 }))
+            },
+            GSSAPINegotiationError::GSSAPI { error } =>
+                (None, Some(GSSAPINegotiationError::GSSAPI { error: error }))
+        }
+    }
+}
+
+impl<E> ScopedError for GSSAPINegotiationError<E>
 where
     E: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            GSSAPIConnectionError::Connection { error } => error.scope(),
-            GSSAPIConnectionError::GSSAPI { error } => error.scope()
+            GSSAPINegotiationError::Connection { error } => error.scope(),
+            GSSAPINegotiationError::GSSAPI { error } => error.scope()
         }
     }
 }
@@ -1005,7 +1091,7 @@ impl Display for GSSAPIError {
     }
 }
 
-impl<E> Display for GSSAPIConnectionError<E>
+impl<E> Display for GSSAPINegotiationError<E>
 where
     E: Display
 {
@@ -1014,8 +1100,8 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            GSSAPIConnectionError::Connection { error } => error.fmt(f),
-            GSSAPIConnectionError::GSSAPI { error } => error.fmt(f)
+            GSSAPINegotiationError::Connection { error } => error.fmt(f),
+            GSSAPINegotiationError::GSSAPI { error } => error.fmt(f)
         }
     }
 }

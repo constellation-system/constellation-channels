@@ -148,6 +148,24 @@ impl TryFrom<PathBuf> for UnixSocketAddr {
     }
 }
 
+impl TryFrom<&'_ UnixSocketPath> for UnixSocketAddr {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: &UnixSocketPath) -> Result<UnixSocketAddr, Error> {
+        Ok(UnixSocketAddr(SocketAddr::from_pathname(&val.0)?))
+    }
+}
+
+impl TryFrom<UnixSocketPath> for UnixSocketAddr {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: UnixSocketPath) -> Result<UnixSocketAddr, Error> {
+        Ok(UnixSocketAddr(SocketAddr::from_pathname(val.0)?))
+    }
+}
+
 impl Hash for UnixSocketAddr {
     #[inline]
     fn hash<H>(

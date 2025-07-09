@@ -168,9 +168,11 @@ use std::sync::Mutex;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::retry::RetryResult;
 use log::error;
 use mio::event::Source;
 use mio::Interest;
@@ -182,8 +184,6 @@ use crate::resolve::cache::NSNameCachesCtx;
 pub mod compound;
 #[cfg(feature = "gssapi")]
 pub mod gssapi;
-pub(crate) mod session;
-mod socket;
 #[cfg(feature = "socks5")]
 pub mod socks5;
 pub mod tcp;
@@ -197,60 +197,75 @@ pub mod unix;
 /// This trait provides the basic functionality for near-link channels
 /// on both the client and server sides.  For server-side channels,
 /// this interface functions similar to a typical "listener"
-/// interface, with [take_connection](NearChannel::take_connection)
-/// functioning similar to the "accept" function often found in such
-/// interfaces.
+/// interface, with [connection](NearChannel::connection) functioning
+/// similar to the "accept" function often found in such interfaces.
 ///
 /// Client-side channels typically also implement the [NearConnector]
-/// trait.  The [take_connection](NearChannel::take_connection)
-/// function is typically used only by higher-level protocols to take
-/// exclusive possession of the channel, thus eliminating the need for
-/// a layer of locking and sharing.  The
+/// trait.  The [connection](NearChannel::connection) function is
+/// typically used only by higher-level protocols to take exclusive
+/// possession of the channel.  The
 /// [TLSNearConnector](crate::near::tls::TLSNearConnector) and
 /// [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector)
 /// instances function in this manner with regard to their underlying
 /// channels.
-pub trait NearChannel: Sized {
-    /// Type of connections where ownership is transferred.
+pub trait NearChannel {
+    /// Type of connections.
     ///
-    /// See [take_connection](NearChannel::take_connection).
-    type OwnedConn: CredentialsMut + Source + Read + Write + Debug + Sized;
+    /// See [take_connection](NearChannel::connection).
+    type Conn: CredentialsMut + Source + Read + Write + Debug + Sized;
+    /// Type of negotiation state.
+    type State;
     /// Type of connection endpoints.
     ///
     /// See [take_connection](NearChannel::take-connection)
     /// [endpoint](NearConnector::endpoint).
-    type Endpoint: Clone + Display + Sized;
-    type TakeConnectError: Display + ScopedError + Sized;
+    type Endpoint: Clone + Debug + Display + Sized;
     /// Type of configurations.
     type Config;
+    /// Errors that can occur during negotiations.
+    type NegotiateError: Debug + Display + RecoverableError;
+    /// Type of errors that can occur starting a negotiation.
+    type StartError: Display + ScopedError;
 
-    /// Acquire a connection and return the exclusively-owned
-    /// underlying stream.
+    /// Start a session negotiation.
     ///
-    /// This will block until a connection is successfully acquired.
-    /// Failed attempts at connecting will be handled internally.  Any
-    /// errors returned by this function represent hard programming
-    /// errors, not connection failures or misconfigurations.
-    ///
-    /// After this call succeeds, subsequent calls to this function
-    /// will fail with an error until the underlying connection is
-    /// terminated.  For instances that also implement [NearConnector],
-    /// calls to [connection](NearConnector::connection) will also
-    /// fail with an error after this call succeeds, until
-    /// [fail](NearConnector::fail) is called.
-    fn take_connection(
+    /// This is similar in nature to
+    /// (Negotiator::start)[constellation_common::net::Negotiator::start],
+    /// the underlying stream is supplied by the channel.
+    fn start(
         &mut self
-    ) -> Result<(Self::OwnedConn, Self::Endpoint), Self::TakeConnectError>;
+    ) -> Result<RetryResult<Self::State>, Self::StartError>;
+
+    /// Perform negotiations.
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError>;
+
+    /// Complete a failed negotiation.
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError>;
 }
 
 /// Trait for creating instances of near-link channels.
-pub trait NearChannelCreate: NearChannel {
+pub trait NearChannelCreate: NearChannel + Sized {
     /// Type of errors that can be returned from [new](NearChannelCreate::new).
     type CreateError: Display + ScopedError + Sized;
 
     /// Create a new instance from `config`.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `Ctx`: Type of [NSNameCachesCtx] instance to use.
+    ///
+    /// # Parameters
+    ///
+    /// * `ctx`: Context to use to obtain name caches.
+    /// * `config`: Configuration object to use to create the channel.
     fn new<Ctx>(
-        caches: &mut Ctx,
+        ctx: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
@@ -262,10 +277,6 @@ pub trait NearChannelCreate: NearChannel {
 /// This interface provides functionality for near-link channels that
 /// is specific to the client side.
 pub trait NearConnector: NearChannel {
-    /// Type of connections where ownership is transferred.
-    ///
-    /// See [take_connection](NearChannel::take_connection).
-    type Conn: CredentialsMut + Source + Read + Write + Debug + Sized;
     /// Type of endpoint references.
     type EndpointRef<'a>: Display
     where
@@ -282,40 +293,22 @@ pub trait NearConnector: NearChannel {
     ///
     /// The default behavior is to return `None`.  This is used to
     /// configure TLS connectors based on their underlying connectors.
+    ///
+    /// # Parameters
+    ///
+    /// * `config`: Configuration object used to create the channel.
     #[inline]
-    fn verify_endpoint(_conf: &Self::Config) -> Option<&IPEndpointAddr> {
+    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr> {
         None
     }
-
-    /// Indicate a failure of a higher-level protocol, and reset this
-    /// connector.
-    ///
-    /// The number of failures is given by `nretries`, and will be
-    /// used to set the retry count on the lowest-level protocol,
-    /// which will in turn affect the retry delay.
-    fn fail(
-        &mut self,
-        nretries: usize
-    ) -> Result<(), Error>;
 
     /// Shut down this connector and all lower-level connectors.
     ///
     /// Subsequent attempts to acquire any connection will fail.
     fn shutdown(&mut self) -> Result<(), Error>;
-
-    /// Acquire a connection and return shared reader/writer references.
-    ///
-    /// This will block until a connection is successfully acquired.
-    /// Failed attempts at connecting will be handled internally.  Any
-    /// errors returned by this function represent hard programming
-    /// errors, not connection failures or misconfigurations.
-    fn connection(
-        &mut self
-    ) -> Result<(Self::Conn, Self::EndpointRef<'_>), NearConnectError>;
 }
 
-/// Errors that can occur for [connection](NearConnector::connection)
-/// or [take_connection](NearChannel::take_connection).
+/// Errors that can occur for [connection](NearChannel::connection).
 #[derive(Debug)]
 pub enum NearConnectError {
     /// A low-level IO error occurred.
@@ -328,6 +321,23 @@ pub enum NearConnectError {
     Transferred,
     Shutdown,
     MutexPoison
+}
+
+/// Errors that can occur for [session](NearChannel::session).
+#[derive(Debug)]
+pub enum NearSessionError<Conn, Auth> {
+    /// An error occurred establishing the connection.
+    Conn {
+        /// The error that occurred establishing the connection.
+        err: Conn
+    },
+    /// An error occurred during authentication.
+    Auth {
+        /// The error that occurred during authentication.
+        err: Auth
+    },
+    /// Authentication failure.
+    AuthFail
 }
 
 /// Wrapper for near-channel connections.
@@ -345,6 +355,18 @@ impl ScopedError for NearConnectError {
             NearConnectError::Transferred => ErrorScope::Unrecoverable,
             NearConnectError::Shutdown => ErrorScope::Shutdown,
             NearConnectError::MutexPoison => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl<Conn, Auth> ScopedError for NearSessionError<Conn, Auth>
+where Conn: ScopedError,
+      Auth: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            NearSessionError::Conn { err } => err.scope(),
+            NearSessionError::Auth { err } => err.scope(),
+            NearSessionError::AuthFail => ErrorScope::Session
         }
     }
 }
@@ -829,6 +851,21 @@ impl Display for NearConnectError {
                 write!(f, "channel has been shut down")
             }
             NearConnectError::MutexPoison => write!(f, "mutex poisoned")
+        }
+    }
+}
+
+impl<Conn, Auth> Display for NearSessionError<Conn, Auth>
+where Conn: Display,
+      Auth: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            NearSessionError::Conn { err } => err.fmt(f),
+            NearSessionError::Auth { err } => err.fmt(f),
+            NearSessionError::AuthFail => write!(f, "authentication failed")
         }
     }
 }

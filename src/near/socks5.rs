@@ -66,29 +66,28 @@
 //! Additionally, note that while GSSAPI does provide message
 //! security, the level of security provided by the Kerberos instance
 //! (the primary use of GSSAPI) is inadequate by modern standards.
-use std::convert::Infallible;
-use std::marker::PhantomData;
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::io::Error;
 
+use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
+use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Stream;
-use constellation_socks5::error::SOCKS5Error;
 use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_streams::state_machine::RawStateMachine;
+use constellation_streams::state_machine::RawStateMachineError;
 
 use crate::config::SOCKS5AuthNConfig;
 use crate::config::SOCKS5ConnectConfig;
-use crate::near::session::NearSessionConnector;
-use crate::near::session::NearSessionParams;
+use crate::near::NearChannel;
+use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
-
-/// The [NearSocketParams] instance used by [NearSessionConnector].
-#[doc(hidden)]
-pub struct SOCKS5NearConnectorParams<Conn: NearConnector> {
-    conn: PhantomData<Conn>,
-    /// SOCKS5 protocol parameters.
-    params: SOCKS5Params
-}
+use crate::resolve::cache::NSNameCachesCtx;
 
 /// Client side of a near-link channel that communicates through a
 /// SOCKS5 proxy.
@@ -188,19 +187,131 @@ pub struct SOCKS5NearConnectorParams<Conn: NearConnector> {
 /// - Double-layer SOCKS5 proxy: connecting to a remote SOCKS5 proxy via a
 ///   connection made through a *different* SOCKS5 proxy.  This could be
 ///   extended to any number of layered proxy connections.
-pub type SOCKS5NearConnector<Conn> =
-    NearSessionConnector<SOCKS5NearConnectorParams<Conn>, Conn>;
+pub struct SOCKS5NearConnector<Conn: NearConnector> {
+    /// SOCKS5 protocol parameters.
+    params: SOCKS5Params,
+    proxy: Conn
+}
 
-impl<Conn> NearSessionParams<Conn> for SOCKS5NearConnectorParams<Conn>
+pub struct SOCKS5SessionNegotiation<Proxy> {
+    params: SOCKS5Params,
+    proxy: Proxy
+}
+
+#[derive(Debug)]
+pub enum SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5> {
+    Inner {
+        err: Inner,
+    },
+    SOCKS5 {
+        endpoint: Endpoint,
+        proxy: Proxy,
+        err: SOCKS5
+    }
+}
+
+impl<Conn> NearChannel for SOCKS5NearConnector<Conn>
 where
-    Conn: NearConnector
+    Conn: NearConnector + NearChannelCreate
 {
     type Config = SOCKS5ConnectConfig<Conn::Config>;
-    type CreateError = Infallible;
-    type NegotiateError = SOCKS5Error;
-    type Value = SOCKS5Stream<Conn::OwnedConn>;
+    type Endpoint = Conn::Endpoint;
+    type StartError = Conn::StartError;
+    type Conn = SOCKS5Stream<Conn::Conn>;
+    type State = SOCKS5SessionNegotiation<Conn::State>;
+    type NegotiateError = SOCKS5NegotiateError<
+        Conn::NegotiateError,
+        Conn::Conn,
+        Conn::Endpoint,
+        RawStateMachineError<SOCKS5State>
+    >;
 
-    const NAME: &'static str = "SOCKS5";
+    #[inline]
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        Ok(self.proxy.start()?.map(|proxy| {
+            SOCKS5SessionNegotiation {
+                params: self.params.clone(),
+                proxy: proxy
+            }
+        }))
+    }
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (mut stream, endpoint) = self.proxy.negotiate(state.proxy)
+            .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?;
+        let machine: RawStateMachine<SOCKS5State> =
+            RawStateMachine::new(self.params.clone());
+
+        match machine.run(&mut stream) {
+            Ok(socks5) => Ok((socks5.wrap_stream(stream), endpoint)),
+            Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
+                endpoint: endpoint.clone(),
+                proxy: stream,
+                err: err
+            })
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        err: SOCKS5NegotiateError<
+            <Conn::NegotiateError as RecoverableError>::Completable,
+            Conn::Conn,
+            Conn::Endpoint,
+            <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
+        >
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        match err {
+            SOCKS5NegotiateError::Inner { err } => {
+                let (mut stream, endpoint) = self.proxy.complete_negotiate(err)
+                    .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?;
+                let machine: RawStateMachine<SOCKS5State> =
+                    RawStateMachine::new(self.params.clone());
+
+                match machine.run(&mut stream) {
+                    Ok(socks5) => Ok((socks5.wrap_stream(stream), endpoint)),
+                    Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
+                        endpoint: endpoint.clone(),
+                        proxy: stream,
+                        err: err
+                    })
+                }
+            }
+            SOCKS5NegotiateError::SOCKS5 { endpoint, mut proxy, err } => {
+                let machine: RawStateMachine<SOCKS5State> =
+                    RawStateMachine::complete(err);
+
+                match machine.run(&mut proxy) {
+                    Ok(socks5) => Ok((socks5.wrap_stream(proxy), endpoint)),
+                    Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
+                        endpoint: endpoint.clone(),
+                        proxy: proxy,
+                        err: err
+                    })
+                }
+            }
+        }
+    }
+}
+
+impl<Conn> NearConnector for SOCKS5NearConnector<Conn>
+where
+    Conn: NearConnector + NearChannelCreate
+{
+    /// Type of endpoint references.
+    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        self.proxy.endpoint()
+    }
 
     #[inline]
     fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
@@ -208,9 +319,24 @@ where
     }
 
     #[inline]
-    fn create(
+    fn shutdown(&mut self) -> Result<(), Error> {
+        self.proxy.shutdown()
+    }
+}
+
+impl<Conn> NearChannelCreate for SOCKS5NearConnector<Conn>
+where
+    Conn: NearConnector + NearChannelCreate
+{
+    type CreateError = Conn::CreateError;
+
+    #[inline]
+    fn new<Ctx>(
+        caches: &mut Ctx,
         config: Self::Config
-    ) -> Result<(Self, Conn::Config), Self::CreateError> {
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
         let (auth, target, proxy) = config.take();
         let params = match auth {
             SOCKS5AuthNConfig::None => SOCKS5Params::connect_no_auth(target),
@@ -222,26 +348,84 @@ where
                 SOCKS5Params::connect_gssapi_auth(target, gssapi, None)
             }
         };
+        let proxy = Conn::new(caches, proxy)?;
 
-        Ok((
-            SOCKS5NearConnectorParams {
-                conn: PhantomData,
-                params: params
-            },
-            proxy
-        ))
+        Ok(SOCKS5NearConnector {
+            params: params,
+            proxy: proxy
+        })
     }
+}
 
-    #[inline]
-    fn negotiate(
-        &mut self,
-        mut stream: Conn::OwnedConn,
-        _endpoint: &Conn::Endpoint
-    ) -> Result<SOCKS5Stream<Conn::OwnedConn>, SOCKS5Error> {
-        let machine: RawStateMachine<SOCKS5State> =
-            RawStateMachine::new(self.params.clone());
-        let socks5 = machine.run(&mut stream)?;
+impl<Inner, Proxy, Endpoint, SOCKS5> RecoverableError
+    for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
+where Endpoint: Clone + Debug,
+      Inner: RecoverableError,
+      SOCKS5: RecoverableError {
+    type Completable = SOCKS5NegotiateError<
+        Inner::Completable,
+        Proxy,
+        Endpoint,
+        SOCKS5::Completable
+    >;
+    type Permanent = SOCKS5NegotiateError<
+        Inner::Permanent,
+        (),
+        Endpoint,
+        SOCKS5::Permanent
+    >;
 
-        Ok(socks5.wrap_stream(stream))
+    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
+        match self {
+            SOCKS5NegotiateError::Inner { err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| SOCKS5NegotiateError::Inner {
+                    err: err
+                }),
+                 permanent.map(|err| SOCKS5NegotiateError::Inner { err: err }))
+            }
+            SOCKS5NegotiateError::SOCKS5 { endpoint, proxy, err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| SOCKS5NegotiateError::SOCKS5 {
+                    endpoint: endpoint.clone(),
+                    proxy: proxy,
+                    err: err
+                }),
+                 permanent.map(|err| SOCKS5NegotiateError::SOCKS5 {
+                     endpoint: endpoint,
+                     proxy: (),
+                     err: err
+                 }))
+            }
+        }
+    }
+}
+
+impl<Inner, Proxy, Endpoint, SOCKS5> ScopedError
+    for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
+where Inner: ScopedError,
+      SOCKS5: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SOCKS5NegotiateError::Inner { err } => err.scope(),
+            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.scope()
+        }
+    }
+}
+
+impl<Inner, Proxy, Endpoint, SOCKS5> Display
+    for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
+where Inner: Display,
+      SOCKS5: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5NegotiateError::Inner { err } => err.fmt(f),
+            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.fmt(f)
+        }
     }
 }

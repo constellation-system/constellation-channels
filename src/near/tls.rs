@@ -125,7 +125,6 @@
 //! send.join().unwrap();
 //! ```
 
-#[cfg(feature = "openssl")]
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -140,32 +139,26 @@ use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 use constellation_auth::cred::SSLCred;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::retry::RetryResult;
 use log::info;
 use log::warn;
 use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
-#[cfg(feature = "openssl")]
 use openssl::ssl::HandshakeError;
-#[cfg(feature = "openssl")]
 use openssl::ssl::ShutdownResult;
-#[cfg(feature = "openssl")]
 use openssl::ssl::SslAcceptor;
-#[cfg(feature = "openssl")]
 use openssl::ssl::SslConnector;
-#[cfg(feature = "openssl")]
 use openssl::ssl::SslStream;
 
 use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
 use crate::config::TLSChannelConfig;
-use crate::near::session::NearSessionConnector;
-use crate::near::session::NearSessionCreateError;
-use crate::near::session::NearSessionParams;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
@@ -191,20 +184,14 @@ pub enum TLSCreateError {
     NoName
 }
 
-#[cfg(feature = "openssl")]
-/// Errors that can occur while setting up a TLS connection.
+/// Multiplexer for errors that can occur while creating a session on
+/// top of an underlying channel.
 #[derive(Debug)]
-pub enum TLSConnectionError<E, S> {
-    /// Error during TLS negotations.
-    TLS {
-        /// TLS-specific error.
-        error: HandshakeError<S>
-    },
-    /// Error obtaining underlying connection.
-    Connection {
-        /// Error from obtaining the connection.
-        error: E
-    }
+pub enum TLSSessionCreateError<Session, Channel> {
+    /// Error creating the session-level parameters.
+    Session { error: Session },
+    /// Error creating the underlying channel.
+    Channel { error: Channel }
 }
 
 /// Server side of a Transport-Layer Security (TLS) near-link channel.
@@ -219,7 +206,7 @@ pub enum TLSConnectionError<E, S> {
 /// used as the underlying channel; however, this is not required.  It
 /// is possible, for example, to use a
 /// [UnixNearAcceptor](crate::near::unix::UnixNearAcceptor) (though this is
-/// typically only useful for testing purposes).  It is even possible
+/// typically only useful forz testing purposes).  It is even possible
 /// to use another `TLSNearAcceptor` to set up double-layer TLS.
 ///
 /// # Usage
@@ -272,21 +259,10 @@ pub enum TLSConnectionError<E, S> {
 pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
     tls: PhantomData<TLS>,
     /// The configuration for establishing TLS sessions.
-    #[cfg(feature = "openssl")]
     acceptor: SslAcceptor,
     /// The underlying [NearChannel] instance for obtaining
     /// connections.
     inner: A
-}
-
-/// The [NearSocketParams] instance used by [NearSessionConnector].
-#[doc(hidden)]
-pub struct TLSNearConnectorParams<TLS: TLSLoadClient> {
-    tls: PhantomData<TLS>,
-    #[cfg(feature = "openssl")]
-    connector: SslConnector,
-    #[cfg(feature = "openssl")]
-    domain: String
 }
 
 /// Client side of a Transport-Layer Security (TLS) near-link channel.
@@ -364,8 +340,114 @@ pub struct TLSNearConnectorParams<TLS: TLSLoadClient> {
 /// occurring during connection will be logged, but will not cause
 /// [take_connection](NearChannel::take_connection) or
 /// [connection](NearConnector::connection) to fail.
-pub type TLSNearConnector<Conn, TLS> =
-    NearSessionConnector<TLSNearConnectorParams<TLS>, Conn>;
+pub struct TLSNearConnector<Conn, TLS> {
+    tls: PhantomData<TLS>,
+    /// The configuration for establishing TLS sessions.
+    connector: SslConnector,
+    domain: String,
+    /// The underlying [NearChannel] instance for obtaining
+    /// connections.
+    inner: Conn
+}
+
+#[derive(Debug)]
+pub enum TLSNegotiateError<Inner, Endpoint, TLS> {
+    Inner {
+        err: Inner,
+    },
+    TLS {
+        endpoint: Endpoint,
+        err: TLS
+    }
+}
+
+impl<Inner, Endpoint, TLS> RecoverableError
+    for TLSNegotiateError<Inner, Endpoint, TLS>
+where Endpoint: Clone + Debug,
+      Inner: RecoverableError,
+      TLS: RecoverableError {
+    type Completable = TLSNegotiateError<
+        Inner::Completable,
+        Endpoint,
+        TLS::Completable
+    >;
+    type Permanent = TLSNegotiateError<
+        Inner::Permanent,
+        Endpoint,
+        TLS::Permanent
+    >;
+
+    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
+        match self {
+            TLSNegotiateError::Inner { err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| TLSNegotiateError::Inner { err: err }),
+                 permanent.map(|err| TLSNegotiateError::Inner { err: err }))
+            }
+            TLSNegotiateError::TLS { endpoint, err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| TLSNegotiateError::TLS {
+                    endpoint: endpoint.clone(),
+                    err: err
+                }),
+                 permanent.map(|err| TLSNegotiateError::TLS {
+                     endpoint: endpoint,
+                     err: err
+                 }))
+            }
+        }
+    }
+}
+
+impl<Inner, Endpoint, TLS> RecoverableError
+    for Box<TLSNegotiateError<Inner, Endpoint, TLS>>
+where Endpoint: Clone + Debug,
+      Inner: RecoverableError,
+      TLS: RecoverableError {
+    type Completable = Box<TLSNegotiateError<
+        Inner::Completable,
+        Endpoint,
+        TLS::Completable
+    >>;
+    type Permanent = Box<TLSNegotiateError<
+        Inner::Permanent,
+        Endpoint,
+        TLS::Permanent
+    >>;
+
+    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
+        let (completable, permanent) = (*self).split();
+
+        (completable.map(|err| Box::new(err)),
+         permanent.map(|err| Box::new(err)))
+    }
+}
+
+impl<Inner, Endpoint, TLS> ScopedError
+    for TLSNegotiateError<Inner, Endpoint, TLS>
+where Inner: ScopedError,
+      TLS: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            TLSNegotiateError::Inner { err } => err.scope(),
+            TLSNegotiateError::TLS { err, .. } => err.scope()
+        }
+    }
+}
+
+impl<Inner, Endpoint, TLS> ScopedError
+    for Box<TLSNegotiateError<Inner, Endpoint, TLS>>
+where Inner: ScopedError,
+      TLS: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self.as_ref() {
+            TLSNegotiateError::Inner { err } => err.scope(),
+            TLSNegotiateError::TLS { err, .. } => err.scope()
+        }
+    }
+}
 
 impl ScopedError for TLSCreateError {
     fn scope(&self) -> ErrorScope {
@@ -376,47 +458,82 @@ impl ScopedError for TLSCreateError {
     }
 }
 
-impl<E, S> ScopedError for TLSConnectionError<E, S>
-where
-    E: ScopedError
-{
-    fn scope(&self) -> ErrorScope {
-        match self {
-            TLSConnectionError::TLS { error } => error.scope(),
-            TLSConnectionError::Connection { error } => error.scope()
-        }
-    }
-}
-
 impl<A, TLS> NearChannel for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannel + Source,
-    A::OwnedConn: Credentials
 {
     type Config = TLSChannelConfig<TLS, A::Config>;
     type Endpoint = A::Endpoint;
-    #[cfg(feature = "openssl")]
-    type OwnedConn = TLSConn<A::OwnedConn, A::Endpoint>;
-    #[cfg(feature = "openssl")]
-    type TakeConnectError =
-        TLSConnectionError<A::TakeConnectError, A::OwnedConn>;
+    type Conn = TLSConn<A::Conn, A::Endpoint>;
+    type State = A::State;
+    type StartError = A::StartError;
+    type NegotiateError = TLSNegotiateError<
+        A::NegotiateError,
+        A::Endpoint,
+        HandshakeError<A::Conn>
+    >;
 
-    #[cfg(feature = "openssl")]
-    fn take_connection(
+    #[inline]
+    fn start(
         &mut self
-    ) -> Result<
-        (Self::OwnedConn, Self::Endpoint),
-        TLSConnectionError<A::TakeConnectError, A::OwnedConn>
-    > {
-        let (stream, endpoint) = self
-            .inner
-            .take_connection()
-            .map_err(|err| TLSConnectionError::Connection { error: err })?;
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        self.inner.start()
+    }
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (stream, endpoint) = self.inner.negotiate(state)
+            .map_err(|err| TLSNegotiateError::Inner { err: err })?;
         let stream = self
             .acceptor
             .accept(stream)
-            .map_err(|err| TLSConnectionError::TLS { error: err })?;
+            .map_err(|err| TLSNegotiateError::TLS {
+                endpoint: endpoint.clone(),
+                err: err
+            })?;
+
+        Ok((
+            TLSConn {
+                ssl: stream,
+                peer: endpoint.clone()
+            },
+            endpoint
+        ))
+    }
+
+    /// Complete a failed negotiation.
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (stream, endpoint) = match err {
+            TLSNegotiateError::Inner { err } => {
+                let (stream, endpoint) = self.inner.complete_negotiate(err)
+                    .map_err(|err| TLSNegotiateError::Inner { err: err })?;
+                let stream = self
+                    .acceptor
+                    .accept(stream)
+                    .map_err(|err| TLSNegotiateError::TLS {
+                        endpoint: endpoint.clone(),
+                        err: err
+                    })?;
+
+                (stream, endpoint)
+            }
+            TLSNegotiateError::TLS { endpoint, err } => {
+                let stream = err
+                    .handshake()
+                    .map_err(|err| TLSNegotiateError::TLS {
+                        endpoint: endpoint.clone(),
+                        err: err
+                    })?;
+
+                (stream, endpoint)
+            }
+        };
 
         Ok((
             TLSConn {
@@ -466,7 +583,6 @@ impl<A, TLS> Source for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannel + Source,
-    A::OwnedConn: Credentials
 {
     #[inline]
     fn register(
@@ -501,11 +617,9 @@ impl<A, TLS> NearChannelCreate for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannelCreate + Source,
-    A::OwnedConn: Credentials
 {
-    type CreateError = NearSessionCreateError<TLSCreateError, A::CreateError>;
+    type CreateError = TLSSessionCreateError<TLSCreateError, A::CreateError>;
 
-    #[cfg(feature = "openssl")]
     #[inline]
     fn new<Ctx>(
         caches: &mut Ctx,
@@ -515,12 +629,12 @@ where
         Ctx: NSNameCachesCtx {
         let (tls, endpoint) = config.take();
         let acceptor = tls.load_server(None, false).map_err(|err| {
-            NearSessionCreateError::Session {
+            TLSSessionCreateError::Session {
                 error: TLSCreateError::TLS { error: err }
             }
         })?;
         let inner = A::new(caches, endpoint)
-            .map_err(|err| NearSessionCreateError::Channel { error: err })?;
+            .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
 
         Ok(TLSNearAcceptor {
             tls: PhantomData,
@@ -530,42 +644,123 @@ where
     }
 }
 
-impl<Conn, TLS> NearSessionParams<Conn> for TLSNearConnectorParams<TLS>
+impl<Conn, TLS> NearChannel for TLSNearConnector<Conn, TLS>
 where
     Conn: NearConnector,
     TLS: TLSLoadClient
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
-    type CreateError = TLSCreateError;
-    #[cfg(feature = "openssl")]
-    type NegotiateError = HandshakeError<Conn::OwnedConn>;
-    #[cfg(feature = "openssl")]
-    type Value = TLSConn<Conn::OwnedConn, Conn::Endpoint>;
-
-    const NAME: &'static str = "TLS";
+    type Endpoint = Conn::Endpoint;
+    type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
+    type State = Conn::State;
+    type StartError = Conn::StartError;
+    type NegotiateError = TLSNegotiateError<
+        Conn::NegotiateError,
+        Conn::Endpoint,
+        HandshakeError<Conn::Conn>
+    >;
 
     #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(config.underlying())
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        self.inner.start()
     }
 
-    #[cfg(feature = "openssl")]
-    fn create(
-        config: Self::Config
-    ) -> Result<(Self, Conn::Config), Self::CreateError> {
-        let (tls, inner) = config.take();
-        // Note: this is not the IP address to which we are
-        // connecting, but what we'll use to verify certificates.
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (stream, endpoint) = self.inner.negotiate(state)
+            .map_err(|err| TLSNegotiateError::Inner { err: err })?;
+        let stream = self
+            .connector
+            .connect(self.domain.as_str(), stream)
+            .map_err(|err| TLSNegotiateError::TLS {
+                endpoint: endpoint.clone(),
+                err: err
+            })?;
+
+        Ok((
+            TLSConn {
+                ssl: stream,
+                peer: endpoint.clone()
+            },
+            endpoint
+        ))
+    }
+
+    /// Complete a failed negotiation.
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        let (stream, endpoint) = match err {
+            TLSNegotiateError::Inner { err } => {
+                let (stream, endpoint) = self.inner.complete_negotiate(err)
+                    .map_err(|err| TLSNegotiateError::Inner { err: err })?;
+                let stream = self
+                    .connector
+                    .connect(self.domain.as_str(), stream)
+                    .map_err(|err| TLSNegotiateError::TLS {
+                        endpoint: endpoint.clone(),
+                        err: err
+                    })?;
+
+                (stream, endpoint)
+            }
+            TLSNegotiateError::TLS { endpoint, err } => {
+                let stream = err
+                    .handshake()
+                    .map_err(|err| TLSNegotiateError::TLS {
+                        endpoint: endpoint.clone(),
+                        err: err
+                    })?;
+
+                (stream, endpoint)
+            }
+        };
+
+        Ok((
+            TLSConn {
+                ssl: stream,
+                peer: endpoint.clone()
+            },
+            endpoint
+        ))
+    }
+}
+
+impl<Conn, TLS> NearChannelCreate for TLSNearConnector<Conn, TLS>
+where
+    TLS: TLSLoadClient,
+    Conn: NearChannelCreate + NearConnector,
+{
+    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
+
+    #[inline]
+    fn new<Ctx>(
+        caches: &mut Ctx,
+        config: TLSChannelConfig<TLS, Conn::Config>
+    ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let (tls, endpoint) = config.take();
         let verify_endpoint = match tls.verify_endpoint() {
             Some(endpoint) => Ok(endpoint),
-            None => match Conn::verify_endpoint(&inner) {
+            None => match Conn::verify_endpoint(&endpoint) {
                 Some(endpoint) => Ok(endpoint),
-                None => Err(TLSCreateError::NoName)
+                None => Err(TLSSessionCreateError::Session {
+                    error: TLSCreateError::NoName
+                })
             }
         }?;
-        let connector = tls
-            .load_client(None, verify_endpoint, false)
-            .map_err(|err| TLSCreateError::TLS { error: err })?;
+        let connector = tls.load_client(None, verify_endpoint, false)
+            .map_err(|err| {
+                TLSSessionCreateError::Session {
+                    error: TLSCreateError::TLS { error: err }
+                }
+            })?;
         let domain = match verify_endpoint {
             IPEndpointAddr::Name(name) => match name.find('.') {
                 Some(idx) => {
@@ -574,36 +769,44 @@ where
                     String::from(domain)
                 }
                 None => String::new()
-            },
+            }
             IPEndpointAddr::Addr(_) => String::new()
         };
+        let inner = Conn::new(caches, endpoint)
+            .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
 
-        Ok((
-            TLSNearConnectorParams {
-                tls: PhantomData,
-                domain: domain,
-                connector: connector
-            },
-            inner
-        ))
+        Ok(TLSNearConnector {
+            tls: PhantomData,
+            connector: connector,
+            domain: domain,
+            inner: inner
+        })
+    }
+}
+
+impl<Conn, TLS> NearConnector for TLSNearConnector<Conn, TLS>
+where
+    Conn: NearConnector,
+    TLS: TLSLoadClient
+{
+    /// Type of endpoint references.
+    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        self.inner.endpoint()
     }
 
-    #[cfg(feature = "openssl")]
     #[inline]
-    fn negotiate(
-        &mut self,
-        stream: Conn::OwnedConn,
-        endpoint: &Conn::Endpoint
-    ) -> Result<
-        TLSConn<Conn::OwnedConn, Conn::Endpoint>,
-        HandshakeError<Conn::OwnedConn>
-    > {
-        let stream = self.connector.connect(self.domain.as_str(), stream)?;
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Conn::verify_endpoint(config.underlying())
+    }
 
-        Ok(TLSConn {
-            ssl: stream,
-            peer: endpoint.clone()
-        })
+    #[inline]
+    fn shutdown(&mut self) -> Result<(), Error> {
+        self.inner.shutdown()
     }
 }
 
@@ -623,7 +826,7 @@ where
 
 impl<S, Endpoint> CredentialsMut for TLSConn<S, Endpoint>
 where
-    S: Credentials + Source + Read + Write,
+    S: CredentialsMut + Source + Read + Write,
     Endpoint: Display
 {
     type Cred = SSLCred<S::Cred>;
@@ -631,7 +834,7 @@ where
 
     #[inline]
     fn creds(&mut self) -> Result<Option<SSLCred<S::Cred>>, S::CredError> {
-        <Self as Credentials>::creds(self)
+        self.ssl.creds()
     }
 }
 
@@ -779,19 +982,45 @@ impl Display for TLSCreateError {
     }
 }
 
-#[cfg(feature = "openssl")]
-impl<E, S> Display for TLSConnectionError<E, S>
+impl<Inner, Endpoint, TLS> Display for TLSNegotiateError<Inner, Endpoint, TLS>
+where Inner: Display,
+      TLS: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            TLSNegotiateError::Inner { err } => err.fmt(f),
+            TLSNegotiateError::TLS { err, .. } => err.fmt(f)
+        }
+    }
+}
+
+impl<Session, Channel> ScopedError for TLSSessionCreateError<Session, Channel>
 where
-    E: Display,
-    S: Debug
+    Session: ScopedError,
+    Channel: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            TLSSessionCreateError::Session { error } => error.scope(),
+            TLSSessionCreateError::Channel { error } => error.scope()
+        }
+    }
+}
+
+impl<Session, Channel> Display for TLSSessionCreateError<Session, Channel>
+where
+    Session: Display,
+    Channel: Display
 {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            TLSConnectionError::Connection { error } => error.fmt(f),
-            TLSConnectionError::TLS { error } => write!(f, "{}", error)
+            TLSSessionCreateError::Session { error } => error.fmt(f),
+            TLSSessionCreateError::Channel { error } => error.fmt(f)
         }
     }
 }

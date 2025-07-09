@@ -90,6 +90,7 @@
 //! send.join().unwrap();
 //! ```
 
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
@@ -99,7 +100,6 @@ use std::iter::repeat;
 use std::iter::Repeat;
 use std::net::Shutdown;
 use std::net::SocketAddr;
-use std::thread::sleep;
 use std::time::Instant;
 
 use constellation_auth::cred::Credentials;
@@ -109,9 +109,9 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
+use constellation_common::retry::RetryResult;
 use log::debug;
 use log::info;
-use log::trace;
 use log::warn;
 use mio::event::Source;
 use mio::net::TcpListener;
@@ -124,10 +124,9 @@ use crate::addrs::AddrMultiplexer;
 use crate::addrs::AddrsCreateError;
 use crate::config::TCPNearAcceptorConfig;
 use crate::config::TCPNearConnectorConfig;
-use crate::near::socket::NearSocketConnector;
-use crate::near::socket::NearSocketParams;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Server side of a TCP socket near-link channel.
@@ -178,14 +177,6 @@ pub struct TCPNearAcceptor {
     listener: TcpListener
 }
 
-/// The [NearSocketParams] instance used by [NearSocketConnector].
-#[doc(hidden)]
-pub struct TCPNearConnectorParams {
-    unsafe_allow_ip_addr_creds: bool,
-    endpoint: IPEndpoint,
-    addrs: AddrMultiplexer<Repeat<()>>
-}
-
 /// Client side of a TCP socket near-link channel.
 ///
 /// This is a [NearChannel] and
@@ -232,7 +223,14 @@ pub struct TCPNearConnectorParams {
 /// block until a connection has been successfully established.  Note
 /// that depending on the circumstances, this may involve many retries
 /// and/or name resolutions.
-pub type TCPNearConnector = NearSocketConnector<TCPNearConnectorParams>;
+pub struct TCPNearConnector {
+    unsafe_allow_ip_addr_creds: bool,
+    addrs: AddrMultiplexer<Repeat<()>>,
+    endpoint: IPEndpoint,
+    nretries: usize,
+    when: Instant,
+    retry: Retry,
+}
 
 /// Errors that can occur when converting a [TCPNearConnectorConfig]
 /// to [TCPNearConnectorParams].
@@ -392,26 +390,6 @@ impl ScopedError for TCPConnectError {
     }
 }
 
-impl NearChannel for TCPNearAcceptor {
-    type Config = TCPNearAcceptorConfig;
-    type Endpoint = SocketAddr;
-    type OwnedConn = TCPStream;
-    type TakeConnectError = Error;
-
-    #[inline]
-    fn take_connection(
-        &mut self
-    ) -> Result<(Self::OwnedConn, Self::Endpoint), Error> {
-        let (stream, addr) = self.listener.accept()?;
-        let stream = TCPStream {
-            unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
-            inner: stream
-        };
-
-        Ok((stream, addr))
-    }
-}
-
 impl Source for TCPNearAcceptor {
     #[inline]
     fn register(
@@ -439,6 +417,44 @@ impl Source for TCPNearAcceptor {
         registry: &Registry
     ) -> Result<(), Error> {
         self.listener.deregister(registry)
+    }
+}
+
+impl NearChannel for TCPNearAcceptor {
+    type Config = TCPNearAcceptorConfig;
+    type Endpoint = SocketAddr;
+    type State = (TCPStream, SocketAddr);
+    type Conn = TCPStream;
+    type StartError = Error;
+    type NegotiateError = Infallible;
+
+    #[inline]
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        let (stream, addr) = self.listener.accept()?;
+        let stream = TCPStream {
+            unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
+            inner: stream
+        };
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        Ok(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        panic!("This should never be called!")
     }
 }
 
@@ -471,75 +487,99 @@ impl NearChannelCreate for TCPNearAcceptor {
     }
 }
 
-impl TCPNearConnectorParams {
-    fn try_addrs(
-        &mut self,
-        retry: &Retry,
-        until: &mut Instant,
-        nretries: &mut usize
-    ) -> Result<TcpStream, ()> {
-        while let Ok(result) = self.addrs.addr() {
-            let (addr, endpoint, _) = result.take();
+impl NearChannel for TCPNearConnector {
+    type Config = TCPNearConnectorConfig;
+    type Endpoint = SocketAddr;
+    type State = (TCPStream, SocketAddr);
+    type Conn = TCPStream;
+    type StartError = Error;
+    type NegotiateError = Infallible;
 
-            debug!(target: "tcp-near",
-                   "attempting connection to {}",
-                   addr);
+    #[inline]
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        if Instant::now() < self.when {
+            // XXX correctly deal with error scopes here.
+            while let Ok(result) = self.addrs.addr() {
+                let (addr, endpoint, _) = result.take();
 
-            match TcpStream::connect(addr) {
-                Ok(stream) => {
-                    match self.addrs.success(&addr, &endpoint) {
-                        Ok(()) => {}
-                        Err(err) => {
-                            warn!(target: "tcp-near",
-                                  "error recording success for {} ({})",
-                                  addr, err);
+                debug!(target: "tcp-near",
+                       "attempting connection to {}",
+                       addr);
+
+                match TcpStream::connect(addr) {
+                    Ok(stream) => {
+                        match self.addrs.success(&addr, &endpoint) {
+                            Ok(()) => {}
+                            Err(err) => {
+                                warn!(target: "tcp-near",
+                                      "error recording success for {} ({})",
+                                      addr, err);
+                            }
                         }
+                        let stream = TCPStream {
+                            unsafe_allow_ip_addr_creds:
+                            self.unsafe_allow_ip_addr_creds,
+                            inner: stream
+                        };
+                        let out = (stream, addr);
+
+                        return Ok(RetryResult::Success(out));
                     }
+                    Err(err) => {
+                        info!(target: "tcp-near",
+                              concat!("error connecting to {} ({}): ",
+                                      "{}, trying next address"),
+                              self.endpoint, addr, err);
 
-                    return Ok(stream);
-                }
-                Err(err) => {
-                    info!(target: "tcp-near",
-                          concat!("error connecting to {} ({}): ",
-                                  "{}, trying next address"),
-                          self.endpoint, addr, err);
-
-                    match self.addrs.failure(&addr, &endpoint) {
-                        Ok(()) => {}
-                        Err(err) => {
-                            warn!(target: "tcp-near",
-                                  "error recording failure for {} ({})",
-                                  addr, err);
+                        match self.addrs.failure(&addr, &endpoint) {
+                            Ok(()) => {}
+                            Err(err) => {
+                                warn!(target: "tcp-near",
+                                      "error recording failure for {} ({})",
+                                      addr, err);
+                            }
                         }
                     }
                 }
             }
+
+            let duration = self.retry.retry_delay(self.nretries);
+            let when = Instant::now() + duration;
+
+            self.nretries += 1;
+            self.when = when;
         }
 
-        let duration = retry.retry_delay(*nretries);
-        let retry = Instant::now() + duration;
+        Ok(RetryResult::Retry(self.when.clone()))
+    }
 
-        *nretries += 1;
-        *until = retry;
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        Ok(state)
+    }
 
-        Err(())
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        panic!("This should never be called!")
     }
 }
 
-impl NearSocketParams for TCPNearConnectorParams {
-    type Config = TCPNearConnectorConfig;
-    type Conn = TCPStream;
+impl NearChannelCreate for TCPNearConnector {
     type CreateError = TCPNearConnectorError;
-    type Endpoint = IPEndpoint;
-    type Error = TCPConnectError;
-
-    const NAME: &'static str = "TCP";
 
     #[inline]
-    fn create<Ctx>(
+    fn new<Ctx>(
         caches: &mut Ctx,
-        config: Self::Config
-    ) -> Result<(Self, Retry), Self::CreateError>
+        config: TCPNearConnectorConfig
+    ) -> Result<Self, TCPNearConnectorError>
     where
         Ctx: NSNameCachesCtx {
         let (endpoint, resolve, retry, unsafe_opts) = config.take();
@@ -559,61 +599,36 @@ impl NearSocketParams for TCPNearConnectorParams {
                   endpoint)
         }
 
-        Ok((
-            TCPNearConnectorParams {
-                unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
-                endpoint: endpoint,
-                addrs: addrs
-            },
-            retry
-        ))
+        Ok(TCPNearConnector {
+            unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
+            endpoint: endpoint,
+            addrs: addrs,
+            retry: retry,
+            nretries: 0,
+            when: Instant::now(),
+        })
     }
+}
+
+impl NearConnector for TCPNearConnector {
+    /// Type of endpoint references.
+    type EndpointRef<'a> = &'a IPEndpoint
+    where
+        Self: 'a;
 
     #[inline]
-    fn endpoint(&self) -> &Self::Endpoint {
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
         &self.endpoint
     }
 
     #[inline]
-    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
-        Some(conf.endpoint().ip_endpoint())
-    }
-
-    fn try_connect(
-        &mut self,
-        retry: &Retry,
-        until: &mut Instant,
-        nretries: &mut usize
-    ) -> Result<TCPStream, TCPConnectError> {
-        let now = Instant::now();
-
-        if now < *until {
-            sleep(*until - now)
-        }
-
-        trace!(target: "tcp-near",
-               "attempting to connect to {}",
-               self.endpoint);
-
-        match self.try_addrs(retry, until, nretries) {
-            Ok(stream) => {
-                let stream = TCPStream {
-                    unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
-                    inner: stream
-                };
-
-                Ok(stream)
-            }
-            Err(()) => Err(TCPConnectError)
-        }
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Some(config.endpoint().ip_endpoint())
     }
 
     #[inline]
-    fn shutdown(
-        &self,
-        stream: &Self::Conn
-    ) -> Result<(), Error> {
-        stream.inner.shutdown(Shutdown::Both)
+    fn shutdown(&mut self) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -642,8 +657,6 @@ use std::thread::spawn;
 
 #[cfg(test)]
 use crate::init;
-#[cfg(test)]
-use crate::near::NearConnector;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
 

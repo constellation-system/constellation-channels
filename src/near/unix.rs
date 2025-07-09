@@ -119,15 +119,14 @@
 //! ```
 
 use std::convert::Infallible;
+use std::convert::TryFrom;
 use std::fs::remove_file;
 use std::io::Error;
 use std::net::Shutdown;
-use std::thread::sleep;
-use std::time::Instant;
 
-use constellation_common::retry::Retry;
+use constellation_common::retry::RetryResult;
+use log::debug;
 use log::info;
-use log::trace;
 use log::warn;
 use mio::event::Source;
 use mio::net::UnixListener;
@@ -137,11 +136,9 @@ use mio::Registry;
 use mio::Token;
 
 use crate::config::UnixNearChannelConfig;
-use crate::config::UnixNearConnectorConfig;
-use crate::near::socket::NearSocketConnector;
-use crate::near::socket::NearSocketParams;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::unix::UnixSocketAddr;
 use crate::unix::UnixSocketPath;
@@ -253,7 +250,9 @@ pub struct UnixNearConnectorParams {
 /// Note that if the Unix socket does not exist at the specified path,
 /// then a `UnixNearConnector` attempting to connect to it will
 /// continually retry until the socket is created.
-pub type UnixNearConnector = NearSocketConnector<UnixNearConnectorParams>;
+pub struct UnixNearConnector {
+    path: UnixSocketPath
+}
 
 impl Drop for UnixNearAcceptor {
     fn drop(&mut self) {
@@ -294,22 +293,6 @@ impl Drop for UnixNearAcceptor {
     }
 }
 
-impl NearChannel for UnixNearAcceptor {
-    type Config = UnixNearChannelConfig;
-    type Endpoint = UnixSocketAddr;
-    type OwnedConn = UnixStream;
-    type TakeConnectError = Error;
-
-    #[inline]
-    fn take_connection(
-        &mut self
-    ) -> Result<(Self::OwnedConn, Self::Endpoint), Error> {
-        let (stream, addr) = self.listener.accept()?;
-
-        Ok((stream, UnixSocketAddr::from(addr)))
-    }
-}
-
 impl Source for UnixNearAcceptor {
     #[inline]
     fn register(
@@ -340,6 +323,41 @@ impl Source for UnixNearAcceptor {
     }
 }
 
+impl NearChannel for UnixNearAcceptor {
+    type Config = UnixNearChannelConfig;
+    type Endpoint = UnixSocketAddr;
+    type State = (UnixStream, UnixSocketAddr);
+    type Conn = UnixStream;
+    type StartError = Error;
+    type NegotiateError = Infallible;
+
+    #[inline]
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        let (stream, addr) = self.listener.accept()?;
+        let addr = UnixSocketAddr::from(addr);
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        Ok(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+}
+
 impl NearChannelCreate for UnixNearAcceptor {
     type CreateError = Error;
 
@@ -356,75 +374,75 @@ impl NearChannelCreate for UnixNearAcceptor {
     }
 }
 
-impl NearSocketParams for UnixNearConnectorParams {
-    type Config = UnixNearConnectorConfig;
+impl NearChannel for UnixNearConnector {
+    type Config = UnixNearChannelConfig;
+    type Endpoint = UnixSocketAddr;
+    type State = (UnixStream, UnixSocketAddr);
     type Conn = UnixStream;
-    type CreateError = Infallible;
-    type Endpoint = UnixSocketPath;
-    type Error = Error;
-
-    const NAME: &'static str = "unix";
+    type StartError = Error;
+    type NegotiateError = Infallible;
 
     #[inline]
-    fn create<Ctx>(
-        _caches: &mut Ctx,
-        config: Self::Config
-    ) -> Result<(Self, Retry), Infallible>
-    where
-        Ctx: NSNameCachesCtx {
-        let (channel, retry) = config.take();
-
-        Ok((
-            UnixNearConnectorParams {
-                path: UnixSocketPath::from(channel.take())
-            },
-            retry
-        ))
-    }
-
-    #[inline]
-    fn endpoint(&self) -> &Self::Endpoint {
-        &self.path
-    }
-
-    fn try_connect(
-        &mut self,
-        retry: &Retry,
-        until: &mut Instant,
-        nretries: &mut usize
-    ) -> Result<UnixStream, Error> {
-        trace!(target: "unix-near",
+    fn start(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Error> {
+        debug!(target: "unix-near",
                "attempting to connect to {}",
                self.path);
 
-        let now = Instant::now();
+        let stream = UnixStream::connect(&self.path)?;
+        let addr = UnixSocketAddr::try_from(&self.path)?;
 
-        if now < *until {
-            sleep(*until - now)
-        }
-
-        match UnixStream::connect(&self.path) {
-            // Connect success.
-            Ok(stream) => Ok(stream),
-            // Connect failure.  Increment retry and loop.
-            Err(err) => {
-                let duration = retry.retry_delay(*nretries);
-                let next_retry = Instant::now() + duration;
-
-                *nretries += 1;
-                *until = next_retry;
-
-                Err(err)
-            }
-        }
+        Ok(RetryResult::Success((stream, addr)))
     }
 
     #[inline]
-    fn shutdown(
+    fn negotiate(
         &self,
-        stream: &Self::Conn
-    ) -> Result<(), Error> {
-        stream.shutdown(Shutdown::Both)
+        state: Self::State
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        Ok(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannelCreate for UnixNearConnector {
+    type CreateError = Error;
+
+    #[inline]
+    fn new<Ctx>(
+        _caches: &mut Ctx,
+        config: UnixNearChannelConfig
+    ) -> Result<Self, Error>
+    where
+        Ctx: NSNameCachesCtx {
+        let path = config.take();
+
+        Ok(UnixNearConnector { path: UnixSocketPath::from(path) })
+    }
+}
+
+impl NearConnector for UnixNearConnector {
+    /// Type of endpoint references.
+    type EndpointRef<'a> = &'a UnixSocketPath
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        &self.path
+    }
+
+    #[inline]
+    fn shutdown(&mut self) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -448,8 +466,6 @@ use mio::Poll;
 
 #[cfg(test)]
 use crate::init;
-#[cfg(test)]
-use crate::near::NearConnector;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
 

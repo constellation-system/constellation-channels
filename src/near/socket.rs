@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use constellation_auth::cred::CredentialsMut;
+use constellation_auth::cred::Credentials;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
@@ -50,7 +50,7 @@ pub trait NearSocketParams: Sized {
     type CreateError: Display + ScopedError;
     type Endpoint: Clone + Display;
     type Error: Display + ScopedError;
-    type Conn: CredentialsMut + Source + Debug + Read + Write;
+    type Conn: Credentials + Source + Debug + Read + Write;
 
     fn create<Ctx>(
         caches: &mut Ctx,
@@ -80,7 +80,6 @@ pub trait NearSocketParams: Sized {
 
 enum NearSocketConnection<Conn> {
     Live { conn: Arc<Mutex<Option<Conn>>> },
-    Dead { retry: Instant, nretries: usize },
     Transferred,
     Shutdown
 }
@@ -88,9 +87,7 @@ enum NearSocketConnection<Conn> {
 pub struct NearSocketConnector<Params: NearSocketParams> {
     /// The connection state.
     state: NearSocketConnection<Params::Conn>,
-    params: Params,
-    /// The retry configuration.
-    retry: Retry
+    params: Params
 }
 
 impl<Params> NearSocketConnector<Params>
@@ -121,12 +118,12 @@ where
 {
     type Config = Params::Config;
     type Endpoint = Params::Endpoint;
-    type OwnedConn = Params::Conn;
-    type TakeConnectError = NearConnectError;
+    type Conn = Params::Conn;
+    type ConnectionError = NearConnectError;
 
-    fn take_connection(
+    fn connection(
         &mut self
-    ) -> Result<(Self::OwnedConn, Self::Endpoint), Self::TakeConnectError> {
+    ) -> Result<(Self::Conn, Self::Endpoint), Self::ConnectionError> {
         loop {
             let reset = match &mut self.state {
                 NearSocketConnection::Live { conn } => {

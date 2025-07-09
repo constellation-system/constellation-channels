@@ -835,7 +835,7 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix_stream: UnixNearConnectorConfig
+        unix_stream: UnixNearChannelConfig
     },
     /// TCP Channel.
     ///
