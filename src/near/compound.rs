@@ -293,6 +293,10 @@ pub enum CompoundNearAcceptorCreateError {
 /// [CompoundNearConnector].
 #[derive(Debug)]
 pub enum CompoundNearConnectorCreateError {
+    #[cfg(feature = "unix")]
+    Unix {
+        unix: Error
+    },
     TCP {
         tcp: TCPNearConnectorError
     },
@@ -654,6 +658,8 @@ impl ScopedError for CompoundNearAcceptorCreateError {
 impl ScopedError for CompoundNearConnectorCreateError {
     fn scope(&self) -> ErrorScope {
         match self {
+            #[cfg(feature = "unix")]
+            CompoundNearConnectorCreateError::Unix { unix } => unix.scope(),
             CompoundNearConnectorCreateError::TCP { tcp } => tcp.scope(),
             #[cfg(feature = "tls")]
             CompoundNearConnectorCreateError::TLS { tls } => tls.scope(),
@@ -872,6 +878,10 @@ impl Display for CompoundNearConnectorCreateError {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
+            #[cfg(feature = "unix")]
+            CompoundNearConnectorCreateError::Unix { unix } => {
+                write!(f, "{}", unix)
+            }
             CompoundNearConnectorCreateError::TCP { tcp } => {
                 write!(f, "{}", tcp)
             }
@@ -985,33 +995,29 @@ impl Display for CompoundNearConnectorEndpointRef<'_> {
 
 impl Credentials for CompoundNearClientConn {
     type Cred = CompoundNearCredential;
-    type CredError = WithMutexPoison<CompoundNearCredentialError>;
+    type CredError = CompoundNearCredentialError;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<CompoundNearCredential>,
-        WithMutexPoison<CompoundNearCredentialError>
+        CompoundNearCredentialError
     > {
         match self {
             CompoundNearClientConn::Unix { unix } => {
-                let cred = unix.creds().map_err(|err| match err {
-                    WithMutexPoison::Inner { err } => WithMutexPoison::Inner {
-                        err: CompoundNearCredentialError::Unix { err: err }
-                    },
-                    WithMutexPoison::MutexPoison => WithMutexPoison::MutexPoison
-                })?;
+                let cred = unix.creds()
+                    .map_err(|err| CompoundNearCredentialError::Unix {
+                        err: err
+                    })?;
 
                 Ok(cred.map(|cred| CompoundNearCredential::Unix { unix: cred }))
             }
             CompoundNearClientConn::TCP { tcp } => {
-                let cred = tcp.creds().map_err(|err| match err {
-                    WithMutexPoison::Inner { err } => WithMutexPoison::Inner {
-                        err: CompoundNearCredentialError::Unix { err: err }
-                    },
-                    WithMutexPoison::MutexPoison => WithMutexPoison::MutexPoison
-                })?;
+                let cred = tcp.creds()
+                    .map_err(|err| CompoundNearCredentialError::Unix {
+                        err: err
+                    })?;
 
                 Ok(cred.map(|cred| CompoundNearCredential::UnsafeTCP {
                     unsafe_tcp: cred
@@ -1031,14 +1037,14 @@ impl Credentials for CompoundNearClientConn {
 
 impl CredentialsMut for CompoundNearClientConn {
     type Cred = CompoundNearCredential;
-    type CredError = WithMutexPoison<CompoundNearCredentialError>;
+    type CredError = CompoundNearCredentialError;
 
     #[inline]
     fn creds(
         &mut self
     ) -> Result<
         Option<CompoundNearCredential>,
-        WithMutexPoison<CompoundNearCredentialError>
+        CompoundNearCredentialError
     > {
         <Self as Credentials>::creds(self)
     }
@@ -1869,7 +1875,10 @@ where
         Ctx: NSNameCachesCtx {
         match config {
             CompoundNearConnectorConfig::Unix { unix_stream } => {
-                let Ok(acc) = UnixNearConnector::new(caches, unix_stream);
+                let acc = UnixNearConnector::new(caches, unix_stream)
+                    .map_err(|err| {
+                        CompoundNearConnectorCreateError::Unix { unix: err }
+                    })?;
 
                 Ok(CompoundNearConnector::Unix { unix: acc })
             }
@@ -1892,9 +1901,8 @@ where
                 Ok(CompoundNearConnector::TLS { tls: acc })
             }
             CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
-                let Ok(acc) = SOCKS5NearConnector::new(caches, socks5_tcp);
-
-                Ok(CompoundNearConnector::SOCKS5 { socks5: acc })
+                SOCKS5NearConnector::new(caches, socks5_tcp)
+                    .map(|acc| CompoundNearConnector::SOCKS5 { socks5: acc })
             }
         }
     }
