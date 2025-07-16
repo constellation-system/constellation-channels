@@ -167,6 +167,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::retry::RetryResult;
 use log::warn;
 
 use crate::config::UDPFarChannelConfig;
@@ -317,8 +318,10 @@ impl DatagramXfrmCreateParam for UDPDatagramXfrm {
 }
 
 impl FarChannel for UDPFarChannel {
-    type AcquireError = Infallible;
     type Acquired = SocketAddr;
+    type State = SocketAddr;
+    type AcquireError = Infallible;
+    type NegotiateError = Infallible;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -337,8 +340,24 @@ impl FarChannel for UDPFarChannel {
     }
 
     #[inline]
-    fn acquire(&mut self) -> Result<SocketAddr, Infallible> {
-        Ok(self.bind)
+    fn acquire(&mut self) -> Result<RetryResult<SocketAddr>, Infallible> {
+        Ok(RetryResult::Success(self.bind))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        Ok(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        panic!("This should never be called!")
     }
 }
 

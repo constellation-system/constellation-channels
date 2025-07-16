@@ -130,6 +130,7 @@
 //! therefore take additional steps to guarantee the authenticity of
 //! messages.
 
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
@@ -141,23 +142,22 @@ use std::sync::Mutex;
 
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Socket;
+use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Param;
 use constellation_socks5::comm::SOCKS5UDPXfrm;
-use constellation_socks5::error::SOCKS5Error;
 use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_socks5::state::SOCKS5UDPInfo;
 use constellation_streams::addrs::AddrsCreate;
 use constellation_streams::state_machine::RawStateMachine;
-use log::debug;
-use log::error;
+use constellation_streams::state_machine::RawStateMachineError;
 use log::info;
-use log::warn;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
@@ -283,9 +283,6 @@ where
     Proxy: NearConnector + NearChannelCreate,
     Datagram: FarChannel {
     peer_addr: PhantomData<PeerAddr>,
-    /// The TCP connection, which must be kept alive.
-    #[allow(dead_code)]
-    keepalive: Arc<Mutex<Option<Proxy>>>,
     /// The session information, used to create sockets.
     session: Arc<Mutex<Option<SOCKS5UDPInfo>>>,
     /// The authentication configuration for connecting to the proxy.
@@ -296,6 +293,21 @@ where
     proxy: Proxy,
     /// The current number of retries.
     nretries: usize
+}
+
+pub struct SOCKS5SessionNegotiation<Proxy, Datagram> {
+    datagram: Datagram,
+    proxy: Proxy
+}
+
+/// Type of results from [acquire](FarChannel::acquire) for
+/// [SOCKS5FarChannel].
+pub struct SOCKS5Acquired<Acquired, PeerAddr> {
+    addr: PhantomData<PeerAddr>,
+    /// Datagram socket address.
+    datagram: Acquired,
+    /// Proxy address.
+    proxy: IPEndpoint
 }
 
 /// Errors that can occur when creating a [SOCKS5FarChannel].
@@ -311,16 +323,10 @@ pub enum SOCKS5CreateError<Proxy, Datagram> {
 /// step of establishing a [SOCKS5FarChannel].
 #[derive(Debug)]
 pub enum SOCKS5AcquireError<Proxy, Datagram> {
-    /// Low-level I/O error occurred.
-    IO { error: Error },
     /// Proxy connection error.
     Proxy { proxy: Proxy },
     /// Datagram channel acquire error.
     Datagram { datagram: Datagram },
-    /// SOCKS5 negotiation error.
-    SOCKS5 { socks5: SOCKS5Error },
-    /// Mutex was poisoned.
-    MutexPoison
 }
 
 /// Errors that can occur during the [acquire](FarChannelSocket::socket)
@@ -346,16 +352,6 @@ pub enum SOCKS5XfrmError<Datagram> {
     MutexPoison
 }
 
-/// Type of results from [acquire](FarChannel::acquire) for
-/// [SOCKS5FarChannel].
-pub struct SOCKS5Acquired<Acquired, PeerAddr> {
-    addr: PhantomData<PeerAddr>,
-    /// Datagram socket address.
-    datagram: Acquired,
-    /// Proxy address.
-    proxy: IPEndpoint
-}
-
 /// Errors that can occur when getting a resolver for a [SOCKS5Acquired]
 #[derive(Debug)]
 pub enum SOCKS5AcquiredResolveError<Wrap> {
@@ -367,6 +363,163 @@ pub enum SOCKS5AcquiredResolveError<Wrap> {
     NoValidAddrs
 }
 
+pub enum SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
+                              Proxy, ProxyErr, IO, SOCKS5> {
+    Proxy {
+        state: DatagramState,
+        err: ProxyErr
+    },
+    Datagram {
+        proxy: Proxy,
+        err: DatagramErr,
+    },
+    SOCKS5 {
+        endpoint: IPEndpoint,
+        datagram: Datagram,
+        proxy: Proxy,
+        err: SOCKS5
+    },
+    IO {
+        datagram: Datagram,
+        proxy: Proxy,
+        err: IO
+    }
+}
+
+#[derive(Debug)]
+pub enum SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5> {
+    Proxy {
+        err: Proxy
+    },
+    Datagram {
+        err: Datagram,
+    },
+    SOCKS5 {
+        err: SOCKS5
+    },
+    IO {
+        err: IO
+    }
+}
+
+impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
+    RecoverableError for
+    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
+                         Proxy, ProxyErr, IO, SOCKS5>
+where DatagramErr: RecoverableError,
+      ProxyErr: RecoverableError,
+      SOCKS5: RecoverableError,
+      IO: RecoverableError
+{
+    type Permanent = SOCKS5NegotiatePermanentError<
+        DatagramErr::Permanent,
+        ProxyErr::Permanent,
+        IO::Permanent,
+        SOCKS5::Permanent
+    >;
+    type Completable = SOCKS5NegotiateError<
+        Datagram,
+        DatagramState,
+        DatagramErr::Completable,
+        Proxy,
+        ProxyErr::Completable,
+        IO::Completable,
+        SOCKS5::Completable
+    >;
+
+    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
+        match self {
+            SOCKS5NegotiateError::Proxy { state, err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| SOCKS5NegotiateError::Proxy {
+                    state: state,
+                    err: err
+                }),
+                 permanent.map(|err| SOCKS5NegotiatePermanentError::Proxy {
+                     err: err
+                 })
+                )
+            },
+            SOCKS5NegotiateError::Datagram { proxy, err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| SOCKS5NegotiateError::Datagram {
+                    proxy: proxy,
+                    err: err
+                }),
+                 permanent.map(|err| SOCKS5NegotiatePermanentError::Datagram {
+                     err: err
+                 })
+                )
+            }
+            SOCKS5NegotiateError::SOCKS5 { endpoint, datagram, proxy, err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| SOCKS5NegotiateError::SOCKS5 {
+                    endpoint: endpoint,
+                    datagram: datagram,
+                    proxy: proxy,
+                    err: err
+                }),
+                 permanent.map(|err| SOCKS5NegotiatePermanentError::SOCKS5 {
+                     err: err
+                 })
+                )
+            }
+            SOCKS5NegotiateError::IO { datagram, proxy, err } => {
+                let (completable, permanent) = err.split();
+
+                (completable.map(|err| SOCKS5NegotiateError::IO {
+                    datagram: datagram,
+                    proxy: proxy,
+                    err: err
+                }),
+                 permanent.map(|err| SOCKS5NegotiatePermanentError::IO {
+                     err: err
+                 })
+                )
+            }
+        }
+    }
+}
+
+impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
+    ScopedError for
+    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
+                         Proxy, ProxyErr, IO, SOCKS5>
+where DatagramErr: ScopedError,
+      ProxyErr: ScopedError,
+      SOCKS5: ScopedError,
+      IO: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SOCKS5NegotiateError::Proxy { err, .. } => err.scope(),
+            SOCKS5NegotiateError::Datagram { err, .. } => err.scope(),
+            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.scope(),
+            SOCKS5NegotiateError::IO { err, .. } => err.scope()
+        }
+    }
+}
+
+impl<Datagram, Proxy, IO, SOCKS5> ScopedError for
+    SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5>
+where Datagram: ScopedError,
+      Proxy: ScopedError,
+      SOCKS5: ScopedError,
+      IO: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SOCKS5NegotiatePermanentError::Proxy { err } => err.scope(),
+            SOCKS5NegotiatePermanentError::Datagram { err } => err.scope(),
+            SOCKS5NegotiatePermanentError::SOCKS5 { err } => err.scope(),
+            SOCKS5NegotiatePermanentError::IO { err } => err.scope()
+        }
+    }
+}
+
 impl<Proxy, Datagram> ScopedError for SOCKS5AcquireError<Proxy, Datagram>
 where
     Proxy: ScopedError,
@@ -374,11 +527,8 @@ where
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            SOCKS5AcquireError::IO { error } => error.scope(),
             SOCKS5AcquireError::Proxy { proxy } => proxy.scope(),
             SOCKS5AcquireError::Datagram { datagram } => datagram.scope(),
-            SOCKS5AcquireError::SOCKS5 { socks5 } => socks5.scope(),
-            SOCKS5AcquireError::MutexPoison => ErrorScope::Unrecoverable
         }
     }
 }
@@ -505,6 +655,130 @@ where
     }
 }
 
+impl<Proxy, PeerAddr, Datagram> SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
+where
+    Proxy: NearChannelCreate + NearConnector,
+    Datagram: FarChannelSocket + FarChannel,
+    Datagram::Socket: Socket,
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
+{
+    fn negotiate_endpoint(
+        &self,
+        mut stream: Proxy::Conn,
+        datagram: Datagram::Acquired,
+        target: IPEndpoint
+    ) -> Result<
+        SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+        SOCKS5NegotiateError<
+            Datagram::Acquired,
+            Datagram::State,
+            Datagram::NegotiateError,
+            Proxy::Conn,
+            Proxy::NegotiateError,
+            Error,
+            RawStateMachineError<SOCKS5State>
+        >
+    > {
+        let params = match &self.auth {
+            SOCKS5AuthNConfig::None => {
+                SOCKS5Params::assoc_no_auth(target.clone())
+            }
+            SOCKS5AuthNConfig::Password {
+                username,
+                password
+            } => SOCKS5Params::assoc_password_auth(
+                target.clone(),
+                username.clone(),
+                password.clone()
+            ),
+            #[cfg(feature = "gssapi")]
+            SOCKS5AuthNConfig::GSSAPI { gssapi } => {
+                SOCKS5Params::assoc_gssapi_auth(
+                    target.clone(),
+                    gssapi.clone(),
+                    None
+                )
+            }
+        };
+        let machine: RawStateMachine<SOCKS5State> =
+            RawStateMachine::new(params);
+
+        // Run the protocol negotiation
+        match machine.run(&mut stream) {
+            Ok(socks5) => {
+                let endpoint = socks5.ip_endpoint().clone();
+
+                info!(target: "far-socks5",
+                      "established SOCKS5 UDP association for {} with {}",
+                      endpoint, self.proxy.endpoint());
+
+                Ok(SOCKS5Acquired {
+                    addr: PhantomData,
+                    datagram: datagram,
+                    proxy: endpoint
+                })
+            }
+            Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
+                datagram: datagram,
+                endpoint: target,
+                proxy: stream,
+                err: err
+            })
+        }
+    }
+
+    fn negotiate_acquired(
+        &self,
+        stream: Proxy::Conn,
+        datagram: Datagram::Acquired
+    ) -> Result<
+        SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+        SOCKS5NegotiateError<
+            Datagram::Acquired,
+            Datagram::State,
+            Datagram::NegotiateError,
+            Proxy::Conn,
+            Proxy::NegotiateError,
+            Error,
+            RawStateMachineError<SOCKS5State>
+        >
+    > {
+        match self.datagram.socks5_target(&datagram) {
+            Ok(target) => self.negotiate_endpoint(stream, datagram, target),
+            Err(err) => Err(SOCKS5NegotiateError::IO {
+                datagram: datagram,
+                proxy: stream,
+                err: err
+            })
+        }
+    }
+
+    fn negotiate_datagram(
+        &self,
+        stream: Proxy::Conn,
+        datagram: Datagram::State
+    ) -> Result<
+        SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+        SOCKS5NegotiateError<
+            Datagram::Acquired,
+            Datagram::State,
+            Datagram::NegotiateError,
+            Proxy::Conn,
+            Proxy::NegotiateError,
+            Error,
+            RawStateMachineError<SOCKS5State>
+        >
+    > {
+        match self.datagram.negotiate(datagram) {
+            Ok(acquired) => self.negotiate_acquired(stream, acquired),
+            Err(err) => Err(SOCKS5NegotiateError::Datagram {
+                proxy: stream,
+                err: err
+            })
+        }
+    }
+}
+
 impl<Proxy, PeerAddr, Datagram> FarChannel
     for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
 where
@@ -513,8 +787,20 @@ where
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
-    type AcquireError =
-        SOCKS5AcquireError<Proxy::TakeConnectError, Datagram::AcquireError>;
+    type State = SOCKS5SessionNegotiation<Proxy::State, Datagram::State>;
+    type NegotiateError = SOCKS5NegotiateError<
+        Datagram::Acquired,
+        Datagram::State,
+        Datagram::NegotiateError,
+        Proxy::Conn,
+        Proxy::NegotiateError,
+        Error,
+        RawStateMachineError<SOCKS5State>
+    >;
+    type AcquireError = SOCKS5AcquireError<
+        Proxy::StartError,
+        Datagram::AcquireError
+    >;
     type Acquired = SOCKS5Acquired<Datagram::Acquired, IPEndpoint>;
 
     #[cfg(feature = "socks5")]
@@ -526,111 +812,103 @@ where
         self.datagram.socks5_target(&val.datagram)
     }
 
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
-        // If acquire fails on the underlying channel,
-        // return the error.
-        let datagram = self
-            .datagram
-            .acquire()
-            .map_err(|e| SOCKS5AcquireError::Datagram { datagram: e })?;
+    fn acquire(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+        self
+            .proxy
+            .start()
+            .map_err(|err| SOCKS5AcquireError::Proxy { proxy: err })?
+            .flat_map_ok(|proxy| self
+                    .datagram
+                    .acquire()
+                    .map_err(|err| SOCKS5AcquireError::Datagram {
+                        datagram: err
+                    })?
+                    .map_ok(|datagram| Ok(SOCKS5SessionNegotiation {
+                        datagram: datagram,
+                        proxy: proxy
+                    })))
+    }
 
-        loop {
-            match self.session.lock() {
-                Ok(mut guard) => match &*guard {
-                    // Session already exists; return its endpoint.
-                    Some(session) => {
-                        debug!(target: "far-socks5",
-                               concat!("reusing existing SOCKS5 UDP ",
-                                       "association ({} on {})"),
-                               session.ip_endpoint(),
-                               self.proxy.endpoint());
-                        return Ok(SOCKS5Acquired {
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        match self.proxy.negotiate(state.proxy) {
+            Ok((stream, _)) => self.negotiate_datagram(stream, state.datagram),
+            Err(err) => Err(SOCKS5NegotiateError::Proxy {
+                state: state.datagram,
+                err: err
+            })
+        }
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        match err {
+            SOCKS5NegotiateError::Proxy { state, err } => match self.proxy
+                .complete_negotiate(err) {
+                Ok((stream, _)) =>
+                    self.negotiate_datagram(stream, state),
+                Err(err) => Err(SOCKS5NegotiateError::Proxy {
+                    state: state,
+                    err: err
+                })
+            }
+            SOCKS5NegotiateError::Datagram { proxy, err } => match self
+                .datagram.complete_negotiate(err) {
+                Ok(acquired) => self.negotiate_acquired(proxy, acquired),
+                Err(err) => Err(SOCKS5NegotiateError::Datagram {
+                    proxy: proxy,
+                    err: err
+                })
+            }
+            SOCKS5NegotiateError::SOCKS5 {
+                endpoint, datagram, mut proxy, err
+            } => {
+                let machine: RawStateMachine<SOCKS5State> =
+                    RawStateMachine::complete(err);
+
+                // Run the protocol negotiation
+                match machine.run(&mut proxy) {
+                    Ok(socks5) => {
+                        let endpoint = socks5.ip_endpoint().clone();
+
+                        info!(target: "far-socks5",
+                              concat!("established SOCKS5 UDP association ",
+                                      "for {} with {}"),
+                              endpoint, self.proxy.endpoint());
+
+                        Ok(SOCKS5Acquired {
                             addr: PhantomData,
                             datagram: datagram,
-                            proxy: session.ip_endpoint().clone()
-                        });
+                            proxy: endpoint
+                        })
                     }
-                    // No session exists; create one.
-                    None => {
-                        debug!(target: "far-socks5",
-                               "establishing SOCKS5 UDP association with {}",
-                               self.proxy.endpoint());
-
-                        let target = self
-                            .datagram
-                            .socks5_target(&datagram)
-                            .map_err(|e| SOCKS5AcquireError::IO { error: e })?;
-                        let params = match &self.auth {
-                            SOCKS5AuthNConfig::None => {
-                                SOCKS5Params::assoc_no_auth(target)
-                            }
-                            SOCKS5AuthNConfig::Password {
-                                username,
-                                password
-                            } => SOCKS5Params::assoc_password_auth(
-                                target,
-                                username.clone(),
-                                password.clone()
-                            ),
-                            #[cfg(feature = "gssapi")]
-                            SOCKS5AuthNConfig::GSSAPI { gssapi } => {
-                                SOCKS5Params::assoc_gssapi_auth(
-                                    target,
-                                    gssapi.clone(),
-                                    None
-                                )
-                            }
-                        };
-                        let (mut stream, _) =
-                            self.proxy.take_connection().map_err(|e| {
-                                SOCKS5AcquireError::Proxy { proxy: e }
-                            })?;
-                        let machine: RawStateMachine<SOCKS5State> =
-                            RawStateMachine::new(params);
-
-                        // Run the protocol negotiation
-                        match machine.run(&mut stream) {
-                            Ok(socks5) => {
-                                let endpoint = socks5.ip_endpoint().clone();
-
-                                info!(target: "far-socks5",
-                                      concat!("established SOCKS5 UDP ",
-                                              "association for {} with {}"),
-                                      endpoint, self.proxy.endpoint());
-
-                                self.nretries = 0;
-                                *guard = Some(socks5.udp_info());
-
-                                return Ok(SOCKS5Acquired {
-                                    addr: PhantomData,
-                                    datagram: datagram,
-                                    proxy: endpoint
-                                });
-                            }
-                            Err(e) => {
-                                warn!(target: "far-socks5",
-                                      concat!("SOCKS5 UDP association ",
-                                              "negotiation with {} failed ",
-                                              "({})"),
-                                      self.proxy.endpoint(), e);
-
-                                if let Err(err) = self.proxy.fail(self.nretries)
-                                {
-                                    error!(target: "near-session",
-                                           "error resetting connection ({})",
-                                           err);
-                                }
-
-                                self.nretries += 1;
-                            }
-                        }
-                    }
-                },
-                // Mutex poisoned.
-                Err(_) => return Err(SOCKS5AcquireError::MutexPoison)
+                    Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
+                        datagram: datagram,
+                        endpoint: endpoint,
+                        proxy: proxy,
+                        err: err
+                    })
+                }
+            }
+            SOCKS5NegotiateError::IO { datagram, proxy, .. } => match self
+                .datagram.socks5_target(&datagram) {
+                Ok(target) => self.negotiate_endpoint(proxy, datagram, target),
+                Err(err) => Err(SOCKS5NegotiateError::IO {
+                    datagram: datagram,
+                    proxy: proxy,
+                    err: err
+                })
             }
         }
     }
+
 }
 
 impl<Proxy, Datagram, PeerAddr> FarChannelSocket
@@ -723,7 +1001,6 @@ where
 
         Ok(SOCKS5FarChannel {
             peer_addr: PhantomData,
-            keepalive: Arc::new(Mutex::new(None)),
             session: Arc::new(Mutex::new(None)),
             auth: auth,
             proxy: proxy,
@@ -793,6 +1070,74 @@ where
     type Nego = Datagram::Nego;
 }
 
+impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
+    Debug for
+    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
+                         Proxy, ProxyErr, IO, SOCKS5>
+where DatagramErr: Debug,
+      ProxyErr: Debug,
+      SOCKS5: Debug,
+      IO: Debug
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5NegotiateError::Proxy { err, .. } =>
+                write!(f, "Proxy {{ err: {:?} }}", err),
+            SOCKS5NegotiateError::Datagram { err, .. } =>
+                write!(f, "Datagram {{ err: {:?} }}", err),
+            SOCKS5NegotiateError::SOCKS5 { err, .. } =>
+                write!(f, "SOCKS5 {{ err: {:?} }}", err),
+            SOCKS5NegotiateError::IO { err, .. } =>
+                write!(f, "IO {{ err: {:?} }}", err)
+        }
+    }
+}
+
+impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
+    Display for
+    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
+                         Proxy, ProxyErr, IO, SOCKS5>
+where DatagramErr: Display,
+      ProxyErr: Display,
+      SOCKS5: Display,
+      IO: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5NegotiateError::Proxy { err, .. } => err.fmt(f),
+            SOCKS5NegotiateError::Datagram { err, .. } => err.fmt(f),
+            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.fmt(f),
+            SOCKS5NegotiateError::IO { err, .. } => write!(f, "{}", err)
+        }
+    }
+}
+
+impl<Datagram, Proxy, IO, SOCKS5> Display for
+    SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5>
+where Datagram: Display,
+      Proxy: Display,
+      SOCKS5: Display,
+      IO: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5NegotiatePermanentError::Proxy { err } => err.fmt(f),
+            SOCKS5NegotiatePermanentError::Datagram { err } => err.fmt(f),
+            SOCKS5NegotiatePermanentError::SOCKS5 { err } => err.fmt(f),
+            SOCKS5NegotiatePermanentError::IO { err } => write!(f, "{}", err)
+        }
+    }
+}
+
 impl<Proxy, Datagram> Display for SOCKS5CreateError<Proxy, Datagram>
 where
     Proxy: Display,
@@ -819,11 +1164,8 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SOCKS5AcquireError::IO { error } => error.fmt(f),
             SOCKS5AcquireError::Proxy { proxy } => proxy.fmt(f),
             SOCKS5AcquireError::Datagram { datagram } => datagram.fmt(f),
-            SOCKS5AcquireError::SOCKS5 { socks5 } => socks5.fmt(f),
-            SOCKS5AcquireError::MutexPoison => write!(f, "mutex poisoned")
         }
     }
 }
@@ -837,7 +1179,7 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SOCKS5SocketError::IO { error } => error.fmt(f),
+            SOCKS5SocketError::IO { error } => write!(f, "{}", error),
             SOCKS5SocketError::Datagram { datagram } => datagram.fmt(f)
         }
     }
@@ -870,7 +1212,8 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SOCKS5AcquiredResolveError::NameCache { err } => err.fmt(f),
+            SOCKS5AcquiredResolveError::NameCache { err } =>
+                write!(f, "{}", err),
             SOCKS5AcquiredResolveError::Wrap { err } => err.fmt(f),
             SOCKS5AcquiredResolveError::NoValidAddrs => {
                 write!(f, "no valid addresses supplied")

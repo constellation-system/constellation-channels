@@ -158,12 +158,14 @@ use std::net::SocketAddr;
 
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
 
 use crate::addrs::SocketAddrPolicy;
@@ -320,8 +322,12 @@ pub trait FarChannel: Sized {
     /// This will be processed by the channel's upstream user to
     /// create one or more [Param](FarChannelSocket::Param)s.
     type Acquired;
+    /// Type of negotiation state.
+    type State;
     /// Type of errors that can occur in the acquisition phase.
     type AcquireError: Display + ScopedError;
+    /// Errors that can occur during negotiations.
+    type NegotiateError: Debug + Display + RecoverableError;
 
     /// Perform the acquisition phase of establishing the channel.
     ///
@@ -341,7 +347,9 @@ pub trait FarChannel: Sized {
     ///
     /// In channel types that do not have an initial negotiation step,
     /// this will simply create a socket and return it.
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError>;
+    fn acquire(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError>;
 
     #[cfg(feature = "socks5")]
     /// Obtain the address to use in the SOCKS5 target field.
@@ -351,6 +359,18 @@ pub trait FarChannel: Sized {
         &self,
         val: &Self::Acquired
     ) -> Result<IPEndpoint, Error>;
+
+    /// Perform negotiations.
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<Self::Acquired, Self::NegotiateError>;
+
+    /// Complete a failed negotiation.
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<Self::Acquired, Self::NegotiateError>;
 }
 
 pub trait FarChannelSocket: Sized {

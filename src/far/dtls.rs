@@ -216,6 +216,7 @@ use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::SSLCred;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
@@ -398,11 +399,15 @@ impl<Channel> FarChannel for DTLSFarChannel<Channel>
 where
     Channel: FarChannel
 {
-    type AcquireError = Channel::AcquireError;
     type Acquired = Channel::Acquired;
+    type State = Channel::State;
+    type AcquireError = Channel::AcquireError;
+    type NegotiateError = Channel::NegotiateError;
 
     #[inline]
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
+    fn acquire(
+        &mut self
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
         self.inner.acquire()
     }
 
@@ -413,6 +418,22 @@ where
         val: &Self::Acquired
     ) -> Result<IPEndpoint, std::io::Error> {
         self.inner.socks5_target(val)
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        self.inner.negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        err: <Self::NegotiateError as RecoverableError>::Completable
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        self.inner.complete_negotiate(err)
     }
 }
 

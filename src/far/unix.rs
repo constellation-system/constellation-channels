@@ -199,6 +199,7 @@ use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::retry::RetryResult;
 use log::info;
 use log::warn;
 
@@ -353,8 +354,10 @@ impl DatagramXfrmCreateParam for UnixDatagramXfrm {
 }
 
 impl FarChannel for UnixFarChannel {
-    type AcquireError = Infallible;
     type Acquired = UnixSocketAddr;
+    type State = UnixSocketAddr;
+    type AcquireError = Infallible;
+    type NegotiateError = Infallible;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -366,8 +369,24 @@ impl FarChannel for UnixFarChannel {
     }
 
     #[inline]
-    fn acquire(&mut self) -> Result<UnixSocketAddr, Infallible> {
-        Ok(self.bind.clone())
+    fn acquire(&mut self) -> Result<RetryResult<UnixSocketAddr>, Infallible> {
+        Ok(RetryResult::Success(self.bind.clone()))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        Ok(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        panic!("This should never be called!")
     }
 }
 
