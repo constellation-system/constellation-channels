@@ -175,9 +175,6 @@ use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::RetryResult;
 use log::error;
 use mio::event::Source;
-use mio::Interest;
-use mio::Registry;
-use mio::Token;
 
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -420,63 +417,6 @@ where
                 .creds()
                 .map_err(|err| WithMutexPoison::Inner { err: err }),
             None => Ok(None)
-        }
-    }
-}
-
-impl<Conn> Source for NearConn<Conn>
-where
-    Conn: Source
-{
-    #[inline]
-    fn register(
-        &mut self,
-        registry: &Registry,
-        token: Token,
-        interests: Interest
-    ) -> Result<(), std::io::Error> {
-        match self
-            .conn
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
-            .as_mut()
-        {
-            Some(conn) => conn.register(registry, token, interests),
-            None => Ok(())
-        }
-    }
-
-    #[inline]
-    fn reregister(
-        &mut self,
-        registry: &Registry,
-        token: Token,
-        interests: Interest
-    ) -> Result<(), std::io::Error> {
-        match self
-            .conn
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
-            .as_mut()
-        {
-            Some(conn) => conn.reregister(registry, token, interests),
-            None => Ok(())
-        }
-    }
-
-    #[inline]
-    fn deregister(
-        &mut self,
-        registry: &Registry
-    ) -> Result<(), std::io::Error> {
-        match self
-            .conn
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::Other, "mutex poisoned"))?
-            .as_mut()
-        {
-            Some(conn) => conn.deregister(registry),
-            None => Ok(())
         }
     }
 }

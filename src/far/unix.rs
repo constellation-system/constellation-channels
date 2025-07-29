@@ -188,7 +188,6 @@ use std::io::IoSliceMut;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::os::unix::net::UCred;
-use std::os::unix::net::UnixDatagram;
 
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::net::DatagramXfrm;
@@ -202,8 +201,15 @@ use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use log::info;
 use log::warn;
+use mio::event::Source;
+use mio::net::UnixDatagram;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
 
 use crate::config::UnixFarChannelConfig;
+use crate::far::flows::Flows;
+use crate::far::flows::FlowsStart;
 use crate::far::flows::PassthruNegotiator;
 use crate::far::BorrowedFlowsCreate;
 use crate::far::BorrowedFlowsFlow;
@@ -269,6 +275,11 @@ pub struct UnixFarChannel {
 /// This is a wrapper to disambiguate implementations of [Socket],
 /// [Receiver], and [Sender].
 pub struct UnixDatagramSocket {
+    /// The underlying [UnixDatagram].
+    socket: UnixDatagram
+}
+
+pub struct UnixDatagramFlows {
     /// The underlying [UnixDatagram].
     socket: UnixDatagram
 }
@@ -473,6 +484,27 @@ where
     type Nego = PassthruNegotiator;
 }
 
+impl Flows for UnixDatagramFlows {
+    type NegotiateInboundError = Infallible;
+    type NegotiateOutboundError = Infallible;
+
+    #[inline]
+    fn complete_negotiate_inbound(
+        &self,
+        _err: Infallible
+    ) -> Result<Self::Flow, Self::NegotiateInboundError> {
+        panic!("This should never be called!")
+    }
+
+    #[inline]
+    fn complete_negotiate_outbound(
+        &self,
+        _err: Infallible
+    ) -> Result<Self::Flow, Self::NegotiateOutboundError> {
+        panic!("This should never be called!")
+    }
+}
+
 impl Drop for UnixDatagramSocket {
     fn drop(&mut self) {
         match self.socket.local_addr() {
@@ -501,6 +533,36 @@ impl Drop for UnixDatagramSocket {
                   err)
             }
         }
+    }
+}
+
+impl Source for UnixDatagramFlows {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.socket.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.socket.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.socket.deregister(registry)
     }
 }
 

@@ -81,6 +81,7 @@ use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
+use mio::event::Source;
 
 use crate::config::SOCKS5AuthNConfig;
 use crate::config::SOCKS5ConnectConfig;

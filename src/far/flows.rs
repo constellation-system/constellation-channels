@@ -111,8 +111,10 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::OccupiedEntry;
 use std::collections::hash_map::VacantEntry;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::convert::TryFrom;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -121,11 +123,12 @@ use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::marker::PhantomData;
+use std::rc::Rc;
+use std::rc::Weak;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
-use std::sync::Weak;
 use std::thread::sleep;
 use std::thread::spawn;
 use std::thread::JoinHandle;
@@ -137,10 +140,13 @@ use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::Credentials;
 use constellation_common::codec::DatagramCodec;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
@@ -157,8 +163,11 @@ use log::error;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::event::Source;
 
 use crate::config::ThreadedFlowsParams;
+
+type MsgBuf = VecDeque<u8>;
 
 /// Trait for traffic flows from an individual peer address.
 ///
@@ -177,13 +186,676 @@ pub trait Flow: Credentials + Read + Write {
     fn peer_addr(&self) -> Self::PeerAddr;
 }
 
-/// Base trait for traffic flow splitters.
-///
-/// Implementors of this trait are expected to also implement either
-/// [OwnedFlows] or [BorrowedFlows] as appropriate.
-pub trait FlowsLocalAddr<LocalAddr>: Sized {
+pub struct Flows<Sock, Nego, Xfrm, ChannelID>
+where
+    Sock: Socket + Sender + Receiver,
+    Nego: NegotiatorStart<MsgBuf>,
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Xfrm::PeerAddr: Clone + Display + Eq + Hash,
+    ChannelID: Clone + Display + Eq + Hash + Send {
+    id: PhantomData<ChannelID>,
+    /// Maximum message size.
+    msgsize: usize,
+    /// Default [VecDeque] size.
+    bufsize: Option<usize>,
+    /// Negotiator for incoming sessions.
+    nego: Nego,
+    /// Socket from which to read messages.
+    socket: Sock,
+    /// Outgoing message buffer.
+    outbuf: Rc<MsgBuf>,
+    /// Xfrm used to unwrap messages.
+    xfrm: Rc<Xfrm>,
+    /// Table holding existing flows.
+    // XXX The VecDeque should eventually get replaced by a proper
+    // ring-buffer, to minimize allocation
+    flows: Rc<HashMap<Xfrm::PeerAddr, Weak<MsgBuf>>>,
+    /// Table of negotiator threads.
+    // XXX Add mechanism for expiring stale negotiation states.
+    pending: Rc<
+        HashMap<
+            Xfrm::PeerAddr,
+            <Nego::NegotiateError as RecoverableError>::Completable
+        >
+    >
+}
+
+/// Information for an ongoing negotiation.
+struct PendingFlow<Nego>
+where Nego: NegotiatorStart<MsgBuf> {
+    /// Information for resuming negotiations.
+    resume: <Nego::NegotiateError as RecoverableError>::Completable,
+    /// Pending messages buffer.
+    pending: VecDeque<Vec<u8>>
+}
+
+pub struct BufferedFlow<Sock, Xfrm>
+where
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Sock: Socket + Receiver {
+    /// Peer address.
+    addr: Xfrm::PeerAddr,
+    /// Xfrm used to unwrap messages.
+    xfrm: Rc<Xfrm>,
+    /// Socket used to send messages.
+    socket: Rc<Sock>,
+    /// Outgoing message buffer.
+    outbuf: Rc<MsgBuf>,
+    /// Strong reference to the incoming message buffer.
+    inbuf: Rc<MsgBuf>,
+}
+
+pub enum ListenResult<Flow, Endpoint> {
+    /// A message from a totally new endpoint was received.
+    New {
+        /// The endpoint for the flow.
+        endpoint: Endpoint,
+        /// The new flow.
+        flow: Flow
+    },
+    /// A message for an existing flow was received.
+    Existing {
+        /// The endpoint for the flow.
+        endpoint: Endpoint
+    }
+}
+
+#[derive(Debug)]
+pub enum FlowsListenError<Xfrm, Start, Nego> {
+    Xfrm {
+        err: Xfrm
+    },
+    /// Error starting negotiation.
+    Start {
+        /// The error that occurred starting negotiation.
+        err: Start
+    },
+    /// Unrecoverable error during negotiations.
+    Nego {
+        /// The error that occurred during negotiations.
+        err: Nego
+    },
+    /// Low-level I/O error occurred.
+    IO {
+        /// The low-level I/O error that occurred.
+        err: Error
+    },
+    /// Failed to [get_mut](Rc::get_mut).
+    ///
+    /// This should never happen.
+    GetMut,
+    /// Failed to [split](RecoverableError::split) returned nothing.
+    ///
+    /// This should never happen.
+    BadSplit
+}
+
+pub enum FlowsFlowError<Xfrm, Start, Nego> {
+    /// Error starting negotiation.
+    Start {
+        /// The error that occurred starting negotiation.
+        err: Start
+    },
+    /// Unrecoverable error during negotiations.
+    Nego {
+        /// The error that occurred during negotiations.
+        err: Nego
+    },
+    /// Low-level I/O error occurred.
+    IO {
+        /// The low-level I/O error that occurred.
+        err: Error
+    },
+    /// Failed to [get_mut](Rc::get_mut).
+    ///
+    /// This should never happen.
+    GetMut,
+    /// Failed to [split](RecoverableError::split) returned nothing.
+    ///
+    /// This should never happen.
+    BadSplit
+}
+
+impl<Sock, Nego, Xfrm, ChannelID> Flows<Sock, Nego, Xfrm, ChannelID>
+where
+    Sock: Socket + Sender + Receiver,
+    Nego: NegotiatorStart<BufferedFlow<Sock, Xfrm>>,
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Xfrm::PeerAddr: Clone + Display + Eq + Hash,
+    ChannelID: Clone + Display + Eq + Hash + Send {
+
     /// Get the local address for the underlying socket.
-    fn local_addr(&self) -> Result<LocalAddr, Error>;
+    #[inline]
+    fn local_addr(&self) -> Result<Sock::Addr, Error> {
+        self.socket.local_addr()
+    }
+
+    fn listen(
+        &mut self,
+    ) -> Result<ListenResult<Nego::Outcome, Xfrm::PeerAddr>,
+                FlowsListenError<Xfrm::Error, Nego::StartError>> {
+        trace!(target: "flows",
+               "listening for incoming message on {}",
+               self.local_addr());
+
+        // Get one message.
+        let mut msg = vec![0; self.msgsize];
+        let (n, addr, cred) = self.socket.recv_from(&mut msg)
+            .map_err(|err| FlowsListenError::IO { err: err })?;
+
+        // Some sockets return zero-length messages.
+        if n != 0 {
+            trace!(target: "flows",
+                   "received {} bytes from {} on {}",
+                   n, addr, self.local_addr());
+
+            // Unwrap it.
+            let (msglen, addr) = match self.xfrm.get_mut() {
+                Some(mut xfrm) => {
+                    xfrm.unwrap(&mut msg[..n], addr)
+                        .map_err(|err| FlowsListenError::Xfrm { err: err })
+                }
+                None => Err(FlowsListenError::GetMut)
+            }?;
+
+            trace!(target: "flows",
+                       "unwrapped message from {} on {} to {} bytes",
+                   addr, self.local_addr(), msglen);
+
+            msg.truncate(msglen);
+
+            // First, see if there's an existing flow.
+            let newbuf = match self.flows.get_mut()
+                .ok_or(FlowsListenError::GetMut)?
+                .entry(addr.clone()) {
+                Entry::Occupied(ent) => match ent.get().upgrade()  {
+                    Some(buf) => {
+                        // Weak reference is still good; deliver the message.
+                        buf.push_back(msg);
+
+                        None
+                    }
+                    None => {
+                        // Weak reference expired.
+                        trace!(target: "flows",
+                               "expiring stale flow from {} on {}",
+                               addr, self.local_addr());
+
+                        let buf = match self.buflen {
+                            Some(len) => VecDeque::with_capacity(len),
+                            None => VecDeque::new()
+                        };
+                        let buf = Rc::new(buf);
+
+                        // Deliver the message and update this entry.
+                        buf.push_back(msg);
+
+                        let _ = ent.insert(Rc::downgrade(buf.clone()));
+
+                        Some(buf)
+                    }
+                }
+                Entry::Vacant(ent) => {
+                    // We need to create a new entry.
+                    debug!(target: "flows",
+                           "creating new flow from {} on {}",
+                           addr, self.local_addr());
+
+                    let buf = match self.buflen {
+                        Some(len) => VecDeque::with_capacity(len),
+                        None => VecDeque::new()
+                    };
+                    let buf = Rc::new(buf);
+
+                    buf.push_back(msg);
+
+                    Some(buf)
+                }
+            };
+
+            // See if we need to create a new negotiation.
+            if let Some(buf) = newbuf {
+                let flow = BufferedFlow {
+                    addr: addr.clone(),
+                    xfrm: self.xfrm.clone(),
+                    socket: self.socket.clone(),
+                    outbuf: self.outbuf.clone(),
+                    inbuf: buf
+                };
+                let nego = self.nego.start(flow)
+                    .map_err(|err| FlowsListenError::Start { err: err })?;
+
+                // Short-circuit: try to negotiate immediately.
+                match self.nego.negotiate(nego) {
+                    // We're done, the negotiation succeeded.
+                    Ok(flow) => {
+                        debug!(target: "flows",
+                               "negotiation completed immediately for {}",
+                               addr);
+
+                        Ok(ListenResult::New {
+                            endpoint: addr,
+                            flow: flow
+                        })
+                    }
+                    Err(err) => match err.split() {
+                        // Negotiations require more messages.
+                        (Some(err), _) => {
+                            trace!(target: "flows",
+                                   "creating pending negotiation for {}",
+                                   addr);
+
+                            // Set up a pending negotiation.
+                            if self.pending
+                                .get_mut()
+                                .ok_or(FlowsListenError::GetMut)?
+                                .insert(addr.clone(), err)
+                                .is_some() {
+                                error!(target: "flows",
+                                       "stray pending entry for {}",
+                                       addr);
+
+                            }
+                        }
+                        // A hard error occurred.
+                        (_, Some(err)) =>
+                            Err(FlowsListenError::Nego { err: err }),
+                        // This shouldn't ever happen.
+                        _ => Err(FlowsListenError::BadSplit)
+                    }
+                }
+            } else if let Entry::Occupied(mut ent) = self
+                .pending
+                .get_mut()
+                .ok_or(FlowsListenError::GetMut)?
+                .entry(addr.clone()) {
+                let resume = ent.remove();
+
+                // Resume a pending negotiation
+                trace!(target: "flows",
+                       "resuming pending negotiation for {}",
+                       addr);
+
+                match self.nego.negotiate(resume) {
+                    Ok(flow) => {
+                        debug!(target: "flows",
+                               "negotiation completed for {}",
+                               addr);
+
+                        Ok(ListenResult::New {
+                            endpoint: addr,
+                            flow: flow
+                        })
+                    }
+                    Err(err) => match err.split() {
+                        // Negotiations require more messages.
+                        (Some(err), _) => {
+                            trace!(target: "flows",
+                                   "continuing negotiation for {}",
+                                   addr);
+
+                            // Set up a pending negotiation.
+                            let buf = match self.buflen {
+                                Some(len) => VecDeque::with_capacity(len),
+                                None => VecDeque::new()
+                            };
+                            let pending = PendingFlow {
+                                resume: err,
+                                pending: buf
+                            };
+
+                            ent.insert(pending)
+                        }
+                        // A hard error occurred.
+                        (_, Some(err)) =>
+                            Err(FlowsListenError::Nego { err: err }),
+                        // This shouldn't ever happen.
+                        _ => Err(FlowsListenError::BadSplit)
+                    }
+                }
+            } else {
+                // This went to an established flow.
+                Ok(ListenResult::Existing { endpoint: addr})
+            }
+        }
+    }
+
+    fn flow(
+        &self,
+        addr: Xfrm::PeerAddr,
+        endpoint: Option<&IPEndpointAddr>
+    ) -> Result<Option<Nego::Outcome>, Self::FlowError> {
+        trace!(target: "flows",
+               "requested flow to {} on {}",
+               addr, self.local_addr());
+
+        // First, see if there's an existing flow.
+        let (negotiate, buf) = match self.flows.get_mut()
+            .ok_or(FlowsFlowError::GetMut)?
+            .entry(addr.clone()) {
+            Entry::Occupied(ent) => match ent.get().upgrade() {
+                // There's an existing buffer, use that.
+                Some(buf) => (false, buf.clone()),
+                None => {
+                    // Weak reference expired set up a new negotiation.
+                    trace!(target: "flows",
+                           "expiring stale flow from {} on {}",
+                           addr, self.local_addr());
+
+                    let buf = match self.buflen {
+                        Some(len) => VecDeque::with_capacity(len),
+                        None => VecDeque::new()
+                    };
+                    let buf = Rc::new(buf);
+                    let _ = ent.insert(Rc::downgrade(buf.clone()));
+
+                    (true, buf)
+                }
+            }
+            Entry::Vacant(ent) => {
+                // We need to create a new entry.
+                debug!(target: "flows",
+                       "creating new flow from {} on {}",
+                       addr, self.local_addr());
+
+                let buf = match self.buflen {
+                    Some(len) => VecDeque::with_capacity(len),
+                    None => VecDeque::new()
+                };
+                let buf = Rc::new(buf);
+
+                (true, buf)
+            }
+        };
+        let flow = BufferedFlow {
+            addr: addr.clone(),
+            xfrm: self.xfrm.clone(),
+            socket: self.socket.clone(),
+            outbuf: self.outbuf.clone(),
+            inbuf: buf
+        };
+
+        if negotiate {
+            let nego = self.nego.start(flow)
+                .map_err(|err| FlowsListenError::Start { err: err })?;
+
+            // Try to negotiate immediately.
+            match self.nego.negotiate(nego) {
+                // We're done, the negotiation succeeded.
+                Ok(flow) => {
+                    debug!(target: "flows",
+                           "negotiation completed immediately for {}",
+                           addr);
+
+                    Ok(Some(flow))
+                }
+                Err(err) => match err.split() {
+                    // Negotiations require more messages.
+                    (Some(err), _) => {
+                        trace!(target: "flows",
+                               "creating pending negotiation for {}",
+                               addr);
+
+                        // Set up a pending negotiation.
+                        if self.pending
+                            .get_mut()
+                            .ok_or(FlowsFlowError::GetMut)?
+                            .insert(addr.clone(), err)
+                            .is_some() {
+                            error!(target: "flows",
+                                   "stray pending entry for {}",
+                                   addr);
+                        }
+
+                        Ok(None)
+                    }
+                    // A hard error occurred.
+                    (_, Some(err)) =>
+                        Err(FlowsFlowError::Nego { err: err }),
+                    // This shouldn't ever happen.
+                    _ => Err(FlowsFlowError::BadSplit)
+                }
+            }
+        } else {
+            Ok(Some(flow))
+        }
+    }
+}
+
+impl<Sock, Xfrm> Flow for BufferedFlow<Sock, Xfrm>
+where
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Sock: Socket + Receiver {
+
+    /// Get the local address for this flow.
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.socket.local_addr()
+    }
+
+    /// Get the peer (remote) address for this flow.
+    #[inline]
+    fn peer_addr(&self) -> Self::PeerAddr {
+        self.addr
+    }
+
+}
+
+impl<Sock, Xfrm> Read for BufferedFlow<Sock, Xfrm>
+where
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Xfrm::PeerAddr: Hash,
+    Sock: Socket + Receiver
+{
+    #[inline]
+    fn read(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<usize, Error> {
+        match self.buf.pop_back() {
+            // There's a buffered message; deliver it.
+            Ok((msg, _)) => {
+                let len = msg.len();
+
+                trace!(target: "flow-buffered",
+                       "delivering {} bytes from {}",
+                       len, self.addr);
+
+                buf[..len].copy_from_slice(&msg);
+
+                Ok(len)
+            }
+            None =>  Err(Error::new(
+                ErrorKind::WouldBlock,
+                "receive channel is empty"
+            ))
+        }
+    }
+}
+
+impl<Sock, Xfrm> Write for BufferedFlow<Sock, Xfrm>
+where
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Xfrm::PeerAddr: Hash,
+    Sock: Socket + Sender + Receiver
+{
+    #[inline]
+    fn write(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<usize, Error> {
+        let len = buf.len();
+
+        // Try to get the transformer.
+        match Rc::get_mut(&mut self.xfrm) {
+            // Transform the message.
+            Some(xfrm) => match xfrm.wrap(buf, self.addr.clone()) {
+                // Copied transformation.
+                Ok((Some(buf), addr)) => self.socket.send_to(&addr, &buf)
+                    .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
+                        // Would block.  Buffer the message and succeed.
+
+                        // Try to get the output buffer to push the message.
+                        match Rc::get_mut(&mut self.outbuf) {
+                            Some(outbuf) => {
+                                outbuf.push_back(buf);
+
+                                Ok(len)
+                            },
+                            // This shouldn't happen.
+                            None => Err(Error::new(ErrorKind::Other,
+                                                   "get_mut failed"))
+                        }
+                    } else {
+                        // Propagate the error.
+                        Err(err)
+                    }),
+                // In-place transformation
+                Ok((None, addr)) => self.socket.send_to(&addr, &buf)
+                    .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
+                        // Would block.  Buffer the message and succeed.
+
+                        // Try to get the output buffer to push the message.
+                        match Rc::get_mut(&mut self.outbuf) {
+                            Some(outbuf) => {
+                                outbuf.push_back(buf.to_vec());
+
+                                Ok(len)
+                            },
+                            // This shouldn't happen.
+                            None => Err(Error::new(ErrorKind::Other,
+                                                   "get_mut failed"))
+                        }
+                    } else {
+                        // Propagate the error.
+                        Err(err)
+                    }),
+                // Error occurred transforming.
+                Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
+            }
+            // This shouldn't happen.
+            None => Err(Error::new(ErrorKind::Other, "get_mut failed"))
+        }
+    }
+
+    #[inline]
+    fn flush(&mut self) -> Result<(), Error> {
+        self.socket.flush()
+    }
+}
+
+impl<Sock, Xfrm> Credentials for BufferedFlow<Sock, Xfrm>
+where
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
+    Xfrm::PeerAddr: Hash,
+    Sock: Socket + Sender + Receiver
+{
+    type Cred = Xfrm::PeerAddr;
+    type CredError = Infallible;
+
+    #[inline]
+    fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Infallible> {
+        if self.socket.allow_session_addr_creds() {
+            Ok(Some(self.peer_addr()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+pub trait Flows: Source {
+    /// Type of basic [Flow]s produced by this instance.
+    ///
+    /// This will likely differ from the type of [Flow] produced by
+    /// the [BorrowedFlowNegotiator].
+    type Flow: Credentials + Flow + Read + Write;
+    type InboundState;
+    type OutboundState;
+    type NegotiateInboundError: Debug + Display + RecoverableError;
+    type NegotiateOutboundError: Debug + Display + RecoverableError;
+
+    /// Perform negotiations on an inbound negotiation state.
+    ///
+    /// This may fail with an error that may be
+    /// [Completable](RecoverableError::Completable) (see
+    /// [split](RecoerableError::split).  In such a case,
+    /// [complete_negotiate_inbound](Flows::complete_negotiate_inbound)
+    /// is used to finish the negotiations.
+    ///
+    /// # Parameters
+    ///
+    /// * `state`: The negotiation state to use for negotiations.
+    fn negotiate_inbound(
+        &self,
+        state: Self::InboundState
+    ) -> Result<Self::Flow, Self::NegotiateInboundError>;
+
+    /// Complete a failed inbound negotiation.
+    ///
+    /// # Parameters
+    ///
+    /// * `err`: The completable error from a previous
+    ///   [negotiate_inbound](Flows::negotiate_inbound) or
+    ///   `complete_negotiate_inbound` attempt.
+    fn complete_negotiate_inbound(
+        &self,
+        err: <Self::NegotiateInboundError as RecoverableError>::Completable
+    ) -> Result<Self::Flow, Self::NegotiateInboundError>;
+
+    /// Perform negotiations on an outbound negotiation state.
+    ///
+    /// This may fail with an error that may be
+    /// [Completable](RecoverableError::Completable) (see
+    /// [split](RecoerableError::split).  In such a case,
+    /// [complete_negotiate_outbound](Flows::complete_negotiate_outbound)
+    /// is used to finish the negotiations.
+    ///
+    /// # Parameters
+    ///
+    /// * `state`: The negotiation state to use for negotiations.
+    fn negotiate_outbound(
+        &self,
+        state: Self::OutboundState
+    ) -> Result<Self::Flow, Self::NegotiateOutboundError>;
+
+    /// Complete a failed outbound negotiation.
+    ///
+    /// # Parameters
+    ///
+    /// * `err`: The completable error from a previous
+    ///   [negotiate_outbound](Flows::negotiate_outbound) or
+    ///   `complete_negotiate_outbound` attempt.
+    fn complete_negotiate_outbound(
+        &self,
+        err: <Self::NegotiateOutboundError as RecoverableError>::Completable
+    ) -> Result<Self::Flow, Self::NegotiateOutboundError>;
+}
+
+pub trait FlowsStart<PeerAddr>: Flows {
+    /// Type of errors that can occur starting a negotiation.
+    type FlowError: Display + ScopedError;
+    /// Type of errors that can occur starting a negotiation.
+    type ListenError: Display + ScopedError;
+
+    /// Start a session negotiation.
+    ///
+    /// This is similar in nature to
+    /// (Negotiator::start)[constellation_common::net::Negotiator::start],
+    /// the underlying stream is supplied by the channel.
+    fn listen(
+        &self,
+    ) -> Result<ListenResult<Self::InboundState, PeerAddr>, Self::ListenError>;
+
+    /// Start a session negotiation.
+    ///
+    /// This is similar in nature to
+    /// (Negotiator::start)[constellation_common::net::Negotiator::start],
+    /// the underlying stream is supplied by the channel.
+    fn flow(
+        &self,
+        addr: PeerAddr,
+        endpoint: Option<&IPEndpointAddr>
+    ) -> Result<Self::OutboundState, Self::FlowError>;
 }
 
 pub trait BorrowedFlowsRaw<'a, F, PeerAddr>
@@ -849,23 +1521,6 @@ where
     /// Table of negotiator threads.
     negotiators:
         Arc<Mutex<HashMap<Xfrm::PeerAddr, ThreadedFlowsNegotiateEntry>>>
-}
-
-/// A [Flow] instance created by [ThreadedFlows].
-pub struct ThreadedFlow<Sock, Xfrm>
-where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Sock: Socket + Receiver {
-    /// Peer address.
-    addr: Xfrm::PeerAddr,
-    /// Xfrm used to unwrap messages.
-    xfrm: Arc<Mutex<Xfrm>>,
-    /// Socket used to send messages.
-    socket: Arc<Sock>,
-    /// Strong reference to the consumer half of the message buffer.
-    buf: mpsc::Receiver<(Vec<u8>, Option<Sock::MsgCred>)>,
-    /// Condition variable used to signal readiness.
-    cond: Arc<Condvar>
 }
 
 /// An [OwnedFlowNegotiator] instance that simply passes the
@@ -2896,57 +3551,6 @@ where
     }
 }
 
-impl<Sock, Xfrm> ConcurrentStream for ThreadedFlow<Sock, Xfrm>
-where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Xfrm::PeerAddr: Hash,
-    Sock: Socket + Receiver
-{
-    #[inline]
-    fn condvar(&self) -> Arc<Condvar> {
-        self.cond.clone()
-    }
-}
-
-impl<Sock, Xfrm> Credentials for ThreadedFlow<Sock, Xfrm>
-where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Xfrm::PeerAddr: Hash,
-    Sock: Socket + Sender + Receiver
-{
-    type Cred = Xfrm::PeerAddr;
-    type CredError = Infallible;
-
-    #[inline]
-    fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Infallible> {
-        if self.socket.allow_session_addr_creds() {
-            Ok(Some(self.peer_addr()))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-impl<Sock, Xfrm> Flow for ThreadedFlow<Sock, Xfrm>
-where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Xfrm::PeerAddr: Hash,
-    Sock: Socket + Sender + Receiver
-{
-    type LocalAddr = Xfrm::LocalAddr;
-    type PeerAddr = Xfrm::PeerAddr;
-
-    #[inline]
-    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
-        self.socket.local_addr()
-    }
-
-    #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
-        self.addr.clone()
-    }
-}
-
 impl<Sock, Xfrm> Credentials for MultiFlow<'_, Sock, Xfrm>
 where
     Sock::Addr: Clone + Eq,
@@ -3133,42 +3737,6 @@ where
     }
 }
 
-impl<Sock, Xfrm> Read for ThreadedFlow<Sock, Xfrm>
-where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Xfrm::PeerAddr: Hash,
-    Sock: Socket + Receiver
-{
-    #[inline]
-    fn read(
-        &mut self,
-        buf: &mut [u8]
-    ) -> Result<usize, Error> {
-        match self.buf.try_recv() {
-            // There's a buffered message; deliver it.
-            Ok((msg, _)) => {
-                let len = msg.len();
-
-                trace!(target: "flow-buffered",
-                       "delivering {} bytes from {}",
-                       len, self.addr);
-
-                buf[..len].copy_from_slice(&msg);
-
-                Ok(len)
-            }
-            Err(mpsc::TryRecvError::Empty) => Err(Error::new(
-                ErrorKind::WouldBlock,
-                "receive channel is empty"
-            )),
-            Err(_) => Err(Error::new(
-                ErrorKind::ConnectionReset,
-                "connection was reset"
-            ))
-        }
-    }
-}
-
 impl<Sock, Xfrm> Read for MultiFlow<'_, Sock, Xfrm>
 where
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
@@ -3229,33 +3797,6 @@ where
     #[inline]
     fn flush(&mut self) -> Result<(), Error> {
         Ok(())
-    }
-}
-
-impl<Sock, Xfrm> Write for ThreadedFlow<Sock, Xfrm>
-where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr> + Send,
-    Xfrm::PeerAddr: Hash,
-    Sock: Socket + Sender + Receiver
-{
-    #[inline]
-    fn write(
-        &mut self,
-        buf: &[u8]
-    ) -> Result<usize, Error> {
-        match self.xfrm.lock() {
-            Ok(mut guard) => match guard.wrap(buf, self.addr.clone()) {
-                Ok((Some(buf), addr)) => self.socket.send_to(&addr, &buf),
-                Ok((None, addr)) => self.socket.send_to(&addr, buf),
-                Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
-            },
-            Err(_) => Err(Error::new(ErrorKind::Other, "mutex poisoned"))
-        }
-    }
-
-    #[inline]
-    fn flush(&mut self) -> Result<(), Error> {
-        self.socket.as_ref().flush()
     }
 }
 
