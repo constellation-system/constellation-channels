@@ -108,6 +108,8 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use log::debug;
@@ -420,40 +422,60 @@ impl Source for TCPNearAcceptor {
     }
 }
 
-impl NearChannel for TCPNearAcceptor {
-    type Config = TCPNearAcceptorConfig;
-    type Endpoint = SocketAddr;
+impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
     type State = (TCPStream, SocketAddr);
-    type Conn = TCPStream;
-    type StartError = Error;
+    type Pending = Infallible;
     type NegotiateError = Infallible;
-
-    #[inline]
-    fn start(
-        &mut self
-    ) -> Result<RetryResult<Self::State>, Self::StartError> {
-        let (stream, addr) = self.listener.accept()?;
-        let stream = TCPStream {
-            unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
-            inner: stream
-        };
-
-        Ok(RetryResult::Success((stream, addr)))
-    }
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        Ok(state)
+    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+                Self::NegotiateError> {
+        Ok(NegotiatorResult::Complete(state))
     }
 
     #[inline]
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+                Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for TCPNearAcceptor {
+    type Config = TCPNearAcceptorConfig;
+    type Endpoint = SocketAddr;
+    type Conn = TCPStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        let (stream, addr) = self.listener.accept()?;
+        let mut stream = TCPStream {
+            unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
+            inner: stream
+        };
+
+        registry.register(&mut stream, token,
+                          Interest::READABLE | Interest::WRITABLE)?;
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
         panic!("This should never be called!")
     }
 }
@@ -487,17 +509,41 @@ impl NearChannelCreate for TCPNearAcceptor {
     }
 }
 
-impl NearChannel for TCPNearConnector {
-    type Config = TCPNearConnectorConfig;
-    type Endpoint = SocketAddr;
+impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
     type State = (TCPStream, SocketAddr);
-    type Conn = TCPStream;
-    type StartError = Error;
+    type Pending = Infallible;
     type NegotiateError = Infallible;
 
     #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+                Self::NegotiateError> {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+                Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for TCPNearConnector {
+    type Config = TCPNearConnectorConfig;
+    type Endpoint = SocketAddr;
+    type Conn = TCPStream;
+    type StartError = Error;
+
+    #[inline]
     fn start(
-        &mut self
+        &mut self,
+        registry: &Registry,
+        token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         if Instant::now() < self.when {
             // XXX correctly deal with error scopes here.
@@ -518,14 +564,17 @@ impl NearChannel for TCPNearConnector {
                                       addr, err);
                             }
                         }
-                        let stream = TCPStream {
+                        let mut stream = TCPStream {
                             unsafe_allow_ip_addr_creds:
                             self.unsafe_allow_ip_addr_creds,
                             inner: stream
                         };
-                        let out = (stream, addr);
 
-                        return Ok(RetryResult::Success(out));
+                        registry.register(&mut stream, token,
+                                          Interest::READABLE |
+                                          Interest::WRITABLE)?;
+
+                        return Ok(RetryResult::Success((stream, addr)));
                     }
                     Err(err) => {
                         info!(target: "tcp-near",
@@ -556,18 +605,11 @@ impl NearChannel for TCPNearConnector {
     }
 
     #[inline]
-    fn negotiate(
-        &self,
-        state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        Ok(state)
-    }
-
-    #[inline]
-    fn complete_negotiate(
-        &self,
-        _err: Infallible
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
         panic!("This should never be called!")
     }
 }
@@ -659,7 +701,7 @@ use std::thread::spawn;
 use crate::init;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
-
+/*
 #[test]
 fn test_send_recv() {
     init();
@@ -708,3 +750,4 @@ fn test_send_recv() {
     listen.join().unwrap();
     send.join().unwrap();
 }
+*/

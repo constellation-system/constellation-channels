@@ -185,16 +185,17 @@ use std::fs::remove_file;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::os::unix::net::UCred;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::PassthruNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
@@ -208,19 +209,13 @@ use mio::Registry;
 use mio::Token;
 
 use crate::config::UnixFarChannelConfig;
-use crate::far::flows::Flows;
-use crate::far::flows::FlowsStart;
-use crate::far::flows::PassthruNegotiator;
-use crate::far::BorrowedFlowsCreate;
-use crate::far::BorrowedFlowsFlow;
+use crate::far::flows::MsgBuf;
 use crate::far::FarChannel;
-use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelFlows;
 use crate::far::FarChannelNegotiator;
-use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
-use crate::far::OwnedFlowsCreate;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::unix::UnixSocketAddr;
 
@@ -451,58 +446,29 @@ where
     }
 }
 
-impl FarChannelNegotiator<PassthruNegotiator> for UnixFarChannel {
+impl<S> FarChannelNegotiator<PassthruNegotiator<S>, PassthruNegotiator<S>>
+    for UnixFarChannel {
     #[inline]
-    fn negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator
+    fn inbound_negotiator(&self) -> PassthruNegotiator {
+        PassthruNegotiator {
+            stream: PhantomData
+        }
+    }
+
+    #[inline]
+    fn outbound_negotiator(&self) -> PassthruNegotiator {
+        PassthruNegotiator {
+            stream: PhantomData
+        }
     }
 }
 
-impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
-    for UnixFarChannel
+impl<InnerXfrm> FarChannelFlows<InnerXfrm> for UnixFarChannel
 where
-    InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, UnixDatagramSocket, InnerXfrm>
-        + BorrowedFlowsFlow
+    InnerXfrm: DatagramXfrm
 {
-    type Nego = PassthruNegotiator;
-}
-
-impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for UnixFarChannel
-where
-    InnerXfrm: DatagramXfrm,
-    AuthN: SessionAuthN<F::Flow>,
-    F: OwnedFlowsCreate<
-        UnixDatagramSocket,
-        PassthruNegotiator,
-        AuthN,
-        InnerXfrm
-    >,
-    F::Flow: Send
-{
-    type Nego = PassthruNegotiator;
-}
-
-impl Flows for UnixDatagramFlows {
-    type NegotiateInboundError = Infallible;
-    type NegotiateOutboundError = Infallible;
-
-    #[inline]
-    fn complete_negotiate_inbound(
-        &self,
-        _err: Infallible
-    ) -> Result<Self::Flow, Self::NegotiateInboundError> {
-        panic!("This should never be called!")
-    }
-
-    #[inline]
-    fn complete_negotiate_outbound(
-        &self,
-        _err: Infallible
-    ) -> Result<Self::Flow, Self::NegotiateOutboundError> {
-        panic!("This should never be called!")
-    }
+    type OutboundNego = PassthruNegotiator<MsgBuf>;
+    type InboundNego = PassthruNegotiator<MsgBuf>;
 }
 
 impl Drop for UnixDatagramSocket {
@@ -690,15 +656,7 @@ use constellation_auth::authn::PassthruSessionAuthN;
 use constellation_auth::cred::NullCred;
 #[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
-#[cfg(test)]
-use constellation_common::retry::RetryResult;
 
-#[cfg(test)]
-use crate::far::flows::BorrowedFlows;
-#[cfg(test)]
-use crate::far::flows::MultiFlows;
-#[cfg(test)]
-use crate::far::flows::SingleFlow;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]

@@ -75,13 +75,17 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Stream;
+use constellation_socks5::error::SOCKS5Error;
 use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
-use mio::event::Source;
+use mio::Registry;
+use mio::Token;
 
 use crate::config::SOCKS5AuthNConfig;
 use crate::config::SOCKS5ConnectConfig;
@@ -208,6 +212,152 @@ pub enum SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5> {
         endpoint: Endpoint,
         proxy: Proxy,
         err: SOCKS5
+    },
+    BadSplit
+}
+
+#[derive(Debug)]
+pub enum SOCKS5NegotiatePending<Inner, Proxy, Endpoint, SOCKS5> {
+    Inner {
+        pending: Inner,
+    },
+    SOCKS5 {
+        endpoint: Endpoint,
+        proxy: Proxy,
+        err: SOCKS5
+    }
+}
+
+impl<Inner> Negotiator<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint)>
+    for SOCKS5NearConnector<Inner>
+where
+    Inner: NearConnector + NearChannelCreate
+{
+    type State = SOCKS5SessionNegotiation<Inner::State>;
+    type NegotiateError = SOCKS5NegotiateError<
+        Inner::NegotiateError,
+        Inner::Conn,
+        Inner::Endpoint,
+        SOCKS5Error
+    >;
+    type Pending = SOCKS5NegotiatePending<
+        Inner::Pending,
+        Inner::Conn,
+        Inner::Endpoint,
+        <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
+    >;
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        self.proxy.negotiate(state.proxy)
+            .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?
+            .map_pending(|pending| SOCKS5NegotiatePending::Inner {
+                pending: pending
+            })
+            .flat_map_ok(|(mut stream, endpoint)| {
+                let machine: RawStateMachine<SOCKS5State> =
+                    RawStateMachine::new(self.params.clone());
+
+                match machine.run(&mut stream) {
+                    Ok(socks5) => Ok(NegotiatorResult::Complete(
+                        (socks5.wrap_stream(stream), endpoint)
+                    )),
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            SOCKS5NegotiatePending::SOCKS5 {
+                                endpoint: endpoint.clone(),
+                                proxy: stream,
+                                err: pending
+                            }
+                        )),
+                        (None, Some(err)) => Err(SOCKS5NegotiateError::SOCKS5 {
+                            endpoint: endpoint.clone(),
+                            proxy: stream,
+                            err: err
+                        }),
+                        _ => Err(SOCKS5NegotiateError::BadSplit)
+                    }
+                }
+            })
+    }
+
+    fn complete_negotiate(
+        &self,
+        err: SOCKS5NegotiatePending<
+            Inner::Pending,
+            Inner::Conn,
+            Inner::Endpoint,
+            <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
+        >
+    ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        match err {
+            SOCKS5NegotiatePending::Inner { pending } => self.proxy
+                .complete_negotiate(pending)
+                .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?
+                .map_pending(|pending| SOCKS5NegotiatePending::Inner {
+                    pending: pending
+                })
+                .flat_map_ok(|(mut stream, endpoint)| {
+                    let machine: RawStateMachine<SOCKS5State> =
+                        RawStateMachine::new(self.params.clone());
+
+                    match machine.run(&mut stream) {
+                        Ok(socks5) => Ok(NegotiatorResult::Complete(
+                            (socks5.wrap_stream(stream), endpoint)
+                        )),
+                        Err(err) => match err.split() {
+                            (Some(pending), None) => Ok(
+                                NegotiatorResult::Pending(
+                                    SOCKS5NegotiatePending::SOCKS5 {
+                                        endpoint: endpoint.clone(),
+                                        proxy: stream,
+                                        err: pending
+                                    }
+                                )
+                            ),
+                            (None, Some(err)) => Err(
+                                SOCKS5NegotiateError::SOCKS5 {
+                                    endpoint: endpoint.clone(),
+                                    proxy: stream,
+                                    err: err
+                                }
+                            ),
+                            _ => Err(SOCKS5NegotiateError::BadSplit)
+                        }
+                    }
+                }),
+            SOCKS5NegotiatePending::SOCKS5 { endpoint, mut proxy, err } => {
+                let machine: RawStateMachine<SOCKS5State> =
+                    RawStateMachine::complete(err);
+
+                match machine.run(&mut proxy) {
+                    Ok(socks5) => Ok(NegotiatorResult::Complete(
+                        (socks5.wrap_stream(proxy), endpoint)
+                    )),
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            SOCKS5NegotiatePending::SOCKS5 {
+                                endpoint: endpoint.clone(),
+                                proxy: proxy,
+                                err: pending
+                            }
+                        )),
+                        (None, Some(err)) => Err(SOCKS5NegotiateError::SOCKS5 {
+                            endpoint: endpoint.clone(),
+                            proxy: proxy,
+                            err: err
+                        }),
+                        _ => Err(SOCKS5NegotiateError::BadSplit)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -219,19 +369,14 @@ where
     type Endpoint = Conn::Endpoint;
     type StartError = Conn::StartError;
     type Conn = SOCKS5Stream<Conn::Conn>;
-    type State = SOCKS5SessionNegotiation<Conn::State>;
-    type NegotiateError = SOCKS5NegotiateError<
-        Conn::NegotiateError,
-        Conn::Conn,
-        Conn::Endpoint,
-        RawStateMachineError<SOCKS5State>
-    >;
 
     #[inline]
     fn start(
-        &mut self
+        &mut self,
+        registry: &Registry,
+        token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
-        Ok(self.proxy.start()?.map(|proxy| {
+        Ok(self.proxy.start(registry, token)?.map(|proxy| {
             SOCKS5SessionNegotiation {
                 params: self.params.clone(),
                 proxy: proxy
@@ -239,63 +384,22 @@ where
         }))
     }
 
-    fn negotiate(
-        &self,
-        state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        let (mut stream, endpoint) = self.proxy.negotiate(state.proxy)
-            .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?;
-        let machine: RawStateMachine<SOCKS5State> =
-            RawStateMachine::new(self.params.clone());
-
-        match machine.run(&mut stream) {
-            Ok(socks5) => Ok((socks5.wrap_stream(stream), endpoint)),
-            Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
-                endpoint: endpoint.clone(),
-                proxy: stream,
-                err: err
-            })
-        }
-    }
-
-    fn complete_negotiate(
-        &self,
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
         err: SOCKS5NegotiateError<
-            <Conn::NegotiateError as RecoverableError>::Completable,
+            Conn::NegotiateError,
             Conn::Conn,
             Conn::Endpoint,
-            <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
+            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+    ) -> Result<(), Error> {
         match err {
-            SOCKS5NegotiateError::Inner { err } => {
-                let (mut stream, endpoint) = self.proxy.complete_negotiate(err)
-                    .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?;
-                let machine: RawStateMachine<SOCKS5State> =
-                    RawStateMachine::new(self.params.clone());
-
-                match machine.run(&mut stream) {
-                    Ok(socks5) => Ok((socks5.wrap_stream(stream), endpoint)),
-                    Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
-                        endpoint: endpoint.clone(),
-                        proxy: stream,
-                        err: err
-                    })
-                }
-            }
-            SOCKS5NegotiateError::SOCKS5 { endpoint, mut proxy, err } => {
-                let machine: RawStateMachine<SOCKS5State> =
-                    RawStateMachine::complete(err);
-
-                match machine.run(&mut proxy) {
-                    Ok(socks5) => Ok((socks5.wrap_stream(proxy), endpoint)),
-                    Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
-                        endpoint: endpoint.clone(),
-                        proxy: proxy,
-                        err: err
-                    })
-                }
-            }
+            SOCKS5NegotiateError::Inner { err } =>
+                self.proxy.cleanup(registry, err),
+            SOCKS5NegotiateError::SOCKS5 { mut proxy, .. } =>
+                registry.deregister(&mut proxy),
+            SOCKS5NegotiateError::BadSplit => Ok(())
         }
     }
 }
@@ -358,52 +462,6 @@ where
     }
 }
 
-impl<Inner, Proxy, Endpoint, SOCKS5> RecoverableError
-    for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
-where Endpoint: Clone + Debug,
-      Inner: RecoverableError,
-      SOCKS5: RecoverableError {
-    type Completable = SOCKS5NegotiateError<
-        Inner::Completable,
-        Proxy,
-        Endpoint,
-        SOCKS5::Completable
-    >;
-    type Permanent = SOCKS5NegotiateError<
-        Inner::Permanent,
-        (),
-        Endpoint,
-        SOCKS5::Permanent
-    >;
-
-    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
-        match self {
-            SOCKS5NegotiateError::Inner { err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| SOCKS5NegotiateError::Inner {
-                    err: err
-                }),
-                 permanent.map(|err| SOCKS5NegotiateError::Inner { err: err }))
-            }
-            SOCKS5NegotiateError::SOCKS5 { endpoint, proxy, err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| SOCKS5NegotiateError::SOCKS5 {
-                    endpoint: endpoint.clone(),
-                    proxy: proxy,
-                    err: err
-                }),
-                 permanent.map(|err| SOCKS5NegotiateError::SOCKS5 {
-                     endpoint: endpoint,
-                     proxy: (),
-                     err: err
-                 }))
-            }
-        }
-    }
-}
-
 impl<Inner, Proxy, Endpoint, SOCKS5> ScopedError
     for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
 where Inner: ScopedError,
@@ -411,7 +469,8 @@ where Inner: ScopedError,
     fn scope(&self) -> ErrorScope {
         match self {
             SOCKS5NegotiateError::Inner { err } => err.scope(),
-            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.scope()
+            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.scope(),
+            SOCKS5NegotiateError::BadSplit => ErrorScope::Unrecoverable
         }
     }
 }
@@ -426,7 +485,9 @@ where Inner: Display,
     ) -> Result<(), std::fmt::Error> {
         match self {
             SOCKS5NegotiateError::Inner { err } => err.fmt(f),
-            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.fmt(f)
+            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.fmt(f),
+            SOCKS5NegotiateError::BadSplit =>
+                write!(f, "invalid result from split()")
         }
     }
 }

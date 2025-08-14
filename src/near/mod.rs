@@ -168,13 +168,15 @@ use std::sync::Mutex;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 use constellation_common::error::ErrorScope;
-use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
 use constellation_common::retry::RetryResult;
 use log::error;
 use mio::event::Source;
+use mio::Registry;
+use mio::Token;
 
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -205,13 +207,11 @@ pub mod unix;
 /// [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector)
 /// instances function in this manner with regard to their underlying
 /// channels.
-pub trait NearChannel {
+pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     /// Type of connections.
     ///
     /// See [take_connection](NearChannel::connection).
-    type Conn: CredentialsMut + Source + Read + Write + Debug + Sized;
-    /// Type of negotiation state.
-    type State;
+    type Conn: CredentialsMut + Read + Write + Debug + Sized + Source;
     /// Type of connection endpoints.
     ///
     /// See [take_connection](NearChannel::take-connection)
@@ -219,8 +219,6 @@ pub trait NearChannel {
     type Endpoint: Clone + Debug + Display + Sized;
     /// Type of configurations.
     type Config;
-    /// Errors that can occur during negotiations.
-    type NegotiateError: Debug + Display + RecoverableError;
     /// Type of errors that can occur starting a negotiation.
     type StartError: Display + ScopedError;
 
@@ -230,20 +228,16 @@ pub trait NearChannel {
     /// (Negotiator::start)[constellation_common::net::Negotiator::start],
     /// the underlying stream is supplied by the channel.
     fn start(
-        &mut self
+        &mut self,
+        registry: &Registry,
+        token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError>;
 
-    /// Perform negotiations.
-    fn negotiate(
-        &self,
-        state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError>;
-
-    /// Complete a failed negotiation.
-    fn complete_negotiate(
-        &self,
-        err: <Self::NegotiateError as RecoverableError>::Completable
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError>;
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
+        err: Self::NegotiateError
+    ) -> Result<(), Error>;
 }
 
 /// Trait for creating instances of near-link channels.

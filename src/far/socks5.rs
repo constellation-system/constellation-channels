@@ -140,7 +140,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
@@ -163,18 +162,13 @@ use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
 use crate::config::SOCKS5AssocConfig;
 use crate::config::SOCKS5AuthNConfig;
-use crate::far::flows::BorrowedFlowsCreate;
-use crate::far::flows::BorrowedFlowsFlow;
-use crate::far::flows::OwnedFlowNegotiator;
-use crate::far::flows::OwnedFlowsCreate;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
-use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
+use crate::far::FarChannelFlows;
 use crate::far::FarChannelNegotiator;
-use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::near::NearChannelCreate;
@@ -1010,64 +1004,39 @@ where
     }
 }
 
-impl<Proxy, Datagram, Nego, PeerAddr> FarChannelNegotiator<Nego>
+impl<Proxy, Datagram, InboundNego, OutboundNego, PeerAddr>
+    FarChannelNegotiator<InboundNego, OutboundNego>
     for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
 where
     Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelNegotiator<Nego> + FarChannelSocket + FarChannel,
+    Datagram: FarChannelNegotiator<InboundNego, OutboundNego>
+        + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
     #[inline]
-    fn negotiator(&self) -> Nego {
-        self.datagram.negotiator()
+    fn inbound_negotiator(&self) -> InboundNego {
+        self.datagram.inbound_negotiator()
+    }
+
+    #[inline]
+    fn outbound_negotiator(&self) -> OutboundNego {
+        self.datagram.outbound_negotiator()
     }
 }
 
-impl<'a, F, Proxy, Datagram, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
+impl<Proxy, Datagram, InnerXfrm> FarChannelFlows<InnerXfrm>
     for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
 where
     InnerXfrm: DatagramXfrm,
     Proxy: NearConnector + NearChannelCreate,
-    Datagram:
-        FarChannelBorrowFlows<'a, F, InnerXfrm> + FarChannelSocket + FarChannel,
+    Datagram: FarChannelFlows<InnerXfrm> + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
     <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
-    F: BorrowedFlowsCreate<'a, Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>>
-        + BorrowedFlowsCreate<'a, Datagram::Socket, Datagram::Xfrm>
-        + BorrowedFlowsFlow
+    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
-    type Nego = Datagram::Nego;
-}
-
-impl<F, Proxy, Datagram, AuthN, InnerXfrm>
-    FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
-where
-    InnerXfrm: DatagramXfrm,
-    Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-        + FarChannelSocket
-        + FarChannel,
-    Datagram::Socket: Socket,
-    <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>,
-    AuthN: SessionAuthN<<Datagram::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
-    F: OwnedFlowsCreate<
-        Datagram::Socket,
-        Datagram::Nego,
-        AuthN,
-        SOCKS5UDPXfrm<Datagram::Xfrm>
-    >,
-    F: OwnedFlowsCreate<
-        Datagram::Socket,
-        Datagram::Nego,
-        AuthN,
-        Datagram::Xfrm
-    >
-{
-    type Nego = Datagram::Nego;
+    type OutboundNego = Datagram::OutboundNego;
+    type InboundNego = Datagram::InboundNego;
 }
 
 impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>

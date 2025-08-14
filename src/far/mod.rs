@@ -156,12 +156,12 @@ use std::fmt::Formatter;
 use std::io::Error;
 use std::net::SocketAddr;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
@@ -169,12 +169,10 @@ use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
 
 use crate::addrs::SocketAddrPolicy;
+use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
-use crate::far::flows::BorrowedFlowNegotiator;
-use crate::far::flows::BorrowedFlowsCreate;
-use crate::far::flows::BorrowedFlowsFlow;
-use crate::far::flows::OwnedFlowNegotiator;
-use crate::far::flows::OwnedFlowsCreate;
+use crate::far::flows::Flows;
+use crate::far::flows::MsgBuf;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
@@ -443,9 +441,12 @@ where
 }
 
 /// Trait for obtaining an instance of a negotiator for a [FarChannel].
-pub trait FarChannelNegotiator<Nego> {
+pub trait FarChannelNegotiator<InboundNego, OutboundNego> {
     /// Create a negotiator for establishing a traffic splitter instance.
-    fn negotiator(&self) -> Nego;
+    fn inbound_negotiator(&self) -> InboundNego;
+
+    /// Create a negotiator for establishing a traffic splitter instance.
+    fn outbound_negotiator(&self) -> OutboundNego;
 }
 
 /// Trait for [FarChannel]s that can construct
@@ -478,12 +479,13 @@ pub trait FarChannelNegotiator<Nego> {
 /// [Nego](FarChannelBorrowFlows::Nego) type definition; the default
 /// implementation of [owned_flows](FarChannelBorrowFlows::borrowed_flows)
 /// shoul be sufficient for all purposes.
-pub trait FarChannelBorrowFlows<'a, F, InnerXfrm>:
-    FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
+pub trait FarChannelFlows<InnerXfrm>:
+    FarChannelNegotiator<Self::InboundNego, Self::OutboundNego>
+    + FarChannelXfrm<InnerXfrm>
 where
-    InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, Self::Socket, Self::Xfrm> + BorrowedFlowsFlow {
-    type Nego: BorrowedFlowNegotiator<F::Flow>;
+    InnerXfrm: DatagramXfrm {
+    type InboundNego: NegotiatorStart<MsgBuf>;
+    type OutboundNego: NegotiatorStart<MsgBuf>;
 
     /// Create a traffic splitter instance around a socket created by
     /// this channel.
@@ -492,16 +494,15 @@ where
     /// created from `param`.  Once created, the flows structure can
     /// be used to split traffic into distinct traffic
     /// [Flow](crate::far::flows::Flow)s for each peer address.
-    fn borrowed_flows(
+    fn flows(
         &self,
+        config: FlowsConfig,
         param: Self::Param,
         xfrm: InnerXfrm,
-        flow: F::CreateParam
     ) -> Result<
-        F,
+        Flows<Self::Socket, Self::InboundNego, Self::OutboundNego, Self::Xfrm>,
         FarChannelFlowsError<
             Self::SocketError,
-            F::CreateError,
             Self::XfrmError
         >
     > {
@@ -511,87 +512,9 @@ where
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
+        let nego = self.negotiator();
 
-        F::create(socket, xfrm, flow)
-            .map_err(|e| FarChannelFlowsError::Flows { flows: e })
-    }
-}
-
-/// Trait for [FarChannel]s that can construct traffic splitter
-/// instances.
-///
-/// This trait represents channels that can construct a traffic
-/// splitter instance around a socket created by the channel.  The
-/// type of the traffic splitter is given by `F`, though the exact
-/// type of [Flow](crate::far::flows::Flow) instances the resulting
-/// `F` instance will produce depends on the [OwnedFlowNegotiator]
-/// type [Nego](FarChannelOwnedFlows::Nego) that is defined in this
-/// trait.
-///
-/// # Usage
-///
-/// The [owned_flows](FarChannelOwnedFlows::owned_flows) function is
-/// called to obtain a traffic splitter instance of type `F`, created
-/// from a socket obtained from the implementing channel.  Once this
-/// is done, the
-/// [OwnedFlowsInbound](crate::far::flows::OwnedFlowsInbound) and
-/// [OwnedFlowsOutbound](crate::far::flows::OwnedFlowsOutbound)
-/// traits' APIs can be used to obtain individual
-/// [Flow](crate::far::flows::Flow)s
-///
-/// # Implementation
-///
-/// Channels should generally implement both this trait as well as
-/// [FarChannelBorrowFlows].  See [flows] for details on the
-/// differences between the two traits.
-///
-/// Most implementations will only need to provide the
-/// [Nego](FarChannelOwnedFlows::Nego) type definition; the default
-/// implementation of [owned_flows](FarChannelOwnedFlows::owned_flows)
-/// shoul be sufficient for all purposes.
-pub trait FarChannelOwnedFlows<F, AuthN, InnerXfrm>:
-    FarChannelNegotiator<Self::Nego> + FarChannelXfrm<InnerXfrm>
-where
-    InnerXfrm: DatagramXfrm,
-    AuthN: SessionAuthN<<Self::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
-    F: OwnedFlowsCreate<Self::Socket, Self::Nego, AuthN, Self::Xfrm> {
-    type Nego: OwnedFlowNegotiator<F::Flow>;
-
-    /// Create traffic splitter instance around a socket created by
-    /// this channel.
-    ///
-    /// This will create an instance of the traffic splitter type `F`,
-    /// using a socket created from `param`.  Once created, the flows
-    /// structure can be used to split traffic into distinct traffic
-    /// [Flow](crate::far::flows::Flow)s for each peer address.
-    fn owned_flows(
-        &self,
-        channel_id: F::ChannelID,
-        param: Self::Param,
-        xfrm: InnerXfrm,
-        authn: AuthN,
-        reporter: F::Reporter,
-        flow: F::CreateParam
-    ) -> Result<
-        F,
-        FarChannelFlowsError<
-            Self::SocketError,
-            F::CreateError,
-            Self::XfrmError
-        >
-    > {
-        let socket = self
-            .socket(&param)
-            .map_err(|e| FarChannelFlowsError::Socket { socket: e })?;
-        let xfrm = self
-            .wrap_xfrm(param, xfrm)
-            .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let negotiator = self.negotiator();
-
-        F::create_with_reporter(
-            channel_id, socket, authn, negotiator, reporter, xfrm, flow
-        )
-        .map_err(|e| FarChannelFlowsError::Flows { flows: e })
+        Flows::create(config, socket, nego, xfrm)
     }
 }
 
@@ -626,19 +549,12 @@ pub enum AcquiredResolveStaticError {
 /// Multiplexer for errors that can occur when creating a
 /// traffic splitter instance.
 #[derive(Debug)]
-pub enum FarChannelFlowsError<Socket, Flows, Xfrm> {
+pub enum FarChannelFlowsError<Socket, Xfrm> {
     /// Error occurred while wrapping the inner [DatagramXfrm] instance.
     Xfrm {
         /// The error occurred while wrapping the inner
         /// [DatagramXfrm] instance.
         xfrm: Xfrm
-    },
-    /// Error occurred while obtaining the inner traffic splitter
-    /// instance.
-    Flows {
-        /// The error that occurred while obtaining the inner traffic
-        /// splitter instance.
-        flows: Flows
     },
     /// Error occurred while obtaining the socket.
     Socket {
@@ -720,26 +636,22 @@ impl FarChannelAcquiredResolve for UnixSocketAddr {
     }
 }
 
-impl<Socket, Flows, Xfrm> ScopedError
-    for FarChannelFlowsError<Socket, Flows, Xfrm>
+impl<Socket, Xfrm> ScopedError for FarChannelFlowsError<Socket, Xfrm>
 where
     Socket: ScopedError,
-    Flows: ScopedError,
     Xfrm: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.scope(),
-            FarChannelFlowsError::Flows { flows } => flows.scope(),
             FarChannelFlowsError::Socket { socket } => socket.scope()
         }
     }
 }
 
-impl<Socket, Flows, Xfrm> Display for FarChannelFlowsError<Socket, Flows, Xfrm>
+impl<Socket, Xfrm> Display for FarChannelFlowsError<Socket, Xfrm>
 where
     Xfrm: Display,
-    Flows: Display,
     Socket: Display
 {
     fn fmt(
@@ -748,7 +660,6 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.fmt(f),
-            FarChannelFlowsError::Flows { flows } => flows.fmt(f),
             FarChannelFlowsError::Socket { socket } => socket.fmt(f)
         }
     }

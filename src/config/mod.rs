@@ -935,6 +935,19 @@ pub struct DTLSFarChannelConfig<Inner> {
     tls: TLSChannelConfig<TLSPeerConfig, Inner>
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "dtls")]
+#[serde(rename_all = "kebab-case")]
+pub struct FlowsConfig {
+    msg_size: usize,
+    #[serde(default)]
+    buf_size: Option<usize>,
+    #[serde(default)]
+    num_flows: Option<usize>,
+    #[serde(default)]
+    num_negotiations: Option<usize>
+}
+
 /// Name resolution configuration.
 ///
 /// This controls how often DNS names are resolved, how retries work,
@@ -2136,6 +2149,60 @@ impl From<IPEndpoint> for CompoundFarEndpoint {
     #[inline]
     fn from(val: IPEndpoint) -> Self {
         CompoundFarEndpoint::UDP { udp: val }
+    }
+}
+
+impl Default for FlowsConfig {
+    #[inline]
+    fn default() -> Self {
+        FlowsConfig {
+            msg_size: 1500,
+            buf_size: None,
+            num_flows: None,
+            num_negotiations: None
+        }
+    }
+}
+
+impl FlowsConfig {
+    #[inline]
+    pub fn new(
+        msg_size: usize,
+        buf_size: Option<usize>,
+        num_flows: Option<usize>,
+        num_negotiations: Option<usize>
+    ) -> Self {
+        FlowsConfig {
+            num_negotiations: num_negotiations,
+            num_flows: num_flows,
+            msg_size: msg_size,
+            buf_size: buf_size
+        }
+    }
+
+    #[inline]
+    fn msgsize(&self) -> usize {
+        self.msg_size
+    }
+
+    #[inline]
+    fn bufsize(&self) -> Option<usize> {
+        self.buf_size
+    }
+
+    #[inline]
+    fn nflows(&self) -> Option<usize> {
+        self.num_flows
+    }
+
+    #[inline]
+    fn nnegos(&self) -> Option<usize> {
+        self.num_negotiations
+    }
+
+    #[inline]
+    pub fn take(self) -> (usize, Option<usize>, Option<usize>, Option<usize>) {
+        (self.msg_size, self.buf_size, self.num_flows, self.num_negotiations)
     }
 }
 

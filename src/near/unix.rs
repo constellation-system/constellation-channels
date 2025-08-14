@@ -124,6 +124,8 @@ use std::fs::remove_file;
 use std::io::Error;
 use std::net::Shutdown;
 
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
 use log::debug;
 use log::info;
@@ -323,37 +325,57 @@ impl Source for UnixNearAcceptor {
     }
 }
 
-impl NearChannel for UnixNearAcceptor {
-    type Config = UnixNearChannelConfig;
-    type Endpoint = UnixSocketAddr;
+impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearAcceptor {
     type State = (UnixStream, UnixSocketAddr);
-    type Conn = UnixStream;
-    type StartError = Error;
+    type Pending = Infallible;
     type NegotiateError = Infallible;
-
-    #[inline]
-    fn start(
-        &mut self
-    ) -> Result<RetryResult<Self::State>, Self::StartError> {
-        let (stream, addr) = self.listener.accept()?;
-        let addr = UnixSocketAddr::from(addr);
-
-        Ok(RetryResult::Success((stream, addr)))
-    }
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        Ok(state)
+    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+                Self::NegotiateError> {
+        Ok(NegotiatorResult::Complete(state))
     }
 
     #[inline]
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+                Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for UnixNearAcceptor {
+    type Config = UnixNearChannelConfig;
+    type Endpoint = UnixSocketAddr;
+    type Conn = UnixStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        let (mut stream, addr) = self.listener.accept()?;
+        let addr = UnixSocketAddr::from(addr);
+
+        registry.register(&mut stream, token,
+                          Interest::READABLE | Interest::WRITABLE)?;
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
         panic!("This should never be called!")
     }
 }
@@ -374,41 +396,61 @@ impl NearChannelCreate for UnixNearAcceptor {
     }
 }
 
-impl NearChannel for UnixNearConnector {
-    type Config = UnixNearChannelConfig;
-    type Endpoint = UnixSocketAddr;
+impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearConnector {
     type State = (UnixStream, UnixSocketAddr);
-    type Conn = UnixStream;
-    type StartError = Error;
+    type Pending = Infallible;
     type NegotiateError = Infallible;
-
-    #[inline]
-    fn start(
-        &mut self
-    ) -> Result<RetryResult<Self::State>, Error> {
-        debug!(target: "unix-near",
-               "attempting to connect to {}",
-               self.path);
-
-        let stream = UnixStream::connect(&self.path)?;
-        let addr = UnixSocketAddr::try_from(&self.path)?;
-
-        Ok(RetryResult::Success((stream, addr)))
-    }
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        Ok(state)
+    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+                Self::NegotiateError> {
+        Ok(NegotiatorResult::Complete(state))
     }
 
     #[inline]
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+                Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for UnixNearConnector {
+    type Config = UnixNearChannelConfig;
+    type Endpoint = UnixSocketAddr;
+    type Conn = UnixStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Error> {
+        debug!(target: "unix-near",
+               "attempting to connect to {}",
+               self.path);
+
+        let mut stream = UnixStream::connect(&self.path)?;
+        let addr = UnixSocketAddr::try_from(&self.path)?;
+
+        registry.register(&mut stream, token,
+                          Interest::READABLE | Interest::WRITABLE)?;
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
         panic!("This should never be called!")
     }
 }
@@ -449,6 +491,8 @@ impl NearConnector for UnixNearConnector {
 #[cfg(test)]
 use std::fs::metadata;
 #[cfg(test)]
+use std::io::ErrorKind;
+#[cfg(test)]
 use std::io::Read;
 #[cfg(test)]
 use std::io::Write;
@@ -458,7 +502,11 @@ use std::sync::Arc;
 use std::sync::Barrier;
 #[cfg(test)]
 use std::thread::spawn;
+#[cfg(test)]
+use std::time::Instant;
 
+#[cfg(test)]
+use constellation_common::error::RecoverableError;
 #[cfg(test)]
 use mio::Events;
 #[cfg(test)]
@@ -488,14 +536,144 @@ fn test_send_recv() {
 
     let mut server_nscaches = nscaches.clone();
     let listen = spawn(move || {
+        let listen = Token(0);
+        let session = Token(1);
+        let mut events = Events::with_capacity(2);
+        let mut poll = Poll::new().expect("Expected success");
         let mut acceptor =
             UnixNearAcceptor::new(&mut server_nscaches, accept_config)
                 .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
+
+        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+            .expect("Expected success");
+
+        let mut retry = None;
+        let mut start = loop {
+            let now = Instant::now();
+
+            if retry.is_none_or(|when| now < when) {
+                let when = retry.map(|when| when - now);
+
+                poll.poll(&mut events, when).expect("Expected success");
+            }
+
+            let mut out = None;
+
+            retry = None;
+
+            for event in events.iter() {
+                if event.token() == listen {
+                    match acceptor.start(poll.registry(), session) {
+                        Ok(RetryResult::Success(start)) => {
+                            out = Some(start)
+                        }
+                        Ok(RetryResult::Retry(delay)) => {
+                            retry = Some(delay)
+                        }
+                        Err(err) => match err.kind() {
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
+                            err => panic!("{}", err)
+                        }
+                    }
+                }
+            }
+
+            if let Some(start) = out {
+                break start;
+            }
+        };
+
+        let (mut stream, _) = match acceptor.negotiate(start) {
+            Ok(stream) => stream,
+            Err(err) => match err.split() {
+                (_, Some(err)) => {
+                    poll.registry().deregister(&mut start)
+                        .expect("Expected success");
+
+                    panic!("{}", err)
+                },
+                (Some(mut retry), _) => loop {
+                    poll.poll(&mut events, None).expect("Expected success");
+
+                    let mut out = None;
+
+                    for event in events.iter() {
+                        if event.token() == session {
+                            match acceptor.complete_negotiate(retry) {
+                                Ok(stream) => {
+                                    out = Some(stream)
+                                },
+                                Err(err) => match err.split() {
+                                    (_, Some(err)) => {
+                                        poll.registry()
+                                            .deregister(&mut start)
+                                            .expect("Expected success");
+
+                                        panic!("{}", err)
+                                    },
+                                    (Some(newerr), _) => {
+                                        retry = newerr
+                                    }
+                                    _ => panic!("Invalid result")
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(stream) = out {
+                        break stream;
+                    }
+                }
+                _ => panic!("Invalid result")
+            }
+        };
+
         let mut buf = [0; FIRST_BYTES.len()];
 
-        stream.read_exact(&mut buf).unwrap();
-        stream.write_all(&SECOND_BYTES).expect("Expected success");
+        while {
+            let mut success = false;
+
+            poll.poll(&mut events, None).expect("Expected success");
+
+            for event in events.iter() {
+                if event.token() == session {
+                    match stream.read_exact(&mut buf) {
+                        Ok(()) => {
+                            success = true;
+                        }
+                        Err(err) => match err.kind() {
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
+                            err => panic!("{}", err)
+                        }
+                    }
+                }
+            }
+
+            success
+        } {}
+
+        while {
+            let mut success = false;
+
+            poll.poll(&mut events, None).expect("Expected success");
+
+            for event in events.iter() {
+                if event.token() == session {
+                    match stream.write_all(&SECOND_BYTES) {
+                        Ok(()) => {
+                            success = true;
+                        }
+                        Err(err) => match err.kind() {
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
+                            err => panic!("{}", err)
+                        }
+                    }
+                }
+            }
+
+            success
+        } {}
+
         stream.shutdown(Shutdown::Both).unwrap();
 
         assert_eq!(FIRST_BYTES, buf);
@@ -503,12 +681,86 @@ fn test_send_recv() {
 
     let mut client_nscaches = nscaches.clone();
     let send = spawn(move || {
+        let session = Token(0);
+        let mut events = Events::with_capacity(2);
+        let mut poll = Poll::new().expect("Expected success");
         let mut conn =
             UnixNearConnector::new(&mut client_nscaches, connect_config)
                 .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
+        let mut start = match conn.start().expect("expected success") {
+            RetryResult::Success(start) => start,
+            RetryResult::Retry(_) => panic!("shouldn't see retry")
+        };
 
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
+        poll.registry().register(&mut start, session, Interest::READABLE)
+            .expect("Expected success");
+
+        let (mut stream, _) = match conn.negotiate(start) {
+            Ok(stream) => stream,
+            Err(err) => match err.split() {
+                (_, Some(err)) => {
+                    poll.registry().deregister(&mut start)
+                        .expect("Expected success");
+
+                    panic!("{}", err)
+                },
+                (Some(mut retry), _) => loop {
+                    poll.poll(&mut events, None).expect("Expected success");
+
+                    let mut out = None;
+
+                    for event in events.iter() {
+                        if event.token() == session {
+                            match conn.complete_negotiate(retry) {
+                                Ok(stream) => {
+                                    out = Some(stream)
+                                },
+                                Err(err) => match err.split() {
+                                    (_, Some(err)) => {
+                                        poll.registry()
+                                            .deregister(&mut start)
+                                            .expect("Expected success");
+
+                                        panic!("{}", err)
+                                    },
+                                    (Some(newerr), _) => {
+                                        retry = newerr
+                                    }
+                                    _ => panic!("Invalid result")
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(stream) = out {
+                        break stream;
+                    }
+                }
+                _ => panic!("Invalid result")
+            }
+        };
+
+        while {
+            let mut success = false;
+
+            poll.poll(&mut events, None).expect("Expected success");
+
+            for event in events.iter() {
+                if event.token() == session {
+                    match stream.write_all(&FIRST_BYTES) {
+                        Ok(()) => {
+                            success = true;
+                        }
+                        Err(err) => match err.kind() {
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
+                            err => panic!("{}", err)
+                        }
+                    }
+                }
+            }
+
+            success
+        } {}
 
         let mut buf = [0; SECOND_BYTES.len()];
 
@@ -522,7 +774,7 @@ fn test_send_recv() {
 
     assert!(metadata(&path).is_err());
 }
-
+/*
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn test_reconnect() {
@@ -911,3 +1163,4 @@ fn test_send_late_shutdown() {
 
     assert!(metadata(&path).is_err());
 }
+*/

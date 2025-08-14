@@ -209,10 +209,10 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Condvar;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::SSLCred;
 use constellation_common::error::ErrorScope;
@@ -221,8 +221,9 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Socket;
-use constellation_common::nonblock::NonblockResult;
 use constellation_common::retry::RetryResult;
 use constellation_streams::stream::ConcurrentStream;
 use log::debug;
@@ -239,18 +240,11 @@ use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
 use crate::config::tls::TLSPeerConfig;
 use crate::config::DTLSFarChannelConfig;
-use crate::far::flows::BorrowedFlowNegotiator;
-use crate::far::flows::BorrowedFlowsCreate;
-use crate::far::flows::BorrowedFlowsFlow;
 use crate::far::flows::Flow;
-use crate::far::flows::NegotiateRetry;
-use crate::far::flows::OwnedFlowNegotiator;
-use crate::far::flows::OwnedFlowsCreate;
 use crate::far::FarChannel;
-use crate::far::FarChannelBorrowFlows;
+use crate::far::FarChannelFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelNegotiator;
-use crate::far::FarChannelOwnedFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
@@ -296,14 +290,49 @@ pub enum DTLSNegotiateError<Inner> {
     NoName
 }
 
-/// [OwnedFlowNegotiator] and [BorrowedFlowNegotiator] instance for
-/// [DTLSFarChannel].
+/// [Negotiator] for inbound sessions for [DTLSFarChannel].
 #[derive(Clone)]
-pub struct DTLSNegotiator<Inner> {
+pub struct DTLSInboundNegotiator<Inner, F>
+where F: Flow + Read + Write {
+    flow: PhantomData<F>,
+    /// The TLS configuration.
+    tls: TLSPeerConfig,
     /// Negotiator for the underlying flow.
     inner: Inner,
+}
+
+/// [Negotiator] state for outbound sessions for [DTLSFarChannel].
+#[derive(Clone)]
+pub struct DTLSOutboundNegotiator<Inner, F>
+where F: Flow + Read + Write {
+    flow: PhantomData<F>,
+    endpoint: Option<IPEndpointAddr>,
     /// The TLS configuration.
-    tls: TLSPeerConfig
+    tls: TLSPeerConfig,
+    /// Negotiator for the underlying flow.
+    inner: Inner
+}
+
+/// [Negotiator] state for inbound sessions for [DTLSFarChannel].
+#[derive(Clone)]
+pub struct DTLSInboundNegotiatorState<Inner, F>
+where F: Flow + Read + Write {
+    /// The TLS configuration.
+    tls: TLSPeerConfig,
+    /// Negotiator for the underlying flow.
+    inner: Inner,
+    flow: F
+}
+
+/// [Negotiator] state for outbound sessions for [DTLSFarChannel].
+#[derive(Clone)]
+pub struct DTLSOutboundNegotiatorState<Inner, F>
+where F: Flow + Read + Write {
+    /// The TLS configuration.
+    tls: TLSPeerConfig,
+    /// Negotiator for the underlying flow.
+    inner: Inner,
+    flow: F
 }
 
 /// The [Flow] instance for DTLS sessions.
@@ -497,141 +526,66 @@ where
     }
 }
 
-impl<Nego, Inner> FarChannelNegotiator<DTLSNegotiator<Nego>>
+impl<Nego, Inner, F> FarChannelNegotiator<DTLSInboundNegotiator<Nego, F>,
+                                          DTLSOutboundNegotiator<Nego, F>>
     for DTLSFarChannel<Inner>
 where
-    Inner: FarChannelNegotiator<Nego>
+    F: Credentials + Flow + Read + Write,
+    Inner: NegotiatorStart<Nego>
 {
     #[inline]
-    fn negotiator(&self) -> DTLSNegotiator<Nego> {
+    fn inbound_negotiator(&self) -> DTLSInboundNegotiator<Nego> {
         let inner = self.inner.negotiator();
 
-        DTLSNegotiator {
+        DTLSInboundNegotiator {
+            tls: self.tls.clone(),
+            inner: inner
+        }
+    }
+
+    #[inline]
+    fn outbound_negotiator(&self) -> DTLSOutboundNegotiator<Nego> {
+        let inner = self.inner.negotiator();
+
+        DTLSOutboundNegotiator {
             tls: self.tls.clone(),
             inner: inner
         }
     }
 }
 
-impl<'a, F, Inner, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
+impl<Inner, InnerXfrm> FarChannelFlows<InnerXfrm>
     for DTLSFarChannel<Inner>
 where
-    Inner: FarChannelBorrowFlows<'a, F, InnerXfrm>,
+    Inner: FarChannelFlows<InnerXfrm>,
     InnerXfrm: DatagramXfrm,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    F: BorrowedFlowsCreate<'a, Inner::Socket, Inner::Xfrm> + BorrowedFlowsFlow
 {
-    type Nego = DTLSNegotiator<Inner::Nego>;
+    type InboundNego =
+        DTLSInboundNegotiator<Inner::InboundNego,
+                              <Inner::InboundNego as Negotiator>::Outcome>;
+    type OutboundNego =
+        DTLSInboundNegotiator<Inner::OutboundNego,
+                              <Inner::OutboundNego as Negotiator>::Outcome>;
 }
 
-impl<F, Inner, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for DTLSFarChannel<Inner>
-where
-    Inner: FarChannelOwnedFlows<F, AuthN, InnerXfrm>,
-    Inner::Nego: OwnedFlowNegotiator<F::Flow>,
-    InnerXfrm: DatagramXfrm,
-    InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
-    AuthN: SessionAuthN<
-        DTLSFlow<<Inner::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>
-    >,
-    AuthN: SessionAuthN<<Inner::Nego as OwnedFlowNegotiator<F::Flow>>::Flow>,
-    F: OwnedFlowsCreate<
-        Inner::Socket,
-        DTLSNegotiator<Inner::Nego>,
-        AuthN,
-        Inner::Xfrm
-    >,
-    F: OwnedFlowsCreate<Inner::Socket, Inner::Nego, AuthN, Inner::Xfrm>
-{
-    type Nego = DTLSNegotiator<Inner::Nego>;
-}
-
-impl<F, Inner> BorrowedFlowNegotiator<F> for DTLSNegotiator<Inner>
+impl <F, Inner> Negotiator for DTLSInboundNegotiator<Inner, F>
 where
     F: Credentials + Flow + Read + Write,
-    Inner: BorrowedFlowNegotiator<F>
+    Inner: NegotiatorStart<F>
 {
-    type Flow<'a>
-        = DTLSFlow<Inner::Flow<'a>>
-    where
-        Inner: 'a;
+    type Outcome = DTLSFlow<Inner::Outcome>;
+    type State = DTLSInboundNegotiatorState<Inner, F>;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
-    fn negotiate_outbound(
+    fn negotiate(
         &self,
-        inner: F,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<
-        RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
-        Self::NegotiateError
-    > {
-        let verify = endpoint.ok_or(DTLSNegotiateError::NoName)?;
-        let connector = self
-            .tls
-            .load_client(None, verify, true)
-            .map_err(|e| DTLSNegotiateError::TLSLoad { tls: e })?;
-        let domain = match verify {
-            IPEndpointAddr::Name(name) => match name.find('.') {
-                Some(idx) => {
-                    let (_, domain) = name.split_at(idx);
-
-                    String::from(domain)
-                }
-                None => String::new()
-            },
-            IPEndpointAddr::Addr(_) => String::new()
-        };
-        let addr = inner.peer_addr();
+        state: Self::State
+    ) -> Result<Self::Outcome, Self::NegotiateError> {
+        let addr = self.inner.peer_addr();
         let flow = match self
             .inner
-            .negotiate_outbound(inner, endpoint)
-            .map_err(|e| DTLSNegotiateError::Inner { inner: e })?
-        {
-            RetryResult::Success(flow) => flow,
-            RetryResult::Retry(when) => return Ok(RetryResult::Retry(when))
-        };
-
-        debug!(target: "far-dtls",
-               "establishing DTLS session with {}",
-               addr);
-
-        match connector.connect(domain.as_str(), flow) {
-            Ok(stream) => {
-                info!(target: "far-dtls",
-                      "established DTLS session with {}",
-                      addr);
-
-                Ok(RetryResult::Success(DTLSFlow { ssl: stream }))
-            }
-            Err(err) => match err {
-                HandshakeError::SetupFailure(e) => {
-                    Err(DTLSNegotiateError::OpenSSL { error: e })
-                }
-                HandshakeError::Failure(e) => {
-                    Err(DTLSNegotiateError::Handshake {
-                        error: e.into_error()
-                    })
-                }
-                HandshakeError::WouldBlock(e) => {
-                    Err(DTLSNegotiateError::Handshake {
-                        error: e.into_error()
-                    })
-                }
-            }
-        }
-    }
-
-    fn negotiate_inbound(
-        &self,
-        inner: F
-    ) -> Result<
-        RetryResult<Self::Flow<'_>, NegotiateRetry<F>>,
-        Self::NegotiateError
-    > {
-        let addr = inner.peer_addr();
-        let flow = match self
-            .inner
-            .negotiate_inbound(inner)
+            .negotiate(state)
             .map_err(|e| DTLSNegotiateError::Inner { inner: e })?
         {
             RetryResult::Success(flow) => flow,
@@ -671,29 +625,20 @@ where
     }
 }
 
-impl<F, Inner> OwnedFlowNegotiator<F> for DTLSNegotiator<Inner>
+impl <F, Inner> Negotiator for DTLSOutboundNegotiator<Inner, F>
 where
     F: Credentials + Flow + Read + Write,
-    Inner: OwnedFlowNegotiator<F>
+    Inner: NegotiatorStart<F>
 {
-    type Flow = DTLSFlow<Inner::Flow>;
+    type Outcome = DTLSFlow<Inner::Outcome>;
+    type State = DTLSOutboundNegotiatorState<Inner, F>;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
-    #[inline]
-    fn negotiate_outbound_nonblock(
+    fn negotiate(
         &self,
-        inner: F
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
-        Ok(NonblockResult::Fail(inner))
-    }
-
-    fn negotiate_outbound(
-        &self,
-        inner: F,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
-    {
-        let verify = endpoint.ok_or(DTLSNegotiateError::NoName)?;
+        state: Self::State
+    ) -> Result<Self::Outcome, Self::NegotiateError> {
+        let verify = self.endpoint.ok_or(DTLSNegotiateError::NoName)?;
         let connector = self
             .tls
             .load_client(None, verify, true)
@@ -709,10 +654,10 @@ where
             },
             IPEndpointAddr::Addr(_) => String::new()
         };
-        let addr = inner.peer_addr();
+        let addr = self.inner.peer_addr();
         let flow = match self
             .inner
-            .negotiate_outbound(inner, endpoint)
+            .negotiate(state.inner)
             .map_err(|e| DTLSNegotiateError::Inner { inner: e })?
         {
             RetryResult::Success(flow) => flow,
@@ -728,61 +673,6 @@ where
                 info!(target: "far-dtls",
                       "established DTLS session with {}",
                       addr);
-
-                Ok(RetryResult::Success(DTLSFlow { ssl: stream }))
-            }
-            Err(err) => match err {
-                HandshakeError::SetupFailure(e) => {
-                    Err(DTLSNegotiateError::OpenSSL { error: e })
-                }
-                HandshakeError::Failure(e) => {
-                    Err(DTLSNegotiateError::Handshake {
-                        error: e.into_error()
-                    })
-                }
-                HandshakeError::WouldBlock(e) => {
-                    Err(DTLSNegotiateError::Handshake {
-                        error: e.into_error()
-                    })
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn negotiate_inbound_nonblock(
-        &self,
-        inner: F
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
-        Ok(NonblockResult::Fail(inner))
-    }
-
-    fn negotiate_inbound(
-        &self,
-        inner: F
-    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
-    {
-        let addr = inner.peer_addr();
-        let flow = match self
-            .inner
-            .negotiate_inbound(inner)
-            .map_err(|e| DTLSNegotiateError::Inner { inner: e })?
-        {
-            RetryResult::Success(flow) => flow,
-            RetryResult::Retry(when) => return Ok(RetryResult::Retry(when))
-        };
-        let acceptor = self
-            .tls
-            .load_server(None, true)
-            .map_err(|e| DTLSNegotiateError::TLSLoad { tls: e })?;
-
-        debug!(target: "far-dtls",
-               "accepting DTLS session from {}", addr);
-
-        match acceptor.accept(flow) {
-            Ok(stream) => {
-                info!(target: "far-dtls",
-                      "established DTLS session with {}", addr);
 
                 Ok(RetryResult::Success(DTLSFlow { ssl: stream }))
             }

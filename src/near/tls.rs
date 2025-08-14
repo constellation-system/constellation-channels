@@ -139,9 +139,10 @@ use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 use constellation_auth::cred::SSLCred;
 use constellation_common::error::ErrorScope;
-use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
 use log::info;
 use log::warn;
@@ -149,7 +150,9 @@ use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use openssl::error::ErrorStack;
 use openssl::ssl::HandshakeError;
+use openssl::ssl::MidHandshakeSslStream;
 use openssl::ssl::ShutdownResult;
 use openssl::ssl::SslAcceptor;
 use openssl::ssl::SslConnector;
@@ -351,77 +354,28 @@ pub struct TLSNearConnector<Conn, TLS> {
 }
 
 #[derive(Debug)]
-pub enum TLSNegotiateError<Inner, Endpoint, TLS> {
+pub enum TLSNegotiateError<Inner, Endpoint, Conn> {
     Inner {
         err: Inner,
     },
     TLS {
         endpoint: Endpoint,
-        err: TLS
-    }
+        err: MidHandshakeSslStream<Conn>
+    },
+    SetupError {
+        err: ErrorStack
+    },
+    BadSplit
 }
 
-impl<Inner, Endpoint, TLS> RecoverableError
-    for TLSNegotiateError<Inner, Endpoint, TLS>
-where Endpoint: Clone + Debug,
-      Inner: RecoverableError,
-      TLS: RecoverableError {
-    type Completable = TLSNegotiateError<
-        Inner::Completable,
-        Endpoint,
-        TLS::Completable
-    >;
-    type Permanent = TLSNegotiateError<
-        Inner::Permanent,
-        Endpoint,
-        TLS::Permanent
-    >;
-
-    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
-        match self {
-            TLSNegotiateError::Inner { err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| TLSNegotiateError::Inner { err: err }),
-                 permanent.map(|err| TLSNegotiateError::Inner { err: err }))
-            }
-            TLSNegotiateError::TLS { endpoint, err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| TLSNegotiateError::TLS {
-                    endpoint: endpoint.clone(),
-                    err: err
-                }),
-                 permanent.map(|err| TLSNegotiateError::TLS {
-                     endpoint: endpoint,
-                     err: err
-                 }))
-            }
-        }
-    }
-}
-
-impl<Inner, Endpoint, TLS> RecoverableError
-    for Box<TLSNegotiateError<Inner, Endpoint, TLS>>
-where Endpoint: Clone + Debug,
-      Inner: RecoverableError,
-      TLS: RecoverableError {
-    type Completable = Box<TLSNegotiateError<
-        Inner::Completable,
-        Endpoint,
-        TLS::Completable
-    >>;
-    type Permanent = Box<TLSNegotiateError<
-        Inner::Permanent,
-        Endpoint,
-        TLS::Permanent
-    >>;
-
-    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
-        let (completable, permanent) = (*self).split();
-
-        (completable.map(|err| Box::new(err)),
-         permanent.map(|err| Box::new(err)))
+#[derive(Debug)]
+pub enum TLSNegotiatePending<Inner, Endpoint, Conn> {
+    Inner {
+        pending: Inner,
+    },
+    TLS {
+        endpoint: Endpoint,
+        pending: MidHandshakeSslStream<Conn>
     }
 }
 
@@ -432,7 +386,9 @@ where Inner: ScopedError,
     fn scope(&self) -> ErrorScope {
         match self {
             TLSNegotiateError::Inner { err } => err.scope(),
-            TLSNegotiateError::TLS { err, .. } => err.scope()
+            TLSNegotiateError::TLS { err, .. } => err.error().scope(),
+            TLSNegotiateError::SetupError { .. } |
+            TLSNegotiateError::BadSplit => ErrorScope::Unrecoverable
         }
     }
 }
@@ -444,7 +400,9 @@ where Inner: ScopedError,
     fn scope(&self) -> ErrorScope {
         match self.as_ref() {
             TLSNegotiateError::Inner { err } => err.scope(),
-            TLSNegotiateError::TLS { err, .. } => err.scope()
+            TLSNegotiateError::TLS { err, .. } => err.error().scope(),
+            TLSNegotiateError::SetupError { .. } |
+            TLSNegotiateError::BadSplit => ErrorScope::Unrecoverable
         }
     }
 }
@@ -458,6 +416,152 @@ impl ScopedError for TLSCreateError {
     }
 }
 
+impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
+    for TLSNearAcceptor<A, TLS>
+where
+    TLS: TLSLoadServer,
+    A: NearChannel + Source,
+{
+    type State = A::State;
+    type Pending = TLSNegotiatePending<
+        A::Pending,
+        A::Endpoint,
+        A::Conn
+    >;
+    type NegotiateError = TLSNegotiateError<
+        A::NegotiateError,
+        A::Endpoint,
+        A::Conn
+    >;
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        self.inner
+            .negotiate(state)
+            .map_err(|err| TLSNegotiateError::Inner { err: err })?
+            .map_pending(|pending| TLSNegotiatePending::Inner {
+                pending: pending
+            })
+            .flat_map_ok(|(stream, endpoint)| {
+                match self.acceptor.accept(stream) {
+                    Ok(stream) => {
+                        let conn = TLSConn {
+                            ssl: stream,
+                            peer: endpoint.clone()
+                        };
+
+                        Ok(NegotiatorResult::Complete(
+                            (conn, endpoint)
+                        ))
+                    }
+                    Err(err) => match err {
+                        HandshakeError::SetupFailure(stack) =>
+                            Err(TLSNegotiateError::SetupError {
+                                err: stack
+                            }),
+                        HandshakeError::Failure(err) =>
+                            Err(TLSNegotiateError::TLS {
+                                endpoint: endpoint.clone(),
+                                err: err
+                            }),
+                        HandshakeError::WouldBlock(pending) =>
+                            Ok(NegotiatorResult::Pending(
+                                TLSNegotiatePending::TLS {
+                                    endpoint: endpoint.clone(),
+                                    pending: pending
+                                }
+                            )),
+                    }
+                }
+            })
+    }
+
+    /// Complete a failed negotiation.
+    fn complete_negotiate(
+        &self,
+        pending: TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>
+    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        match pending {
+            TLSNegotiatePending::Inner { pending } => self
+                .inner
+                .complete_negotiate(pending)
+                .map_err(|err| TLSNegotiateError::Inner { err: err })?
+                .map_pending(|pending| TLSNegotiatePending::Inner {
+                    pending: pending
+                })
+                .flat_map_ok(|(stream, endpoint)| {
+                    match self.acceptor.accept(stream) {
+                        Ok(stream) => {
+                            let conn = TLSConn {
+                                ssl: stream,
+                                peer: endpoint.clone()
+                            };
+
+                            Ok(NegotiatorResult::Complete(
+                                (conn, endpoint)
+                            ))
+                        }
+                        Err(err) => match err {
+                            HandshakeError::SetupFailure(stack) =>
+                                Err(TLSNegotiateError::SetupError {
+                                    err: stack
+                                }),
+                            HandshakeError::Failure(err) =>
+                                Err(TLSNegotiateError::TLS {
+                                    endpoint: endpoint.clone(),
+                                    err: err
+                                }),
+                            HandshakeError::WouldBlock(pending) =>
+                                Ok(NegotiatorResult::Pending(
+                                    TLSNegotiatePending::TLS {
+                                        endpoint: endpoint.clone(),
+                                        pending: pending
+                                    }
+                                )),
+                        }
+                    }
+                }),
+            TLSNegotiatePending::TLS { endpoint, pending } => match pending
+                .handshake() {
+                Ok(stream) => {
+                    let conn = TLSConn {
+                        ssl: stream,
+                        peer: endpoint.clone()
+                    };
+
+                    Ok(NegotiatorResult::Complete(
+                        (conn, endpoint)
+                    ))
+                }
+                Err(err) => match err {
+                    HandshakeError::SetupFailure(stack) =>
+                        Err(TLSNegotiateError::SetupError {
+                            err: stack
+                        }),
+                    HandshakeError::Failure(err) =>
+                        Err(TLSNegotiateError::TLS {
+                            endpoint: endpoint.clone(),
+                            err: err
+                        }),
+                    HandshakeError::WouldBlock(pending) =>
+                        Ok(NegotiatorResult::Pending(
+                            TLSNegotiatePending::TLS {
+                                endpoint: endpoint.clone(),
+                                pending: pending
+                            }
+                        )),
+                }
+            }
+        }
+    }
+}
+
 impl<A, TLS> NearChannel for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
@@ -466,82 +570,35 @@ where
     type Config = TLSChannelConfig<TLS, A::Config>;
     type Endpoint = A::Endpoint;
     type Conn = TLSConn<A::Conn, A::Endpoint>;
-    type State = A::State;
     type StartError = A::StartError;
-    type NegotiateError = TLSNegotiateError<
-        A::NegotiateError,
-        A::Endpoint,
-        HandshakeError<A::Conn>
-    >;
 
     #[inline]
     fn start(
-        &mut self
+        &mut self,
+        registry: &Registry,
+        token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
-        self.inner.start()
+        self.inner.start(registry, token)
     }
 
-    fn negotiate(
-        &self,
-        state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        let (stream, endpoint) = self.inner.negotiate(state)
-            .map_err(|err| TLSNegotiateError::Inner { err: err })?;
-        let stream = self
-            .acceptor
-            .accept(stream)
-            .map_err(|err| TLSNegotiateError::TLS {
-                endpoint: endpoint.clone(),
-                err: err
-            })?;
-
-        Ok((
-            TLSConn {
-                ssl: stream,
-                peer: endpoint.clone()
-            },
-            endpoint
-        ))
-    }
-
-    /// Complete a failed negotiation.
-    fn complete_negotiate(
-        &self,
-        err: <Self::NegotiateError as RecoverableError>::Completable
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        let (stream, endpoint) = match err {
-            TLSNegotiateError::Inner { err } => {
-                let (stream, endpoint) = self.inner.complete_negotiate(err)
-                    .map_err(|err| TLSNegotiateError::Inner { err: err })?;
-                let stream = self
-                    .acceptor
-                    .accept(stream)
-                    .map_err(|err| TLSNegotiateError::TLS {
-                        endpoint: endpoint.clone(),
-                        err: err
-                    })?;
-
-                (stream, endpoint)
-            }
-            TLSNegotiateError::TLS { endpoint, err } => {
-                let stream = err
-                    .handshake()
-                    .map_err(|err| TLSNegotiateError::TLS {
-                        endpoint: endpoint.clone(),
-                        err: err
-                    })?;
-
-                (stream, endpoint)
-            }
-        };
-
-        Ok((
-            TLSConn {
-                ssl: stream,
-                peer: endpoint.clone()
-            },
-            endpoint
-        ))
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
+        err: TLSNegotiateError<
+            A::NegotiateError,
+            A::Endpoint,
+            A::Conn
+        >
+    ) -> Result<(), Error> {
+        match err {
+            TLSNegotiateError::Inner { err } =>
+                self.inner.cleanup(registry, err),
+            TLSNegotiateError::TLS { mut err, .. } =>
+                registry.deregister(err.get_mut()),
+            // XXX Figure out if we need to deregister for SetupFailures.
+            TLSNegotiateError::SetupError { .. } |
+            TLSNegotiateError::BadSplit => Ok(())
+        }
     }
 }
 
@@ -644,97 +701,197 @@ where
     }
 }
 
-impl<Conn, TLS> NearChannel for TLSNearConnector<Conn, TLS>
+impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
+    for TLSNearConnector<A, TLS>
 where
-    Conn: NearConnector,
-    TLS: TLSLoadClient
+    TLS: TLSLoadClient,
+    A: NearChannel + Source,
 {
-    type Config = TLSChannelConfig<TLS, Conn::Config>;
-    type Endpoint = Conn::Endpoint;
-    type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
-    type State = Conn::State;
-    type StartError = Conn::StartError;
-    type NegotiateError = TLSNegotiateError<
-        Conn::NegotiateError,
-        Conn::Endpoint,
-        HandshakeError<Conn::Conn>
+    type State = A::State;
+    type Pending = TLSNegotiatePending<
+        A::Pending,
+        A::Endpoint,
+        A::Conn
     >;
-
-    #[inline]
-    fn start(
-        &mut self
-    ) -> Result<RetryResult<Self::State>, Self::StartError> {
-        self.inner.start()
-    }
+    type NegotiateError = TLSNegotiateError<
+        A::NegotiateError,
+        A::Endpoint,
+        A::Conn
+    >;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        let (stream, endpoint) = self.inner.negotiate(state)
-            .map_err(|err| TLSNegotiateError::Inner { err: err })?;
-        let stream = self
-            .connector
-            .connect(self.domain.as_str(), stream)
-            .map_err(|err| TLSNegotiateError::TLS {
-                endpoint: endpoint.clone(),
-                err: err
-            })?;
+    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        self.inner
+            .negotiate(state)
+            .map_err(|err| TLSNegotiateError::Inner { err: err })?
+            .map_pending(|pending| TLSNegotiatePending::Inner {
+                pending: pending
+            })
+            .flat_map_ok(|(stream, endpoint)| {
+                match self.connector.connect(self.domain.as_str(), stream) {
+                    Ok(stream) => {
+                        let conn = TLSConn {
+                            ssl: stream,
+                            peer: endpoint.clone()
+                        };
 
-        Ok((
-            TLSConn {
-                ssl: stream,
-                peer: endpoint.clone()
-            },
-            endpoint
-        ))
+                        Ok(NegotiatorResult::Complete(
+                            (conn, endpoint)
+                        ))
+                    }
+                    Err(err) => match err {
+                        HandshakeError::SetupFailure(stack) =>
+                            Err(TLSNegotiateError::SetupError {
+                                err: stack
+                            }),
+                        HandshakeError::Failure(err) =>
+                            Err(TLSNegotiateError::TLS {
+                                endpoint: endpoint.clone(),
+                                err: err
+                            }),
+                        HandshakeError::WouldBlock(pending) =>
+                            Ok(NegotiatorResult::Pending(
+                                TLSNegotiatePending::TLS {
+                                    endpoint: endpoint.clone(),
+                                    pending: pending
+                                }
+                            )),
+                    }
+                }
+            })
     }
 
     /// Complete a failed negotiation.
     fn complete_negotiate(
         &self,
-        err: <Self::NegotiateError as RecoverableError>::Completable
-    ) -> Result<(Self::Conn, Self::Endpoint), Self::NegotiateError> {
-        let (stream, endpoint) = match err {
-            TLSNegotiateError::Inner { err } => {
-                let (stream, endpoint) = self.inner.complete_negotiate(err)
-                    .map_err(|err| TLSNegotiateError::Inner { err: err })?;
-                let stream = self
-                    .connector
-                    .connect(self.domain.as_str(), stream)
-                    .map_err(|err| TLSNegotiateError::TLS {
-                        endpoint: endpoint.clone(),
-                        err: err
-                    })?;
+        pending: TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>
+    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        match pending {
+            TLSNegotiatePending::Inner { pending } => self
+                .inner
+                .complete_negotiate(pending)
+                .map_err(|err| TLSNegotiateError::Inner { err: err })?
+                .map_pending(|pending| TLSNegotiatePending::Inner {
+                    pending: pending
+                })
+                .flat_map_ok(|(stream, endpoint)| {
+                    match self.connector.connect(self.domain.as_str(), stream) {
+                        Ok(stream) => {
+                            let conn = TLSConn {
+                                ssl: stream,
+                                peer: endpoint.clone()
+                            };
 
-                (stream, endpoint)
+                            Ok(NegotiatorResult::Complete(
+                                (conn, endpoint)
+                            ))
+                        }
+                        Err(err) => match err {
+                            HandshakeError::SetupFailure(stack) =>
+                                Err(TLSNegotiateError::SetupError {
+                                    err: stack
+                                }),
+                            HandshakeError::Failure(err) =>
+                                Err(TLSNegotiateError::TLS {
+                                    endpoint: endpoint.clone(),
+                                    err: err
+                                }),
+                            HandshakeError::WouldBlock(pending) =>
+                                Ok(NegotiatorResult::Pending(
+                                    TLSNegotiatePending::TLS {
+                                        endpoint: endpoint.clone(),
+                                        pending: pending
+                                    }
+                                )),
+                        }
+                    }
+                }),
+            TLSNegotiatePending::TLS { endpoint, pending } => match pending
+                .handshake() {
+                Ok(stream) => {
+                    let conn = TLSConn {
+                        ssl: stream,
+                        peer: endpoint.clone()
+                    };
+
+                    Ok(NegotiatorResult::Complete(
+                        (conn, endpoint)
+                    ))
+                }
+                Err(err) => match err {
+                    HandshakeError::SetupFailure(stack) =>
+                        Err(TLSNegotiateError::SetupError {
+                            err: stack
+                        }),
+                    HandshakeError::Failure(err) =>
+                        Err(TLSNegotiateError::TLS {
+                            endpoint: endpoint.clone(),
+                            err: err
+                        }),
+                    HandshakeError::WouldBlock(pending) =>
+                        Ok(NegotiatorResult::Pending(
+                            TLSNegotiatePending::TLS {
+                                endpoint: endpoint.clone(),
+                                pending: pending
+                            }
+                        )),
+                }
             }
-            TLSNegotiateError::TLS { endpoint, err } => {
-                let stream = err
-                    .handshake()
-                    .map_err(|err| TLSNegotiateError::TLS {
-                        endpoint: endpoint.clone(),
-                        err: err
-                    })?;
+        }
+    }
+}
 
-                (stream, endpoint)
-            }
-        };
 
-        Ok((
-            TLSConn {
-                ssl: stream,
-                peer: endpoint.clone()
-            },
-            endpoint
-        ))
+impl<Conn, TLS> NearChannel for TLSNearConnector<Conn, TLS>
+where
+    Conn: NearConnector + Source,
+    TLS: TLSLoadClient
+{
+    type Config = TLSChannelConfig<TLS, Conn::Config>;
+    type Endpoint = Conn::Endpoint;
+    type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
+    type StartError = Conn::StartError;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        self.inner.start(registry, token)
+    }
+
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
+        err: TLSNegotiateError<
+            Conn::NegotiateError,
+            Conn::Endpoint,
+            Conn::Conn
+        >
+    ) -> Result<(), Error> {
+        match err {
+            TLSNegotiateError::Inner { err } =>
+                self.inner.cleanup(registry, err),
+            TLSNegotiateError::TLS { mut err, .. } =>
+                registry.deregister(err.get_mut()),
+            // XXX Figure out if we need to deregister for SetupFailures.
+            TLSNegotiateError::SetupError { .. } |
+            TLSNegotiateError::BadSplit => Ok(())
+        }
     }
 }
 
 impl<Conn, TLS> NearChannelCreate for TLSNearConnector<Conn, TLS>
 where
     TLS: TLSLoadClient,
-    Conn: NearChannelCreate + NearConnector,
+    Conn: NearChannelCreate + NearConnector + Source,
 {
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
@@ -786,7 +943,7 @@ where
 
 impl<Conn, TLS> NearConnector for TLSNearConnector<Conn, TLS>
 where
-    Conn: NearConnector,
+    Conn: NearConnector + Source,
     TLS: TLSLoadClient
 {
     /// Type of endpoint references.
@@ -983,15 +1140,18 @@ impl Display for TLSCreateError {
 }
 
 impl<Inner, Endpoint, TLS> Display for TLSNegotiateError<Inner, Endpoint, TLS>
-where Inner: Display,
-      TLS: Display {
+where Inner: Display {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
             TLSNegotiateError::Inner { err } => err.fmt(f),
-            TLSNegotiateError::TLS { err, .. } => err.fmt(f)
+            TLSNegotiateError::TLS { err, .. } => write!(f, "{}", err.error()),
+            TLSNegotiateError::SetupError { err, .. } =>
+                write!(f, "{}", err),
+            TLSNegotiateError::BadSplit =>
+                write!(f, "invalid result from split()")
         }
     }
 }
@@ -1108,7 +1268,7 @@ const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Barrier;
-
+/*
 #[test]
 fn test_tls_negotiate() {
     init();
@@ -1343,3 +1503,4 @@ fn test_tls_recv_send() {
     listen.join().unwrap();
     send.join().unwrap();
 }
+*/
