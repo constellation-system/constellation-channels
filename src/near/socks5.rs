@@ -204,14 +204,14 @@ pub struct SOCKS5SessionNegotiation<Proxy> {
 }
 
 #[derive(Debug)]
-pub enum SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5> {
+pub enum SOCKS5NegotiateError<Inner, Proxy, Endpoint> {
     Inner {
         err: Inner,
     },
     SOCKS5 {
         endpoint: Endpoint,
         proxy: Proxy,
-        err: SOCKS5
+        err: SOCKS5Error
     },
     BadSplit
 }
@@ -237,8 +237,7 @@ where
     type NegotiateError = SOCKS5NegotiateError<
         Inner::NegotiateError,
         Inner::Conn,
-        Inner::Endpoint,
-        SOCKS5Error
+        Inner::Endpoint
     >;
     type Pending = SOCKS5NegotiatePending<
         Inner::Pending,
@@ -390,8 +389,7 @@ where
         err: SOCKS5NegotiateError<
             Conn::NegotiateError,
             Conn::Conn,
-            Conn::Endpoint,
-            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
+            Conn::Endpoint
         >
     ) -> Result<(), Error> {
         match err {
@@ -462,10 +460,9 @@ where
     }
 }
 
-impl<Inner, Proxy, Endpoint, SOCKS5> ScopedError
-    for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
-where Inner: ScopedError,
-      SOCKS5: ScopedError {
+impl<Inner, Proxy, Endpoint> ScopedError
+    for SOCKS5NegotiateError<Inner, Proxy, Endpoint>
+where Inner: ScopedError {
     fn scope(&self) -> ErrorScope {
         match self {
             SOCKS5NegotiateError::Inner { err } => err.scope(),
@@ -475,17 +472,17 @@ where Inner: ScopedError,
     }
 }
 
-impl<Inner, Proxy, Endpoint, SOCKS5> Display
-    for SOCKS5NegotiateError<Inner, Proxy, Endpoint, SOCKS5>
-where Inner: Display,
-      SOCKS5: Display {
+impl<Inner, Proxy, Endpoint> Display
+    for SOCKS5NegotiateError<Inner, Proxy, Endpoint>
+where Inner: Display {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
             SOCKS5NegotiateError::Inner { err } => err.fmt(f),
-            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.fmt(f),
+            SOCKS5NegotiateError::SOCKS5 { err, .. } =>
+                write!(f, "{}", err),
             SOCKS5NegotiateError::BadSplit =>
                 write!(f, "invalid result from split()")
         }

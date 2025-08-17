@@ -705,7 +705,7 @@ impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
     for TLSNearConnector<A, TLS>
 where
     TLS: TLSLoadClient,
-    A: NearChannel + Source,
+    A: NearChannel,
 {
     type State = A::State;
     type Pending = TLSNegotiatePending<
@@ -847,10 +847,9 @@ where
     }
 }
 
-
 impl<Conn, TLS> NearChannel for TLSNearConnector<Conn, TLS>
 where
-    Conn: NearConnector + Source,
+    Conn: NearConnector,
     TLS: TLSLoadClient
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
@@ -891,7 +890,7 @@ where
 impl<Conn, TLS> NearChannelCreate for TLSNearConnector<Conn, TLS>
 where
     TLS: TLSLoadClient,
-    Conn: NearChannelCreate + NearConnector + Source,
+    Conn: NearChannelCreate + NearConnector,
 {
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
@@ -943,7 +942,7 @@ where
 
 impl<Conn, TLS> NearConnector for TLSNearConnector<Conn, TLS>
 where
-    Conn: NearConnector + Source,
+    Conn: NearConnector,
     TLS: TLSLoadClient
 {
     /// Type of endpoint references.
@@ -966,6 +965,123 @@ where
         self.inner.shutdown()
     }
 }
+
+impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
+    for Box<TLSNearConnector<A, TLS>>
+where
+    TLS: TLSLoadClient,
+    A: NearChannel,
+{
+    type State = A::State;
+    type Pending = TLSNegotiatePending<
+        A::Pending,
+        A::Endpoint,
+        A::Conn
+    >;
+    type NegotiateError = TLSNegotiateError<
+        A::NegotiateError,
+        A::Endpoint,
+        A::Conn
+    >;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>
+    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+                                 Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
+    }
+}
+
+impl<Conn, TLS> NearChannel for Box<TLSNearConnector<Conn, TLS>>
+where
+    Conn: NearConnector,
+    TLS: TLSLoadClient
+{
+    type Config = TLSChannelConfig<TLS, Conn::Config>;
+    type Endpoint = Conn::Endpoint;
+    type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
+    type StartError = Conn::StartError;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        self.as_mut().start(registry, token)
+    }
+
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
+        err: TLSNegotiateError<
+            Conn::NegotiateError,
+            Conn::Endpoint,
+            Conn::Conn
+        >
+    ) -> Result<(), Error> {
+        self.as_mut().cleanup(registry, err)
+    }
+}
+
+impl<Conn, TLS> NearChannelCreate for Box<TLSNearConnector<Conn, TLS>>
+where
+    TLS: TLSLoadClient,
+    Conn: NearChannelCreate + NearConnector,
+{
+    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
+
+    #[inline]
+    fn new<Ctx>(
+        caches: &mut Ctx,
+        config: TLSChannelConfig<TLS, Conn::Config>
+    ) -> Result<Box<TLSNearConnector<Conn, TLS>>, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        Ok(Box::new(TLSNearConnector::new(caches, config)?))
+    }
+}
+
+impl<Conn, TLS> NearConnector for Box<TLSNearConnector<Conn, TLS>>
+where
+    Conn: NearConnector + Source,
+    TLS: TLSLoadClient
+{
+    /// Type of endpoint references.
+    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        self.as_ref().endpoint()
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Conn::verify_endpoint(config.underlying())
+    }
+
+    #[inline]
+    fn shutdown(&mut self) -> Result<(), Error> {
+        self.as_mut().shutdown()
+    }
+}
+
+
 
 impl<S, Endpoint> Credentials for TLSConn<S, Endpoint>
 where
