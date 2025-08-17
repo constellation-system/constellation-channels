@@ -164,6 +164,7 @@ use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
@@ -172,9 +173,12 @@ use constellation_common::error::ScopedError;
 use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
 use log::error;
 use mio::event::Source;
+use mio::Events;
+use mio::Poll;
 use mio::Registry;
 use mio::Token;
 
@@ -800,6 +804,187 @@ where Conn: Display,
             NearSessionError::Conn { err } => err.fmt(f),
             NearSessionError::Auth { err } => err.fmt(f),
             NearSessionError::AuthFail => write!(f, "authentication failed")
+        }
+    }
+}
+
+/// Accept one incoming connection on `channel`; intended primarily
+/// for testing
+///
+/// This will [poll](Poll::poll) on `poll`, ignoring all but `listen`
+/// and then call [start](NearChannel::start) until success.
+///
+/// This is intended primarily for testing and will not function well
+/// in a more general context.
+pub fn accept_one<C>(
+    channel: &mut C,
+    poll: &mut Poll,
+    listen: Token,
+    session: Token
+) -> Result<C::State, C::StartError>
+where C: NearChannel {
+    let mut events = Events::with_capacity(2);
+    let mut retry = None;
+
+    loop {
+        let now = Instant::now();
+
+        if retry.is_none_or(|when| now < when) {
+            let when = retry.map(|when| when - now);
+
+            poll.poll(&mut events, when).expect("Expected success");
+        }
+
+        let mut out = None;
+
+        retry = None;
+
+        for event in events.iter() {
+            if event.token() == listen {
+                match channel.start(poll.registry(), session) {
+                    Ok(RetryResult::Success(start)) => {
+                        out = Some(start)
+                    }
+                    Ok(RetryResult::Retry(delay)) => {
+                        retry = Some(delay)
+                    }
+                    Err(err) => if err.scope() != ErrorScope::Retryable {
+                        return Err(err)
+                    }
+                }
+            }
+        }
+
+        if let Some(start) = out {
+            return Ok(start)
+        }
+    };
+}
+
+/// Read into a buffer from a [Read] instance.
+///
+/// This will [poll](Poll::poll) on `poll`, ignoring all but `listen`
+/// and then call [read_exact](Read::read_exact) until success.
+///
+/// This is intended primarily for testing and will not function well
+/// in a more general context.
+pub fn read_one<R>(
+    stream: &mut R,
+    poll: &mut Poll,
+    session: Token,
+    buf: &mut [u8]
+) -> Result<(), Error>
+where R: Read {
+    let mut events = Events::with_capacity(2);
+
+    while {
+        let mut success = false;
+
+        poll.poll(&mut events, None).expect("Expected success");
+
+        for event in events.iter() {
+            if event.token() == session {
+                match stream.read_exact(buf) {
+                    Ok(()) => {
+                        success = true;
+                    }
+                    Err(err) => match err.kind() {
+                        ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
+                        _ => return Err(err)
+                    }
+                }
+            }
+        }
+
+        success
+    } {}
+
+    Ok(())
+}
+
+/// Write a buffer to a [Write] instance.
+///
+/// This will [poll](Poll::poll) on `poll`, ignoring all but `listen`
+/// and then call [write_exact](Write::write_exact) until success.
+///
+/// This is intended primarily for testing and will not function well
+/// in a more general context.
+pub fn write_one<W>(
+    stream: &mut W,
+    poll: &mut Poll,
+    session: Token,
+    bytes: &[u8]
+) -> Result<(), Error>
+where W: Write {
+    let mut events = Events::with_capacity(2);
+
+    while {
+        let mut success = false;
+
+        poll.poll(&mut events, None).expect("Expected success");
+
+        for event in events.iter() {
+            if event.token() == session {
+                match stream.write_all(bytes) {
+                    Ok(()) => {
+                        success = true;
+                    }
+                    Err(err) => match err.kind() {
+                        ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
+                        _ => return Err(err)
+                    }
+                }
+            }
+        }
+
+        success
+    } {}
+
+    Ok(())
+}
+
+/// Fully negotiate one session on `channel` represented by `state`.
+///
+/// This will [poll](Poll::poll) on `poll`, ignoring all but `listen`
+/// and then call [start](NearChannel::start) until success.
+///
+/// This is intended primarily for testing and will not function well
+/// in a more general context.
+pub fn negotiate_one<C, R>(
+    channel: &mut C,
+    poll: &mut Poll,
+    state: C::State,
+    session: Token
+) -> Result<R, C::NegotiateError>
+where C: Negotiator<R> {
+    let mut events = Events::with_capacity(2);
+    let mut waiting = true;
+
+    while waiting {
+        poll.poll(&mut events, None).expect("Expected success");
+
+        for event in events.iter() {
+            if event.token() == session {
+                waiting = false
+            }
+        }
+    }
+
+    match channel.negotiate(state)? {
+        NegotiatorResult::Complete(out) => Ok(out),
+        NegotiatorResult::Pending(mut pending) => loop {
+            poll.poll(&mut events, None).expect("Expected success");
+
+            for event in events.iter() {
+                if event.token() == session {
+                    match channel.complete_negotiate(pending)? {
+                        NegotiatorResult::Complete(out) => return Ok(out),
+                        NegotiatorResult::Pending(res) => {
+                            pending = res
+                        }
+                    }
+                }
+            }
         }
     }
 }

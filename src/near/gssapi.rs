@@ -153,7 +153,7 @@ pub enum GSSAPIServerState {
 }
 
 #[derive(Clone)]
-struct ClientGSSAPIParams {
+pub struct ClientGSSAPIParams {
     bindings: Option<Vec<u8>>,
     /// Name of the principal to acquire and use in authentication.
     name: Option<String>,
