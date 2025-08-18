@@ -25,116 +25,7 @@
 //! implementations, unless there is a good reason to impose more
 //! stringent restrictions on what types of channels can be
 //! configured.
-//!
-//! ### Examples
-//!
-//! The following shows an example use of [CompoundNearAcceptor] and
-//! [CompoundNearConnector] establishing a TLS session over TCP (note
-//! that `CLIENT_CONFIG` and `SERVER_CONFIG` can be modified to
-//! support any alternate configuration):
-//!
-//! ```
-//! # use constellation_channels::config::CompoundNearAcceptorConfig;
-//! # use constellation_channels::config::CompoundNearConnectorConfig;
-//! # use constellation_channels::config::tls::TLSClientConfig;
-//! # use constellation_channels::config::tls::TLSServerConfig;
-//! # use constellation_channels::near::NearChannel;
-//! # use constellation_channels::near::NearChannelCreate;
-//! # use constellation_channels::near::NearConnector;
-//! # use constellation_channels::near::compound::CompoundNearAcceptor;
-//! # use constellation_channels::near::compound::CompoundNearConnector;
-//! # use constellation_channels::resolve::cache::SharedNSNameCaches;
-//! # use std::io::Read;
-//! # use std::io::Write;
-//! # use std::thread::spawn;
-//! #
-//! const SERVER_CONF: &'static str = concat!(
-//!     "tls:\n",
-//!     "  cipher-suites:\n",
-//!     "    - TLS_AES_256_GCM_SHA384\n",
-//!     "    - TLS_CHACHA20_POLY1305_SHA256\n",
-//!     "  key-exchange-groups:\n",
-//!     "    - X25519\n",
-//!     "    - P-256\n",
-//!     "  client-auth:\n",
-//!     "    verify: required\n",
-//!     "    trust-root:\n",
-//!     "      root-certs:\n",
-//!     "        - test/data/certs/client/ca_cert.pem\n",
-//!     "      crls: []\n",
-//!     "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-//!     "  key: test/data/certs/server/private/test_server_key.pem\n",
-//!     "  tcp:\n",
-//!     "    addr: ::0\n",
-//!     "    port: 8000\n"
-//! );
-//! const CLIENT_CONF: &'static str = concat!(
-//!     "tls:\n",
-//!     "  cipher-suites:\n",
-//!     "    - TLS_AES_256_GCM_SHA384\n",
-//!     "    - TLS_CHACHA20_POLY1305_SHA256\n",
-//!     "  key-exchange-groups:\n",
-//!     "    - X25519\n",
-//!     "    - P-256\n",
-//!     "  trust-root:\n",
-//!     "    root-certs:\n",
-//!     "      - test/data/certs/server/ca_cert.pem\n",
-//!     "    crls: []\n",
-//!     "  client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
-//!     "  client-key: test/data/certs/client/private/test_client_key.pem\n",
-//!     "  verify-endpoint: test-server.nowhere.com\n",
-//!     "  tcp:\n",
-//!     "    addr: localhost\n",
-//!     "    port: 8000\n"
-//! );
-//! const FIRST_BYTES: [u8; 8] = [ 0x00, 0x01, 0x02, 0x03,
-//!                                0x04, 0x05, 0x06, 0x07 ];
-//! const SECOND_BYTES: [u8; 8] = [ 0x08, 0x09, 0x0a, 0x0b,
-//!                                 0x0c, 0x0d, 0x0e, 0x0f ];
-//!
-//! let client_conf: CompoundNearConnectorConfig<TLSClientConfig> =
-//!     serde_yaml::from_str(&CLIENT_CONF).unwrap();
-//! let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
-//!     serde_yaml::from_str(SERVER_CONF).unwrap();
-//! let nscaches = SharedNSNameCaches::new();
-//!
-//! let mut server_nscaches = nscaches.clone();
-//! let listen = spawn(move || {
-//!     let mut acceptor =
-//!         CompoundNearAcceptor::new(&mut server_nscaches, server_conf)
-//!             .unwrap();
-//!
-//!     let (mut stream, _) =
-//!         acceptor.take_connection().expect("Expected success");
-//!
-//!     let mut buf = [0; FIRST_BYTES.len()];
-//!
-//!     stream.read_exact(&mut buf).unwrap();
-//!     stream.flush().unwrap();
-//!     stream.write_all(&SECOND_BYTES).unwrap();
-//!
-//!     assert_eq!(FIRST_BYTES, buf);
-//! });
-//!
-//! let mut client_nscaches = nscaches.clone();
-//! let send = spawn(move || {
-//!     let mut conn =
-//!         CompoundNearConnector::new(&mut client_nscaches, client_conf)
-//!             .expect("expected success");
-//!     let (mut stream, _) =  conn.connection().expect("expected success");
-//!     let n = stream.write(&FIRST_BYTES).expect("Expected success");
-//!
-//!     let mut buf = [0; SECOND_BYTES.len()];
-//!
-//!     stream.read_exact(&mut buf).unwrap();
-//!
-//!     assert_eq!(FIRST_BYTES.len(), n);
-//!     assert_eq!(SECOND_BYTES, buf);
-//! });
-//!
-//! listen.join().unwrap();
-//! send.join().unwrap();
-//! ```
+
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -170,10 +61,6 @@ use mio::net::UnixStream;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
-#[cfg(feature = "openssl")]
-use openssl::ssl::HandshakeError;
-#[cfg(feature = "openssl")]
-use openssl::ssl::MidHandshakeSslStream;
 
 #[cfg(feature = "tls")]
 use crate::config::tls::TLSLoadClient;
@@ -2161,8 +2048,23 @@ where
 }
 
 #[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
+#[cfg(test)]
 use std::thread::spawn;
 
+#[cfg(test)]
+use mio::Poll;
+
+#[cfg(test)]
+use crate::near::accept_one;
+#[cfg(test)]
+use crate::near::read_one;
+#[cfg(test)]
+use crate::near::write_one;
+#[cfg(test)]
+use crate::near::negotiate_one;
 #[cfg(test)]
 use crate::config::tls::TLSClientConfig;
 #[cfg(test)]
@@ -2177,9 +2079,91 @@ const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 
 #[cfg(test)]
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-/*
+
+#[cfg(test)]
+fn test_compound(
+    server_conf: &str,
+    client_conf: &str
+) {
+    let client_conf: CompoundNearConnectorConfig<TLSClientConfig> =
+        serde_yaml::from_str(client_conf).unwrap();
+    let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
+        serde_yaml::from_str(server_conf).unwrap();
+    let nscaches = SharedNSNameCaches::new();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let server_barrier = barrier.clone();
+    let mut server_nscaches = nscaches.clone();
+    let listen = spawn(move || {
+        let listen = Token(0);
+        let session = Token(1);
+        let mut poll = Poll::new().expect("Expected success");
+        let mut acceptor =
+            CompoundNearAcceptor::new(&mut server_nscaches, server_conf)
+                .expect("Expected success");
+
+        server_barrier.wait();
+
+        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+            .expect("Expected success");
+
+        let start = accept_one(&mut acceptor, &mut poll, listen, session)
+            .expect("Expected success");
+
+        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
+                                            start, session)
+            .expect("Expected success");
+
+        let mut buf = [0; FIRST_BYTES.len()];
+
+        read_one(&mut stream, &mut poll, session, &mut buf)
+            .expect("Expected success");
+
+        write_one(&mut stream, &mut poll, session, &SECOND_BYTES)
+            .expect("Expected success");
+
+        assert_eq!(FIRST_BYTES, buf);
+    });
+
+    let client_barrier = barrier.clone();
+    let mut client_nscaches = nscaches.clone();
+    let send = spawn(move || {
+        let session = Token(0);
+        let mut poll = Poll::new().expect("Expected success");
+        let mut conn =
+            CompoundNearConnector::new(&mut client_nscaches, client_conf)
+                .expect("expected success");
+
+        client_barrier.wait();
+
+        let start = match conn.start(poll.registry(), session)
+            .expect("expected success") {
+            RetryResult::Success(start) => start,
+            RetryResult::Retry(_) => panic!("shouldn't see retry")
+        };
+
+        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
+                                            start, session)
+            .expect("Expected success");
+
+        write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
+            .expect("Expected success");
+
+        let mut buf = [0; SECOND_BYTES.len()];
+
+        read_one(&mut stream, &mut poll, session, &mut buf)
+            .expect("Expected success");
+
+        assert_eq!(SECOND_BYTES, buf);
+    });
+
+    listen.join().unwrap();
+    send.join().unwrap();
+}
+
+
 #[test]
-fn test_compound_tls_unix() {
+fn test_tls_unix() {
     init();
 
     const SERVER_CONF: &'static str = concat!(
@@ -2221,48 +2205,7 @@ fn test_compound_tls_unix() {
         "    path: test_compound_tls_unix.sock"
     );
 
-    let client_conf: CompoundNearConnectorConfig<TLSClientConfig> =
-        serde_yaml::from_str(&CLIENT_CONF).unwrap();
-    let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
-        serde_yaml::from_str(SERVER_CONF).unwrap();
-    let nscaches = SharedNSNameCaches::new();
-
-    let mut server_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            CompoundNearAcceptor::new(&mut server_nscaches, server_conf)
-                .unwrap();
-
-        let (mut stream, _) =
-            acceptor.take_connection().expect("Expected success");
-
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.flush().unwrap();
-        stream.write_all(&SECOND_BYTES).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            CompoundNearConnector::new(&mut client_nscaches, client_conf)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-        let n = stream.write(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        assert_eq!(FIRST_BYTES.len(), n);
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
+    test_compound(SERVER_CONF, CLIENT_CONF)
 }
 
 #[test]
@@ -2310,48 +2253,7 @@ fn test_compound_tls_tcp() {
         "    port: 8002\n"
     );
 
-    let client_conf: CompoundNearConnectorConfig<TLSClientConfig> =
-        serde_yaml::from_str(&CLIENT_CONF).unwrap();
-    let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
-        serde_yaml::from_str(SERVER_CONF).unwrap();
-    let nscaches = SharedNSNameCaches::new();
-
-    let mut server_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            CompoundNearAcceptor::new(&mut server_nscaches, server_conf)
-                .unwrap();
-
-        let (mut stream, _) =
-            acceptor.take_connection().expect("Expected success");
-
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.flush().unwrap();
-        stream.write_all(&SECOND_BYTES).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            CompoundNearConnector::new(&mut client_nscaches, client_conf)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-        let n = stream.write(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        assert_eq!(FIRST_BYTES.len(), n);
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
+    test_compound(SERVER_CONF, CLIENT_CONF)
 }
 
 #[test]
@@ -2428,47 +2330,5 @@ fn test_compound_double_tls() {
         "      port: 8003\n"
     );
 
-    let client_conf: CompoundNearConnectorConfig<TLSClientConfig> =
-        serde_yaml::from_str(&CLIENT_CONF).unwrap();
-    let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
-        serde_yaml::from_str(SERVER_CONF).unwrap();
-    let nscaches = SharedNSNameCaches::new();
-
-    let mut server_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            CompoundNearAcceptor::new(&mut server_nscaches, server_conf)
-                .unwrap();
-
-        let (mut stream, _) =
-            acceptor.take_connection().expect("Expected success");
-
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.flush().unwrap();
-        stream.write_all(&SECOND_BYTES).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            CompoundNearConnector::new(&mut client_nscaches, client_conf)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-        let n = stream.write(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        assert_eq!(FIRST_BYTES.len(), n);
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
+    test_compound(SERVER_CONF, CLIENT_CONF)
 }
-*/

@@ -176,6 +176,7 @@ use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
 use log::error;
+use log::trace;
 use mio::event::Source;
 use mio::Events;
 use mio::Poll;
@@ -832,6 +833,9 @@ where C: NearChannel {
         if retry.is_none_or(|when| now < when) {
             let when = retry.map(|when| when - now);
 
+            trace!(target: "negotiate-one",
+                   "polling");
+
             poll.poll(&mut events, when).expect("Expected success");
         }
 
@@ -840,12 +844,24 @@ where C: NearChannel {
         retry = None;
 
         for event in events.iter() {
+            trace!(target: "negotiate-one",
+                   "event for token {:?}", event.token());
+
             if event.token() == listen {
+                trace!(target: "negotiate-one",
+                       "accepting connection");
+
                 match channel.start(poll.registry(), session) {
                     Ok(RetryResult::Success(start)) => {
+                        trace!(target: "negotiate-one",
+                               "got incoming connection");
+
                         out = Some(start)
                     }
                     Ok(RetryResult::Retry(delay)) => {
+                        trace!(target: "negotiate-one",
+                               "got retry");
+
                         retry = Some(delay)
                     }
                     Err(err) => if err.scope() != ErrorScope::Retryable {
@@ -877,29 +893,50 @@ pub fn read_one<R>(
 where R: Read {
     let mut events = Events::with_capacity(2);
 
-    while {
-        let mut success = false;
+    trace!(target: "negotiate-one",
+           "trying to read without polling");
 
-        poll.poll(&mut events, None).expect("Expected success");
+    match stream.read_exact(buf) {
+        Ok(()) => {
+            trace!(target: "negotiate-one",
+                   "successfully read");
 
-        for event in events.iter() {
-            if event.token() == session {
-                match stream.read_exact(buf) {
-                    Ok(()) => {
-                        success = true;
-                    }
-                    Err(err) => match err.kind() {
-                        ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
-                        _ => return Err(err)
+            Ok(())
+        }
+        Err(err) => match err.kind() {
+            ErrorKind::WouldBlock | ErrorKind::Interrupted => loop {
+                trace!(target: "negotiate-one",
+                       "polling");
+
+                poll.poll(&mut events, None).expect("Expected success");
+
+                for event in events.iter() {
+                    trace!(target: "negotiate-one",
+                           "event for token {:?}", event.token());
+
+                    if event.token() == session {
+                        trace!(target: "negotiate-one",
+                               "reading bytes");
+
+                        match stream.read_exact(buf) {
+                            Ok(()) => {
+                                return Ok(())
+                            }
+                            Err(err) => match err.kind() {
+                                ErrorKind::WouldBlock |
+                                ErrorKind::Interrupted => {
+                                    trace!(target: "negotiate-one",
+                                           "got EWOULDBLOCK");
+                                }
+                                _ => return Err(err)
+                            }
+                        }
                     }
                 }
             }
+            _ => Err(err)
         }
-
-        success
-    } {}
-
-    Ok(())
+    }
 }
 
 /// Write a buffer to a [Write] instance.
@@ -918,29 +955,48 @@ pub fn write_one<W>(
 where W: Write {
     let mut events = Events::with_capacity(2);
 
-    while {
-        let mut success = false;
+    trace!(target: "negotiate-one",
+           "trying to send without polling");
 
-        poll.poll(&mut events, None).expect("Expected success");
+    match stream.write_all(bytes) {
+        Ok(()) => {
+            trace!(target: "negotiate-one",
+                   "successfully sent");
 
-        for event in events.iter() {
-            if event.token() == session {
-                match stream.write_all(bytes) {
-                    Ok(()) => {
-                        success = true;
-                    }
-                    Err(err) => match err.kind() {
-                        ErrorKind::WouldBlock | ErrorKind::Interrupted => {}
-                        _ => return Err(err)
+            Ok(())
+        }
+        Err(err) => match err.kind() {
+            ErrorKind::WouldBlock |
+            ErrorKind::Interrupted => loop {
+                poll.poll(&mut events, None).expect("Expected success");
+
+                for event in events.iter() {
+                    trace!(target: "negotiate-one",
+                           "event for token {:?}", event.token());
+
+                    if event.token() == session {
+                        trace!(target: "negotiate-one",
+                               "sending bytes");
+
+                        match stream.write_all(bytes) {
+                            Ok(()) => {
+                                return Ok(())
+                            }
+                            Err(err) => match err.kind() {
+                                ErrorKind::WouldBlock |
+                                ErrorKind::Interrupted => {
+                                    trace!(target: "negotiate-one",
+                                           "got EWOULDBLOCK");
+                                }
+                                _ => return Err(err)
+                            }
+                        }
                     }
                 }
             }
+            _ => Err(err)
         }
-
-        success
-    } {}
-
-    Ok(())
+    }
 }
 
 /// Fully negotiate one session on `channel` represented by `state`.
@@ -961,24 +1017,58 @@ where C: Negotiator<R> {
     let mut waiting = true;
 
     while waiting {
+        trace!(target: "negotiate-one",
+               "polling");
+
         poll.poll(&mut events, None).expect("Expected success");
 
+        trace!(target: "negotiate-one",
+               "polling returned");
+
         for event in events.iter() {
+            trace!(target: "negotiate-one",
+                   "event for token {:?}", event.token());
+
             if event.token() == session {
                 waiting = false
             }
         }
     }
 
+    trace!(target: "negotiate-one",
+           "starting negotiation");
+
     match channel.negotiate(state)? {
-        NegotiatorResult::Complete(out) => Ok(out),
+        NegotiatorResult::Complete(out) => {
+            trace!(target: "negotiate-one",
+                   "negotiation is complete");
+
+            Ok(out)
+        },
         NegotiatorResult::Pending(mut pending) => loop {
+            trace!(target: "negotiate-one",
+                   "polling");
+
             poll.poll(&mut events, None).expect("Expected success");
 
+            trace!(target: "negotiate-one",
+                   "polling returned");
+
             for event in events.iter() {
+                trace!(target: "negotiate-one",
+                       "event for token {:?}", event.token());
+
                 if event.token() == session {
+                    trace!(target: "negotiate-one",
+                           "continuing negotiation");
+
                     match channel.complete_negotiate(pending)? {
-                        NegotiatorResult::Complete(out) => return Ok(out),
+                        NegotiatorResult::Complete(out) => {
+                            trace!(target: "negotiate-one",
+                                   "negotiation is complete");
+
+                            return Ok(out)
+                        }
                         NegotiatorResult::Pending(res) => {
                             pending = res
                         }

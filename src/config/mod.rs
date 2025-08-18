@@ -2890,6 +2890,7 @@ impl TCPNearConnectorConfig {
     /// # use constellation_channels::config::ResolverConfig;
     /// # use constellation_channels::config::TCPNearConnectorConfig;
     /// # use std::path::PathBuf;
+    /// # use std::time::Duration;
     /// #
     /// let yaml = concat!("addr: test.example.com\n",
     ///                    "port: 5015\n",
@@ -2898,28 +2899,32 @@ impl TCPNearConnectorConfig {
     ///                    "    - ipv6\n",
     ///                    "  renewal: 10800\n",
     ///                    "  retry:\n",
-    ///                    "    factor: 400\n",
+    ///                    "    factor: 400ms\n",
     ///                    "    exp-base: 2.0\n",
     ///                    "    exp-factor: 2.0\n",
     ///                    "    exp-rounds-cap: 40\n",
     ///                    "    linear-factor: 2.0\n",
-    ///                    "    max-random: 500\n",
-    ///                    "    addend: 25\n",
+    ///                    "    max-random: 500ms\n",
+    ///                    "    addend: 25ms\n",
     ///                    "retry:\n",
-    ///                    "  factor: 100\n",
+    ///                    "  factor: 100ms\n",
     ///                    "  exp-base: 2.0\n",
     ///                    "  exp-factor: 1.0\n",
     ///                    "  exp-rounds-cap: 20\n",
     ///                    "  linear-factor: 1.0\n",
     ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100\n",
-    ///                    "  addend: 50\n");
+    ///                    "  max-random: 100ms\n",
+    ///                    "  addend: 50ms\n");
     /// let endpoint = IPEndpointAddr::name(String::from("test.example.com"));
     /// let endpoint = IPEndpoint::new(endpoint, 5015);
-    /// let retry = Retry::new(400, 2.0, 2.0, 40, 2.0, None, 500, 25);
+    /// let retry = Retry::new(Duration::from_millis(400), 2.0, 2.0,
+    ///                        40, 2.0, None, Duration::from_millis(500),
+    ///                        Duration::from_millis(25));
     /// let resolve = AddrsConfig::new(vec![ AddrKind::IPv6 ],
     ///                                ResolverConfig::new(10800, retry));
-    /// let retry = Retry::new(100, 2.0, 1.0, 20, 1.0, Some(50), 100, 50);
+    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
+    ///                        20, 1.0, Some(50), Duration::from_millis(100),
+    ///                        Duration::from_millis(50));
     ///
     /// assert_eq!(
     ///     TCPNearConnectorConfig::new(endpoint, resolve, retry),
@@ -3233,20 +3238,23 @@ impl UnixNearConnectorConfig {
     /// # use constellation_channels::config::UnixNearChannelConfig;
     /// # use constellation_channels::config::UnixNearConnectorConfig;
     /// # use std::path::PathBuf;
+    /// # use std::time::Duration;
     /// #
     /// let yaml = concat!("path: /var/run/test/test.sock\n",
     ///                    "retry:\n",
-    ///                    "  factor: 100\n",
+    ///                    "  factor: 100ms\n",
     ///                    "  exp-base: 2.0\n",
     ///                    "  exp-factor: 1.0\n",
     ///                    "  exp-rounds-cap: 20\n",
     ///                    "  linear-factor: 1.0\n",
     ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100\n",
-    ///                    "  addend: 50\n");
+    ///                    "  max-random: 100ms\n",
+    ///                    "  addend: 50ms\n");
     /// let path = PathBuf::from("/var/run/test/test.sock");
     /// let channel = UnixNearChannelConfig::new(path);
-    /// let retry = Retry::new(100, 2.0, 1.0, 20, 1.0, Some(50), 100, 50);
+    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0, 20,
+    ///                        1.0, Some(50), Duration::from_millis(100),
+    ///                        Duration::from_millis(50));
     ///
     /// assert_eq!(
     ///     UnixNearConnectorConfig::new(channel, retry),
