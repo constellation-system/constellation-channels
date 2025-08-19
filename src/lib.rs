@@ -54,7 +54,7 @@
 //!    details.
 pub mod addrs;
 pub mod config;
-//pub mod far;
+pub mod far;
 pub mod near;
 pub mod resolve;
 #[cfg(feature = "unix")]

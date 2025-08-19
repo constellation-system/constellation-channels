@@ -178,11 +178,11 @@ use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
 use crate::unix::UnixSocketAddr;
 
-pub mod compound;
+//pub mod compound;
 #[cfg(feature = "dtls")]
 pub mod dtls;
 pub mod flows;
-pub mod registry;
+//pub mod registry;
 #[cfg(feature = "socks5")]
 pub mod socks5;
 pub mod udp;
