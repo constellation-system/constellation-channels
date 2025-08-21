@@ -167,12 +167,14 @@ use constellation_common::net::Sender;
 use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
+use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
+use crate::far::flows::BufferedFlow;
+use crate::far::flows::Flow;
 use crate::far::flows::Flows;
-use crate::far::flows::MsgBuf;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
@@ -375,7 +377,7 @@ pub trait FarChannelSocket: Sized {
     /// Type of parameters used to create sockets.
     type Param;
     /// Type of basic sockets created by the channel.
-    type Socket: Receiver + Sender + Socket + Send + Sync;
+    type Socket: Receiver + Sender + Socket + Source;
     /// Type of errors that can occur in socket creation.
     type SocketError: Display + ScopedError;
     /// Create a basic socket.
@@ -422,7 +424,7 @@ where
     ///
     /// This can be the same as `InnerXfrm`, or it can be its own
     /// type derived from `InnerXfrme`
-    type Xfrm: DatagramXfrm;
+    type Xfrm: DatagramXfrm<LocalAddr = <Self::Socket as Socket>::Addr>;
     /// Type of errors that can be returned from
     /// [wrap_xfrm](FarChannelXfrm::wrap_xfrm).
     type XfrmError: Display + ScopedError;
@@ -484,8 +486,15 @@ pub trait FarChannelFlows<InnerXfrm>:
     + FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm {
-    type InboundNego: NegotiatorStart<MsgBuf>;
-    type OutboundNego: NegotiatorStart<MsgBuf>;
+    type InboundNego: NegotiatorStart<
+        Self::Flow,
+        BufferedFlow<Self::Socket, Self::Xfrm>
+    >;
+    type OutboundNego: NegotiatorStart<
+        Self::Flow,
+        BufferedFlow<Self::Socket, Self::Xfrm>
+    >;
+    type Flow: Flow;
 
     /// Create a traffic splitter instance around a socket created by
     /// this channel.
@@ -500,7 +509,7 @@ where
         param: Self::Param,
         xfrm: InnerXfrm,
     ) -> Result<
-        Flows<Self::Socket, Self::InboundNego, Self::OutboundNego, Self::Xfrm>,
+        Flows<Self::Flow, Self::Socket, Self::InboundNego, Self::OutboundNego, Self::Xfrm>,
         FarChannelFlowsError<
             Self::SocketError,
             Self::XfrmError
@@ -512,9 +521,10 @@ where
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let nego = self.negotiator();
+        let inbound_nego = self.inbound_negotiator();
+        let outbound_nego = self.outbound_negotiator();
 
-        Flows::create(config, socket, nego, xfrm)
+        Ok(Flows::create(config, socket, inbound_nego, outbound_nego, xfrm))
     }
 }
 

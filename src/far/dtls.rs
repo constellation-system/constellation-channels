@@ -394,7 +394,7 @@ where
                               <Inner::OutboundNego as Negotiator>::Outcome>;
 }
 
-impl <F, Inner> Negotiator for DTLSInboundNegotiator<Inner, F>
+impl <F, Inner> Negotiator<> for DTLSInboundNegotiator<Inner, F>
 where
     F: Credentials + Flow + Read + Write,
     Inner: NegotiatorStart<F>
@@ -736,12 +736,6 @@ use constellation_common::net::PassthruDatagramXfrm;
 
 #[cfg(test)]
 use crate::config::UDPFarChannelConfig;
-#[cfg(test)]
-use crate::far::flows::BorrowedFlows;
-#[cfg(test)]
-use crate::far::flows::MultiFlows;
-#[cfg(test)]
-use crate::far::flows::SingleFlow;
 #[cfg(test)]
 use crate::far::udp::UDPFarChannel;
 #[cfg(test)]

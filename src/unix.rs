@@ -47,7 +47,7 @@ pub struct UnixSocketAddr(SocketAddr);
 ///
 /// This is primarily to deal with the fact that `PathBuf` does not
 /// have a [Display] instance.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct UnixSocketPath(PathBuf);
 
 impl Display for UnixSocketAddr {

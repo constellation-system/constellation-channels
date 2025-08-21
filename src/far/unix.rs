@@ -58,14 +58,12 @@ use std::fs::remove_file;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
-use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::os::unix::net::UCred;
 
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
-use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::PassthruNegotiator;
@@ -82,6 +80,7 @@ use mio::Registry;
 use mio::Token;
 
 use crate::config::UnixFarChannelConfig;
+use crate::far::flows::BufferedFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
@@ -89,7 +88,7 @@ use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::unix::UnixSocketAddr;
+use crate::unix::UnixSocketPath;
 
 /// Unix socket far-link channel.
 ///
@@ -134,7 +133,7 @@ use crate::unix::UnixSocketAddr;
 /// ```
 pub struct UnixFarChannel {
     /// The address to which to bind.
-    bind: UnixSocketAddr
+    bind: UnixSocketPath
 }
 
 /// Wrapper around a [UnixDatagram].
@@ -163,8 +162,8 @@ impl Default for UnixDatagramXfrm {
 
 impl DatagramXfrm for UnixDatagramXfrm {
     type Error = Infallible;
-    type LocalAddr = UnixSocketAddr;
-    type PeerAddr = UnixSocketAddr;
+    type LocalAddr = UnixSocketPath;
+    type PeerAddr = UnixSocketPath;
     type SizeError = Infallible;
 
     #[inline]
@@ -205,35 +204,21 @@ impl DatagramXfrm for UnixDatagramXfrm {
 }
 
 impl DatagramXfrmCreate for UnixDatagramXfrm {
-    type Addr = UnixSocketAddr;
+    type Addr = UnixSocketPath;
     type CreateParam = ();
 
     #[inline]
     fn create(
-        _addr: &UnixSocketAddr,
+        _addr: &UnixSocketPath,
         _param: &()
     ) -> Self {
         UnixDatagramXfrm
     }
 }
 
-impl DatagramXfrmCreateParam for UnixDatagramXfrm {
-    type Param = UnixSocketAddr;
-    type ParamError = Error;
-    type Socket = UnixDatagramSocket;
-
-    #[inline]
-    fn param(
-        &self,
-        socket: &Self::Socket
-    ) -> Result<Self::Param, Self::ParamError> {
-        socket.socket.local_addr().map(UnixSocketAddr::from)
-    }
-}
-
 impl FarChannel for UnixFarChannel {
-    type Acquired = UnixSocketAddr;
-    type State = UnixSocketAddr;
+    type Acquired = UnixSocketPath;
+    type State = UnixSocketPath;
     type AcquireError = Infallible;
     type NegotiateError = Infallible;
 
@@ -247,7 +232,7 @@ impl FarChannel for UnixFarChannel {
     }
 
     #[inline]
-    fn acquire(&mut self) -> Result<RetryResult<UnixSocketAddr>, Infallible> {
+    fn acquire(&mut self) -> Result<RetryResult<UnixSocketPath>, Infallible> {
         Ok(RetryResult::Success(self.bind.clone()))
     }
 
@@ -269,14 +254,14 @@ impl FarChannel for UnixFarChannel {
 }
 
 impl FarChannelSocket for UnixFarChannel {
-    type Param = UnixSocketAddr;
+    type Param = UnixSocketPath;
     type Socket = UnixDatagramSocket;
     type SocketError = Error;
 
     #[inline]
     fn socket(
         &self,
-        param: &UnixSocketAddr
+        param: &UnixSocketPath
     ) -> Result<UnixDatagramSocket, Error> {
         let socket = UnixDatagram::bind_addr(param.into())?;
 
@@ -295,7 +280,7 @@ impl FarChannelCreate for UnixFarChannel {
     ) -> Result<Self, Error>
     where
         Ctx: NSNameCachesCtx {
-        let addr = UnixSocketAddr::try_from(config.path())?;
+        let addr = UnixSocketPath::try_from(config.path())?;
 
         Ok(UnixFarChannel { bind: addr })
     }
@@ -303,7 +288,7 @@ impl FarChannelCreate for UnixFarChannel {
 
 impl<Xfrm> FarChannelXfrm<Xfrm> for UnixFarChannel
 where
-    Xfrm: DatagramXfrm
+    Xfrm: DatagramXfrm<LocalAddr = UnixSocketPath>
 {
     type Xfrm = Xfrm;
     type XfrmError = Infallible;
@@ -322,25 +307,22 @@ impl FarChannelNegotiator<PassthruNegotiator, PassthruNegotiator>
     for UnixFarChannel {
     #[inline]
     fn inbound_negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator {
-            stream: PhantomData
-        }
+        PassthruNegotiator
     }
 
     #[inline]
     fn outbound_negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator {
-            stream: PhantomData
-        }
+        PassthruNegotiator
     }
 }
 
 impl<InnerXfrm> FarChannelFlows<InnerXfrm> for UnixFarChannel
 where
-    InnerXfrm: DatagramXfrm
+    InnerXfrm: DatagramXfrm<LocalAddr = UnixSocketPath>
 {
     type OutboundNego = PassthruNegotiator;
     type InboundNego = PassthruNegotiator;
+    type Flow = BufferedFlow<Self::Socket, Self::Xfrm>;
 }
 
 impl Drop for UnixDatagramSocket {
@@ -374,7 +356,7 @@ impl Drop for UnixDatagramSocket {
     }
 }
 
-impl Source for UnixDatagramFlows {
+impl Source for UnixDatagramSocket {
     #[inline]
     fn register(
         &mut self,
@@ -405,13 +387,13 @@ impl Source for UnixDatagramFlows {
 }
 
 impl Socket for UnixDatagramSocket {
-    type Addr = UnixSocketAddr;
+    type Addr = UnixSocketPath;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::Addr, Error> {
         let addr = self.socket.local_addr()?;
 
-        Ok(UnixSocketAddr::from(addr))
+        Ok(UnixSocketPath::from(addr))
     }
 
     #[inline]
@@ -427,7 +409,7 @@ impl Sender for UnixDatagramSocket {
         addr: &Self::Addr,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        self.socket.send_to_addr(buf, addr.as_ref())
+        self.socket.send_to(buf, addr.as_ref())
     }
 
     fn send_to_vectored(
@@ -468,7 +450,7 @@ impl Receiver for UnixDatagramSocket {
     ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
         let (nbytes, addr) = self.socket.recv_from(buf)?;
 
-        Ok((nbytes, UnixSocketAddr::from(addr), None))
+        Ok((nbytes, UnixSocketPath::from(addr), None))
     }
 
     fn recv_from_vectored(
@@ -503,7 +485,7 @@ impl Receiver for UnixDatagramSocket {
     ) -> Result<(usize, Self::Addr), Error> {
         let (nbytes, addr) = self.socket.peek_from(buf)?;
 
-        Ok((nbytes, UnixSocketAddr::from(addr)))
+        Ok((nbytes, UnixSocketPath::from(addr)))
     }
 }
 
