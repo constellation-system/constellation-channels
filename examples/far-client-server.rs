@@ -89,8 +89,6 @@ fn client() {
         SocketAddr::new(server_config.addr().clone(), server_config.port());
     let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
-    let session = Token(0);
-    let mut poll = Poll::new().expect("Expected success");
     let mut conn =
         UDPFarChannel::new(&mut nscaches, client_config)
         .expect("expected success");

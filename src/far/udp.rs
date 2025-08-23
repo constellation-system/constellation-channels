@@ -229,22 +229,6 @@ impl FarChannel for UDPFarChannel {
     fn acquire(&mut self) -> Result<RetryResult<SocketAddr>, Infallible> {
         Ok(RetryResult::Success(self.bind))
     }
-
-    #[inline]
-    fn negotiate(
-        &self,
-        state: Self::State
-    ) -> Result<Self::Acquired, Self::NegotiateError> {
-        Ok(state)
-    }
-
-    #[inline]
-    fn complete_negotiate(
-        &self,
-        _err: Infallible
-    ) -> Result<Self::Acquired, Self::NegotiateError> {
-        panic!("This should never be called!")
-    }
 }
 
 impl FarChannelSocket for UDPFarChannel {
@@ -523,14 +507,15 @@ fn test_send_recv() {
 
         server_barrier.wait();
 
-        let (mut flow, peer_addr) = accept_one(&mut flows, &mut poll, token)
+        let (mut flow, peer_addr) =
+            accept_one(&mut flows, &mut poll, &(), token)
             .expect("Expected success");
 
         server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
         let nbytes = read_one(&mut flows, &mut poll, &mut flow,
-                              &mut buf, &peer_addr, token)
+                              &mut buf, &peer_addr, &(), token)
             .expect("Expected success");
 
         write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
@@ -567,7 +552,7 @@ fn test_send_recv() {
 
         client_barrier.wait();
 
-        let mut flow = flows.flow(server_addr.clone())
+        let mut flow = flows.flow(&(), server_addr.clone())
             .expect("Expected success")
             .expect("Expected some");
 
@@ -580,7 +565,7 @@ fn test_send_recv() {
         let mut buf = [0; SECOND_BYTES.len()];
 
         let nbytes = read_one(&mut flows, &mut poll, &mut flow,
-                              &mut buf, &server_addr, token)
+                              &mut buf, &server_addr, &(), token)
             .expect("Expected success");
 
         assert_eq!(SECOND_BYTES.len(), nbytes);

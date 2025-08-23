@@ -830,6 +830,7 @@ where
                 }
                 None => String::new()
             }
+            // XXX This should probably produce an error.
             IPEndpointAddr::Addr(_) => String::new()
         };
         let inner = Conn::new(caches, endpoint)

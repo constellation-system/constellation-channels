@@ -442,6 +442,7 @@ where
 
     pub fn listen(
         &mut self,
+        param: &InboundNego::Param,
     ) -> Result<Option<ListenResult<F, Xfrm::PeerAddr>>,
                 FlowsListenError<Xfrm::Error, InboundNego::StartError,
                                  InboundNego::NegotiateError,
@@ -540,7 +541,7 @@ where
                     outbuf: self.outbuf.clone(),
                     inbuf: buf.clone()
                 };
-                let nego = self.inbound_nego.start(flow)
+                let nego = self.inbound_nego.start(param, flow)
                     .map_err(|err| FlowsListenError::Start { err: err })?;
 
                 // Short-circuit: try to negotiate immediately.
@@ -668,6 +669,7 @@ where
 
     pub fn flow(
         &mut self,
+        param: &OutboundNego::Param,
         addr: Xfrm::PeerAddr,
     ) -> Result<Option<F>,
                 FlowsFlowError<OutboundNego::StartError,
@@ -726,7 +728,7 @@ where
             inbuf: buf.clone()
         };
 
-        let nego = self.outbound_nego.start(flow)
+        let nego = self.outbound_nego.start(param, flow)
             .map_err(|err| FlowsFlowError::Start { err: err })?;
 
         // Try to negotiate immediately.
@@ -1000,11 +1002,11 @@ where
     }
 }
 
-
 pub fn accept_one<F, Sock, InboundNego, OutboundNego, Xfrm>(
     flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
-    token: Token
+    param: &InboundNego::Param,
+    token: Token,
 ) -> Result<(F, Xfrm::PeerAddr),
             FlowsListenError<Xfrm::Error, InboundNego::StartError,
                              InboundNego::NegotiateError,
@@ -1029,7 +1031,7 @@ where
                    "event for token {:?}", event.token());
 
             if event.token() == token {
-                match flows.listen() {
+                match flows.listen(param) {
                     Ok(Some(ListenResult::New { endpoint, flow })) => {
                         return Ok((flow, endpoint));
                     }
@@ -1106,6 +1108,7 @@ pub fn read_one<R, F, Sock, InboundNego, OutboundNego, Xfrm>(
     stream: &mut R,
     buf: &mut [u8],
     addr: &Xfrm::PeerAddr,
+    param: &InboundNego::Param,
     token: Token
 ) -> Result<usize, Error>
 where
@@ -1143,7 +1146,7 @@ where
                             trace!(target: "accept-one",
                                    "listening");
 
-                            match flows.listen() {
+                            match flows.listen(param) {
                                 Ok(Some(ListenResult::Existing { endpoint }))
                                     if addr == &endpoint => {
                                         waiting = false;

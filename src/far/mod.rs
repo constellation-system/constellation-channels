@@ -359,18 +359,6 @@ pub trait FarChannel: Sized {
         &self,
         val: &Self::Acquired
     ) -> Result<IPEndpoint, Error>;
-
-    /// Perform negotiations.
-    fn negotiate(
-        &self,
-        state: Self::State
-    ) -> Result<Self::Acquired, Self::NegotiateError>;
-
-    /// Complete a failed negotiation.
-    fn complete_negotiate(
-        &self,
-        err: <Self::NegotiateError as RecoverableError>::Completable
-    ) -> Result<Self::Acquired, Self::NegotiateError>;
 }
 
 pub trait FarChannelSocket: Sized {
