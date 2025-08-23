@@ -29,6 +29,7 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::Error;
+use std::io::ErrorKind;
 use std::os::unix::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
@@ -166,6 +167,91 @@ impl TryFrom<UnixSocketPath> for UnixSocketAddr {
     }
 }
 
+impl From<&'_ str> for UnixSocketPath {
+    #[inline]
+    fn from(val: &str) -> UnixSocketPath {
+        UnixSocketPath(PathBuf::from(val))
+    }
+}
+
+impl From<String> for UnixSocketPath {
+    #[inline]
+    fn from(val: String) -> UnixSocketPath {
+        UnixSocketPath(PathBuf::from(val))
+    }
+}
+
+impl From<&'_ Path> for UnixSocketPath {
+    #[inline]
+    fn from(val: &Path) -> UnixSocketPath {
+        UnixSocketPath(PathBuf::from(val))
+    }
+}
+
+impl From<&'_ PathBuf> for UnixSocketPath {
+    #[inline]
+    fn from(val: &PathBuf) -> UnixSocketPath {
+        UnixSocketPath(val.clone())
+    }
+}
+
+impl From<PathBuf> for UnixSocketPath {
+    #[inline]
+    fn from(val: PathBuf) -> UnixSocketPath {
+        UnixSocketPath(val)
+    }
+}
+
+impl From<UnixSocketPath> for PathBuf {
+    #[inline]
+    fn from(val: UnixSocketPath) -> PathBuf {
+        val.0
+    }
+}
+
+impl TryFrom<&'_ UnixSocketPath> for SocketAddr {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: &UnixSocketPath) -> Result<SocketAddr, Error> {
+        SocketAddr::from_pathname(&val.0)
+    }
+}
+
+impl TryFrom<UnixSocketPath> for SocketAddr {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: UnixSocketPath) -> Result<SocketAddr, Error> {
+        SocketAddr::from_pathname(&val.0)
+    }
+}
+
+
+impl TryFrom<&'_ SocketAddr> for UnixSocketPath {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: &SocketAddr) -> Result<UnixSocketPath, Error> {
+        let path = val.as_pathname()
+            .ok_or(Error::new(ErrorKind::Other, "anonymous socket address"))?;
+
+        Ok(UnixSocketPath(path.to_owned()))
+    }
+}
+
+impl TryFrom<SocketAddr> for UnixSocketPath {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: SocketAddr) -> Result<UnixSocketPath, Error> {
+        let path = val.as_pathname()
+            .ok_or(Error::new(ErrorKind::Other, "anonymous socket address"))?;
+
+        Ok(UnixSocketPath(path.to_owned()))
+    }
+}
+
 impl Hash for UnixSocketAddr {
     #[inline]
     fn hash<H>(
@@ -239,19 +325,5 @@ impl Display for UnixSocketPath {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         self.0.to_string_lossy().fmt(f)
-    }
-}
-
-impl From<PathBuf> for UnixSocketPath {
-    #[inline]
-    fn from(val: PathBuf) -> UnixSocketPath {
-        UnixSocketPath(val)
-    }
-}
-
-impl From<UnixSocketPath> for PathBuf {
-    #[inline]
-    fn from(val: UnixSocketPath) -> PathBuf {
-        val.0
     }
 }

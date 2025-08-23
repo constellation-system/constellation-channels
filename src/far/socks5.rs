@@ -168,7 +168,6 @@ use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
-use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::near::NearChannelCreate;

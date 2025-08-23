@@ -185,8 +185,8 @@ use crate::unix::UnixSocketAddr;
 pub mod dtls;
 pub mod flows;
 //pub mod registry;
-#[cfg(feature = "socks5")]
-pub mod socks5;
+//#[cfg(feature = "socks5")]
+//pub mod socks5;
 pub mod udp;
 #[cfg(feature = "unix")]
 pub mod unix;
@@ -442,15 +442,6 @@ where
     ) -> Result<Self::Xfrm, Self::XfrmError>;
 }
 
-/// Trait for obtaining an instance of a negotiator for a [FarChannel].
-pub trait FarChannelNegotiator<InboundNego, OutboundNego> {
-    /// Create a negotiator for establishing a traffic splitter instance.
-    fn inbound_negotiator(&self) -> InboundNego;
-
-    /// Create a negotiator for establishing a traffic splitter instance.
-    fn outbound_negotiator(&self) -> OutboundNego;
-}
-
 /// Trait for [FarChannel]s that can construct
 /// [BorrowedFlows](crate::far::flows::BorrowedFlows) instances.
 ///
@@ -481,11 +472,10 @@ pub trait FarChannelNegotiator<InboundNego, OutboundNego> {
 /// [Nego](FarChannelBorrowFlows::Nego) type definition; the default
 /// implementation of [owned_flows](FarChannelBorrowFlows::borrowed_flows)
 /// shoul be sufficient for all purposes.
-pub trait FarChannelFlows<InnerXfrm>:
-    FarChannelNegotiator<Self::InboundNego, Self::OutboundNego>
-    + FarChannelXfrm<InnerXfrm>
+pub trait FarChannelFlows<InnerXfrm>: FarChannelXfrm<InnerXfrm>
 where
     InnerXfrm: DatagramXfrm {
+    type Flow: Flow;
     type InboundNego: NegotiatorStart<
         Self::Flow,
         BufferedFlow<Self::Socket, Self::Xfrm>
@@ -494,7 +484,18 @@ where
         Self::Flow,
         BufferedFlow<Self::Socket, Self::Xfrm>
     >;
-    type Flow: Flow;
+    type InboundNegoError: Display + ScopedError;
+    type OutboundNegoError: Display + ScopedError;
+
+    /// Create a negotiator for establishing a traffic splitter instance.
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError>;
+
+    /// Create a negotiator for establishing a traffic splitter instance.
+    fn outbound_negotiator(
+        &self
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError>;
 
     /// Create a traffic splitter instance around a socket created by
     /// this channel.
@@ -509,10 +510,13 @@ where
         param: Self::Param,
         xfrm: InnerXfrm,
     ) -> Result<
-        Flows<Self::Flow, Self::Socket, Self::InboundNego, Self::OutboundNego, Self::Xfrm>,
+        Flows<Self::Flow, Self::Socket, Self::InboundNego,
+              Self::OutboundNego, Self::Xfrm>,
         FarChannelFlowsError<
             Self::SocketError,
-            Self::XfrmError
+            Self::XfrmError,
+            Self::InboundNegoError,
+            Self::OutboundNegoError
         >
     > {
         let socket = self
@@ -521,8 +525,10 @@ where
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let inbound_nego = self.inbound_negotiator();
-        let outbound_nego = self.outbound_negotiator();
+        let inbound_nego = self.inbound_negotiator()
+            .map_err(|e| FarChannelFlowsError::InboundNego { err: e })?;
+        let outbound_nego = self.outbound_negotiator()
+            .map_err(|e| FarChannelFlowsError::OutboundNego { err: e })?;
 
         Ok(Flows::create(config, socket, inbound_nego, outbound_nego, xfrm))
     }
@@ -559,7 +565,7 @@ pub enum AcquiredResolveStaticError {
 /// Multiplexer for errors that can occur when creating a
 /// traffic splitter instance.
 #[derive(Debug)]
-pub enum FarChannelFlowsError<Socket, Xfrm> {
+pub enum FarChannelFlowsError<Socket, Xfrm, InboundNego, OutboundNego> {
     /// Error occurred while wrapping the inner [DatagramXfrm] instance.
     Xfrm {
         /// The error occurred while wrapping the inner
@@ -570,7 +576,18 @@ pub enum FarChannelFlowsError<Socket, Xfrm> {
     Socket {
         /// The error that occurred while obtaining the socket.
         socket: Socket
+    },
+    /// Error occurred creating the outbound negotiator.
+    OutboundNego {
+        /// The error that occurred creating the outbound negotiator.
+        err: OutboundNego
+    },
+    /// Error occurred creating the inbound negotiator.
+    InboundNego {
+        /// The error that occurred creating the inbound negotiator.
+        err: InboundNego
     }
+
 }
 
 impl ScopedError for AcquiredResolveStaticError {
@@ -646,23 +663,31 @@ impl FarChannelAcquiredResolve for UnixSocketAddr {
     }
 }
 
-impl<Socket, Xfrm> ScopedError for FarChannelFlowsError<Socket, Xfrm>
+impl<Socket, Xfrm, InboundNego, OutboundNego> ScopedError
+    for FarChannelFlowsError<Socket, Xfrm, InboundNego, OutboundNego>
 where
     Socket: ScopedError,
-    Xfrm: ScopedError
+    Xfrm: ScopedError,
+    InboundNego: ScopedError,
+    OutboundNego: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.scope(),
-            FarChannelFlowsError::Socket { socket } => socket.scope()
+            FarChannelFlowsError::Socket { socket } => socket.scope(),
+            FarChannelFlowsError::InboundNego { err } => err.scope(),
+            FarChannelFlowsError::OutboundNego { err } => err.scope()
         }
     }
 }
 
-impl<Socket, Xfrm> Display for FarChannelFlowsError<Socket, Xfrm>
+impl<Socket, Xfrm, InboundNego, OutboundNego> Display
+    for FarChannelFlowsError<Socket, Xfrm, InboundNego, OutboundNego>
 where
     Xfrm: Display,
-    Socket: Display
+    Socket: Display,
+    InboundNego: Display,
+    OutboundNego: Display
 {
     fn fmt(
         &self,
@@ -670,7 +695,9 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             FarChannelFlowsError::Xfrm { xfrm } => xfrm.fmt(f),
-            FarChannelFlowsError::Socket { socket } => socket.fmt(f)
+            FarChannelFlowsError::Socket { socket } => socket.fmt(f),
+            FarChannelFlowsError::InboundNego { err } => err.fmt(f),
+            FarChannelFlowsError::OutboundNego { err } => err.fmt(f)
         }
     }
 }

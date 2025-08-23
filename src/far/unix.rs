@@ -54,6 +54,7 @@
 
 use std::convert::Infallible;
 use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::fs::remove_file;
 use std::io::Error;
 use std::io::IoSlice;
@@ -84,7 +85,6 @@ use crate::far::flows::BufferedFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
-use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
@@ -263,7 +263,8 @@ impl FarChannelSocket for UnixFarChannel {
         &self,
         param: &UnixSocketPath
     ) -> Result<UnixDatagramSocket, Error> {
-        let socket = UnixDatagram::bind_addr(param.into())?;
+        let addr = param.try_into()?;
+        let socket = UnixDatagram::bind_addr(&addr)?;
 
         Ok(UnixDatagramSocket { socket: socket })
     }
@@ -280,7 +281,7 @@ impl FarChannelCreate for UnixFarChannel {
     ) -> Result<Self, Error>
     where
         Ctx: NSNameCachesCtx {
-        let addr = UnixSocketPath::try_from(config.path())?;
+        let addr = UnixSocketPath::from(config.path());
 
         Ok(UnixFarChannel { bind: addr })
     }
@@ -303,19 +304,6 @@ where
     }
 }
 
-impl FarChannelNegotiator<PassthruNegotiator, PassthruNegotiator>
-    for UnixFarChannel {
-    #[inline]
-    fn inbound_negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator
-    }
-
-    #[inline]
-    fn outbound_negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator
-    }
-}
-
 impl<InnerXfrm> FarChannelFlows<InnerXfrm> for UnixFarChannel
 where
     InnerXfrm: DatagramXfrm<LocalAddr = UnixSocketPath>
@@ -323,6 +311,22 @@ where
     type OutboundNego = PassthruNegotiator;
     type InboundNego = PassthruNegotiator;
     type Flow = BufferedFlow<Self::Socket, Self::Xfrm>;
+    type InboundNegoError = Infallible;
+    type OutboundNegoError = Infallible;
+
+    #[inline]
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
+        Ok(PassthruNegotiator)
+    }
+
+    #[inline]
+    fn outbound_negotiator(
+        &self
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
+        Ok(PassthruNegotiator)
+    }
 }
 
 impl Drop for UnixDatagramSocket {
@@ -393,7 +397,7 @@ impl Socket for UnixDatagramSocket {
     fn local_addr(&self) -> Result<Self::Addr, Error> {
         let addr = self.socket.local_addr()?;
 
-        Ok(UnixSocketPath::from(addr))
+        UnixSocketPath::try_from(addr)
     }
 
     #[inline]
@@ -449,8 +453,9 @@ impl Receiver for UnixDatagramSocket {
         buf: &mut [u8]
     ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
         let (nbytes, addr) = self.socket.recv_from(buf)?;
+        let addr = UnixSocketPath::try_from(addr)?;
 
-        Ok((nbytes, UnixSocketPath::from(addr), None))
+        Ok((nbytes, addr, None))
     }
 
     fn recv_from_vectored(
@@ -477,24 +482,10 @@ impl Receiver for UnixDatagramSocket {
 
         Ok((nbytes, addr, cred))
     }
-
-    #[inline]
-    fn peek_from(
-        &self,
-        buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
-        let (nbytes, addr) = self.socket.peek_from(buf)?;
-
-        Ok((nbytes, UnixSocketPath::from(addr)))
-    }
 }
 
 #[cfg(test)]
 use std::fs::metadata;
-#[cfg(test)]
-use std::io::Read;
-#[cfg(test)]
-use std::io::Write;
 #[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
@@ -503,18 +494,22 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
-use constellation_auth::authn::AuthNed;
-#[cfg(test)]
-use constellation_auth::authn::PassthruSessionAuthN;
-#[cfg(test)]
-use constellation_auth::cred::NullCred;
-#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use mio::Poll;
 
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
+use crate::config::FlowsConfig;
+#[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
+#[cfg(test)]
+use crate::far::flows::accept_one;
+#[cfg(test)]
+use crate::far::flows::read_one;
+#[cfg(test)]
+use crate::far::flows::write_one;
 
 #[test]
 fn test_send_recv() {
@@ -530,98 +525,109 @@ fn test_send_recv() {
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
     let client_config: UnixFarChannelConfig =
         serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-    let channel_config: UnixFarChannelConfig =
+    let server_config: UnixFarChannelConfig =
         serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
-    let channel_path = channel_config.path().to_path_buf();
+    let server_path = server_config.path().to_path_buf();
     let client_path = client_config.path().to_path_buf();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
-    assert!(metadata(&channel_path).is_err());
+    assert!(metadata(&server_path).is_err());
     assert!(metadata(&client_path).is_err());
 
-    let client_addr = UnixSocketAddr::try_from(&client_path).unwrap();
-    let client_barrier = barrier.clone();
-    let mut client_nscaches = nscaches.clone();
+    let client_addr = UnixSocketPath::from(&client_path);
+    let server_barrier = barrier.clone();
+    let mut server_nscaches = nscaches.clone();
     let listen = spawn(move || {
         let mut listener =
-            UnixFarChannel::new(&mut client_nscaches, channel_config)
-                .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = listener.acquire().unwrap();
+            UnixFarChannel::new(&mut server_nscaches, server_config)
+            .expect("Expected success");
+        let config = FlowsConfig::default();
+        let param = match listener.acquire()
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
         let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: MultiFlows<
-            UnixDatagramSocket,
-            PassthruDatagramXfrm<UnixSocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
+        let mut flows = listener.flows(config, param, xfrm)
+            .expect("Expected success");
+        let mut poll = Poll::new().expect("Expected success");
+        let token = Token(0);
 
-        client_barrier.wait();
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
+        let (mut flow, peer_addr) = accept_one(&mut flows, &mut poll, token)
+            .expect("Expected success");
+
+        server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (session, peer_addr) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-        let (NullCred, mut flow) = session.take();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &peer_addr, token)
+            .expect("Expected success");
 
-        client_barrier.wait();
+        write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
+            .expect("Expected success");
 
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
+        server_barrier.wait();
 
         assert_eq!(peer_addr, client_addr);
         assert_eq!(FIRST_BYTES.len(), nbytes);
         assert_eq!(FIRST_BYTES, buf);
     });
 
-    let channel_addr = UnixSocketAddr::try_from(&channel_path).unwrap();
-    let channel_barrier = barrier;
-    let mut channel_nscaches = nscaches.clone();
+    let server_addr = UnixSocketPath::from(&server_path);
+    let client_barrier = barrier;
+    let mut client_nscaches = nscaches.clone();
     let send = spawn(move || {
         let mut conn =
-            UnixFarChannel::new(&mut channel_nscaches, client_config)
+            UnixFarChannel::new(&mut client_nscaches, client_config)
                 .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = conn.acquire().unwrap();
-        let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: SingleFlow<
-            UnixDatagramSocket,
-            PassthruDatagramXfrm<UnixSocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
-
-        channel_barrier.wait();
-
-        let session = match flows
-            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
+        let config = FlowsConfig::default();
+        let param = match conn.acquire()
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
         };
-        let (NullCred, mut flow) = session.take();
+        let xfrm = PassthruDatagramXfrm::new();
+        let mut flows = conn.flows(config, param, xfrm)
+            .expect("Expected success");
+        let mut poll = Poll::new().expect("Expected success");
+        let token = Token(0);
 
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
 
-        channel_barrier.wait();
+        client_barrier.wait();
+
+        let mut flow = flows.flow(server_addr.clone())
+            .expect("Expected success")
+            .expect("Expected some");
+
+        write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
+            .expect("Expected success");
+
+        client_barrier.wait();
+        client_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        channel_barrier.wait();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &server_addr, token)
+            .expect("Expected success");
 
-        flow.read_exact(&mut buf).unwrap();
-
+        assert_eq!(SECOND_BYTES.len(), nbytes);
         assert_eq!(SECOND_BYTES, buf);
     });
 
     listen.join().unwrap();
     send.join().unwrap();
 
-    assert!(metadata(&channel_path).is_err());
+    assert!(metadata(&server_path).is_err());
     assert!(metadata(&client_path).is_err());
 }

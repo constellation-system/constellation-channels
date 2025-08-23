@@ -833,7 +833,7 @@ where C: NearChannel {
         if retry.is_none_or(|when| now < when) {
             let when = retry.map(|when| when - now);
 
-            trace!(target: "negotiate-one",
+            trace!(target: "accept-one",
                    "polling");
 
             poll.poll(&mut events, when).expect("Expected success");
@@ -844,22 +844,22 @@ where C: NearChannel {
         retry = None;
 
         for event in events.iter() {
-            trace!(target: "negotiate-one",
+            trace!(target: "accept-one",
                    "event for token {:?}", event.token());
 
             if event.token() == listen {
-                trace!(target: "negotiate-one",
+                trace!(target: "accept-one",
                        "accepting connection");
 
                 match channel.start(poll.registry(), session) {
                     Ok(RetryResult::Success(start)) => {
-                        trace!(target: "negotiate-one",
+                        trace!(target: "accept-one",
                                "got incoming connection");
 
                         out = Some(start)
                     }
                     Ok(RetryResult::Retry(delay)) => {
-                        trace!(target: "negotiate-one",
+                        trace!(target: "accept-one",
                                "got retry");
 
                         retry = Some(delay)
@@ -893,29 +893,29 @@ pub fn read_one<R>(
 where R: Read {
     let mut events = Events::with_capacity(2);
 
-    trace!(target: "negotiate-one",
+    trace!(target: "read-one",
            "trying to read without polling");
 
     match stream.read_exact(buf) {
         Ok(()) => {
-            trace!(target: "negotiate-one",
+            trace!(target: "read-one",
                    "successfully read");
 
             Ok(())
         }
         Err(err) => match err.kind() {
             ErrorKind::WouldBlock | ErrorKind::Interrupted => loop {
-                trace!(target: "negotiate-one",
+                trace!(target: "read-one",
                        "polling");
 
                 poll.poll(&mut events, None).expect("Expected success");
 
                 for event in events.iter() {
-                    trace!(target: "negotiate-one",
+                    trace!(target: "read-one",
                            "event for token {:?}", event.token());
 
                     if event.token() == session {
-                        trace!(target: "negotiate-one",
+                        trace!(target: "read-one",
                                "reading bytes");
 
                         match stream.read_exact(buf) {
@@ -925,7 +925,7 @@ where R: Read {
                             Err(err) => match err.kind() {
                                 ErrorKind::WouldBlock |
                                 ErrorKind::Interrupted => {
-                                    trace!(target: "negotiate-one",
+                                    trace!(target: "read-one",
                                            "got EWOULDBLOCK");
                                 }
                                 _ => return Err(err)
@@ -955,12 +955,12 @@ pub fn write_one<W>(
 where W: Write {
     let mut events = Events::with_capacity(2);
 
-    trace!(target: "negotiate-one",
+    trace!(target: "write-one",
            "trying to send without polling");
 
     match stream.write_all(bytes) {
         Ok(()) => {
-            trace!(target: "negotiate-one",
+            trace!(target: "write-one",
                    "successfully sent");
 
             Ok(())
@@ -971,11 +971,11 @@ where W: Write {
                 poll.poll(&mut events, None).expect("Expected success");
 
                 for event in events.iter() {
-                    trace!(target: "negotiate-one",
+                    trace!(target: "write-one",
                            "event for token {:?}", event.token());
 
                     if event.token() == session {
-                        trace!(target: "negotiate-one",
+                        trace!(target: "write-one",
                                "sending bytes");
 
                         match stream.write_all(bytes) {
@@ -985,7 +985,7 @@ where W: Write {
                             Err(err) => match err.kind() {
                                 ErrorKind::WouldBlock |
                                 ErrorKind::Interrupted => {
-                                    trace!(target: "negotiate-one",
+                                    trace!(target: "write-one",
                                            "got EWOULDBLOCK");
                                 }
                                 _ => return Err(err)
