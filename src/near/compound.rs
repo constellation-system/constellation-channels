@@ -281,7 +281,6 @@ pub enum CompoundNearConnectorNegotiatePending {
                 CompoundNearConnectorNegotiatePending,
                 CompoundNearClientConn,
                 CompoundNearConnectorEndpoint,
-                <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
             >
         >
     }

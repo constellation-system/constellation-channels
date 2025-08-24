@@ -56,6 +56,8 @@ use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::Registry;
+use mio::Token;
 use openssl::error::ErrorStack;
 use openssl::ssl::SslAcceptor;
 use openssl::ssl::SslConnector;
@@ -116,6 +118,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// the underlying channel.
 ///
 /// ```
+/// # use std::iter::empty;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::dtls::DTLSFarChannel;
 /// # use constellation_channels::far::udp::UDPFarChannel;
@@ -135,7 +138,8 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let mut channel = DTLSFarChannel::<UDPFarChannel>
-///     ::new(&mut nscaches, dtls_config).expect("Expected success");
+///     ::new(&mut nscaches, &mut empty(), dtls_config)
+///     .expect("Expected success");
 /// ```
 pub struct DTLSFarChannel<Channel> {
     /// The underlying channel.
@@ -352,14 +356,16 @@ where
 {
     type Acquired = Channel::Acquired;
     type State = Channel::State;
+    type NegotiatePending = Channel::NegotiatePending;
     type AcquireError = Channel::AcquireError;
     type NegotiateError = Channel::NegotiateError;
 
     #[inline]
     fn acquire(
-        &mut self
+        &mut self,
+        registry: &Registry
     ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
-        self.inner.acquire()
+        self.inner.acquire(registry)
     }
 
     #[cfg(feature = "socks5")]
@@ -369,6 +375,24 @@ where
         val: &Self::Acquired
     ) -> Result<IPEndpoint, std::io::Error> {
         self.inner.socks5_target(val)
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        self.inner.negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        err: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        self.inner.complete_negotiate(err)
     }
 }
 
@@ -396,16 +420,17 @@ where
     type Config = DTLSFarChannelConfig<Channel::Config>;
     type CreateError = Channel::CreateError;
 
-    #[inline]
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
+        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
         let (tls, _) = config.take();
         let (tls, inner) = tls.take();
-        let inner = Channel::new(caches, inner)?;
+        let inner = Channel::new(caches, tokens, inner)?;
 
         Ok(DTLSFarChannel {
             inner: inner,
@@ -1105,6 +1130,8 @@ where
 }
 
 #[cfg(test)]
+use std::iter::empty;
+#[cfg(test)]
 use std::net::SocketAddr;
 #[cfg(test)]
 use std::sync::Barrier;
@@ -1117,8 +1144,6 @@ use constellation_common::net::PassthruDatagramXfrm;
 use mio::Interest;
 #[cfg(test)]
 use mio::Poll;
-#[cfg(test)]
-use mio::Token;
 
 #[cfg(test)]
 use crate::config::FlowsConfig;
@@ -1203,11 +1228,12 @@ fn test_send_recv() {
     let mut server_nscaches = nscaches.clone();
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
         let mut listener = DTLSFarChannel::<UDPFarChannel>
-            ::new(&mut server_nscaches, server_config)
+            ::new(&mut server_nscaches, &mut empty(), server_config)
             .expect("Expected success");
         let config = FlowsConfig::default();
-        let param = match listener.acquire()
+        let param = match listener.acquire(poll.registry())
             .expect("Expected success") {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
@@ -1215,7 +1241,6 @@ fn test_send_recv() {
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows = listener.flows(config, param, xfrm)
             .expect("Expected success");
-        let mut poll = Poll::new().expect("Expected success");
         let token = Token(0);
 
         poll.registry().register(&mut flows, token,
@@ -1250,15 +1275,16 @@ fn test_send_recv() {
     let send = spawn(move || {
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
+        let mut poll = Poll::new().expect("Expected success");
         let dtlsparam = DTLSOutboundParam {
             verify_endpoint: endpoint,
             inner: ()
         };
         let mut conn = DTLSFarChannel::<UDPFarChannel>
-            ::new(&mut client_nscaches, client_config)
+            ::new(&mut client_nscaches, &mut empty(), client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
-        let param = match conn.acquire()
+        let param = match conn.acquire(poll.registry())
             .expect("Expected success") {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
@@ -1266,7 +1292,6 @@ fn test_send_recv() {
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows = conn.flows(config, param, xfrm)
             .expect("Expected success");
-        let mut poll = Poll::new().expect("Expected success");
         let token = Token(0);
 
         poll.registry().register(&mut flows, token,

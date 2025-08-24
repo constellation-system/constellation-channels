@@ -16,6 +16,7 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use std::iter::empty;
 use std::net::SocketAddr;
 
 use constellation_channels::config::FlowsConfig;
@@ -86,14 +87,15 @@ const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
 fn server() {
+    let mut poll = Poll::new().expect("Expected success");
     let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
         serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
     let mut listener = DTLSFarChannel::<UDPFarChannel>
-        ::new(&mut nscaches, server_config)
+        ::new(&mut nscaches, &mut empty(), server_config)
         .expect("Expected success");
     let config = FlowsConfig::default();
-    let param = match listener.acquire()
+    let param = match listener.acquire(poll.registry())
         .expect("Expected success") {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
@@ -101,7 +103,6 @@ fn server() {
     let xfrm = PassthruDatagramXfrm::new();
     let mut flows = listener.flows(config, param, xfrm)
         .expect("Expected success");
-    let mut poll = Poll::new().expect("Expected success");
     let token = Token(0);
 
     poll.registry().register(&mut flows, token,
@@ -127,6 +128,7 @@ fn client() {
     let servername = "test-server.nowhere.com";
     let endpoint = IPEndpointAddr::name(String::from(servername));
     let dtlsparam = DTLSOutboundParam::new(endpoint, ());
+    let mut poll = Poll::new().expect("Expected success");
     let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
         serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let server_addr = SocketAddr::new(
@@ -136,10 +138,10 @@ fn client() {
     let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
     let mut conn = DTLSFarChannel::<UDPFarChannel>
-        ::new(&mut nscaches, client_config)
+        ::new(&mut nscaches, &mut empty(), client_config)
         .expect("expected success");
     let config = FlowsConfig::default();
-    let param = match conn.acquire()
+    let param = match conn.acquire(poll.registry())
         .expect("Expected success") {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
@@ -147,7 +149,6 @@ fn client() {
     let xfrm = PassthruDatagramXfrm::new();
     let mut flows = conn.flows(config, param, xfrm)
         .expect("Expected success");
-    let mut poll = Poll::new().expect("Expected success");
     let token = Token(0);
 
     poll.registry().register(&mut flows, token,

@@ -146,6 +146,8 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Param;
@@ -157,6 +159,8 @@ use constellation_streams::addrs::AddrsCreate;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
 use log::info;
+use mio::Registry;
+use mio::Token;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
@@ -170,6 +174,7 @@ use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::flows::BufferedFlow;
 use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCacheError;
@@ -213,12 +218,14 @@ use crate::resolve::Resolver;
 /// to connect to the proxy itself:
 ///
 /// ```
+/// # use std::iter::once;
+/// # use std::net::SocketAddr;
+/// # use mio::Token;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::socks5::SOCKS5FarChannel;
 /// # use constellation_channels::far::udp::UDPFarChannel;
 /// # use constellation_channels::near::tcp::TCPNearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
-/// # use std::net::SocketAddr;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "addr: 0.0.0.0\n",
@@ -234,7 +241,7 @@ use crate::resolve::Resolver;
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let channel: SOCKS5FarChannel<TCPNearConnector, SocketAddr, UDPFarChannel> =
-///     SOCKS5FarChannel::new(&mut nscaches, socks5_config)
+///     SOCKS5FarChannel::new(&mut nscaches, &mut once(Token(0)), socks5_config)
 ///     .unwrap();
 /// ```
 ///
@@ -285,7 +292,9 @@ where
     /// The [NearConnector] that will be used to connect to the proxy.
     proxy: Proxy,
     /// The current number of retries.
-    nretries: usize
+    nretries: usize,
+    /// Token to use for the keepalive connection.
+    token: Token
 }
 
 pub struct SOCKS5SessionNegotiation<Proxy, Datagram> {
@@ -309,7 +318,8 @@ pub enum SOCKS5CreateError<Proxy, Datagram> {
     /// Proxy negotiation channel creation error.
     Proxy { proxy: Proxy },
     /// Datagram channel creation error.
-    Datagram { datagram: Datagram }
+    Datagram { datagram: Datagram },
+    NoTokens
 }
 
 /// Errors that can occur during the [acquire](FarChannel::acquire)
@@ -356,31 +366,8 @@ pub enum SOCKS5AcquiredResolveError<Wrap> {
     NoValidAddrs
 }
 
-pub enum SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
-                              Proxy, ProxyErr, IO, SOCKS5> {
-    Proxy {
-        state: DatagramState,
-        err: ProxyErr
-    },
-    Datagram {
-        proxy: Proxy,
-        err: DatagramErr,
-    },
-    SOCKS5 {
-        endpoint: IPEndpoint,
-        datagram: Datagram,
-        proxy: Proxy,
-        err: SOCKS5
-    },
-    IO {
-        datagram: Datagram,
-        proxy: Proxy,
-        err: IO
-    }
-}
-
 #[derive(Debug)]
-pub enum SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5> {
+pub enum SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5> {
     Proxy {
         err: Proxy
     },
@@ -392,97 +379,36 @@ pub enum SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5> {
     },
     IO {
         err: IO
+    },
+    BadSplit
+}
+
+pub enum SOCKS5NegotiatePending<Datagram, DatagramState, DatagramPending,
+                                Proxy, ProxyPending> {
+    Proxy {
+        state: DatagramState,
+        pending: ProxyPending
+    },
+    Datagram {
+        proxy: Proxy,
+        pending: DatagramPending,
+    },
+    SOCKS5 {
+        endpoint: IPEndpoint,
+        datagram: Datagram,
+        proxy: Proxy,
+        pending: <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
+    },
+    IO {
+        datagram: Datagram,
+        proxy: Proxy,
     }
 }
 
-impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
-    RecoverableError for
-    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
-                         Proxy, ProxyErr, IO, SOCKS5>
-where DatagramErr: RecoverableError,
-      ProxyErr: RecoverableError,
-      SOCKS5: RecoverableError,
-      IO: RecoverableError
-{
-    type Permanent = SOCKS5NegotiatePermanentError<
-        DatagramErr::Permanent,
-        ProxyErr::Permanent,
-        IO::Permanent,
-        SOCKS5::Permanent
-    >;
-    type Completable = SOCKS5NegotiateError<
-        Datagram,
-        DatagramState,
-        DatagramErr::Completable,
-        Proxy,
-        ProxyErr::Completable,
-        IO::Completable,
-        SOCKS5::Completable
-    >;
-
-    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
-        match self {
-            SOCKS5NegotiateError::Proxy { state, err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| SOCKS5NegotiateError::Proxy {
-                    state: state,
-                    err: err
-                }),
-                 permanent.map(|err| SOCKS5NegotiatePermanentError::Proxy {
-                     err: err
-                 })
-                )
-            },
-            SOCKS5NegotiateError::Datagram { proxy, err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| SOCKS5NegotiateError::Datagram {
-                    proxy: proxy,
-                    err: err
-                }),
-                 permanent.map(|err| SOCKS5NegotiatePermanentError::Datagram {
-                     err: err
-                 })
-                )
-            }
-            SOCKS5NegotiateError::SOCKS5 { endpoint, datagram, proxy, err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| SOCKS5NegotiateError::SOCKS5 {
-                    endpoint: endpoint,
-                    datagram: datagram,
-                    proxy: proxy,
-                    err: err
-                }),
-                 permanent.map(|err| SOCKS5NegotiatePermanentError::SOCKS5 {
-                     err: err
-                 })
-                )
-            }
-            SOCKS5NegotiateError::IO { datagram, proxy, err } => {
-                let (completable, permanent) = err.split();
-
-                (completable.map(|err| SOCKS5NegotiateError::IO {
-                    datagram: datagram,
-                    proxy: proxy,
-                    err: err
-                }),
-                 permanent.map(|err| SOCKS5NegotiatePermanentError::IO {
-                     err: err
-                 })
-                )
-            }
-        }
-    }
-}
-
-impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
-    ScopedError for
-    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
-                         Proxy, ProxyErr, IO, SOCKS5>
-where DatagramErr: ScopedError,
-      ProxyErr: ScopedError,
+impl<Datagram, Proxy, IO, SOCKS5> ScopedError
+    for SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5>
+where Datagram: ScopedError,
+      Proxy: ScopedError,
       SOCKS5: ScopedError,
       IO: ScopedError
 {
@@ -491,24 +417,8 @@ where DatagramErr: ScopedError,
             SOCKS5NegotiateError::Proxy { err, .. } => err.scope(),
             SOCKS5NegotiateError::Datagram { err, .. } => err.scope(),
             SOCKS5NegotiateError::SOCKS5 { err, .. } => err.scope(),
-            SOCKS5NegotiateError::IO { err, .. } => err.scope()
-        }
-    }
-}
-
-impl<Datagram, Proxy, IO, SOCKS5> ScopedError for
-    SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5>
-where Datagram: ScopedError,
-      Proxy: ScopedError,
-      SOCKS5: ScopedError,
-      IO: ScopedError
-{
-    fn scope(&self) -> ErrorScope {
-        match self {
-            SOCKS5NegotiatePermanentError::Proxy { err } => err.scope(),
-            SOCKS5NegotiatePermanentError::Datagram { err } => err.scope(),
-            SOCKS5NegotiatePermanentError::SOCKS5 { err } => err.scope(),
-            SOCKS5NegotiatePermanentError::IO { err } => err.scope()
+            SOCKS5NegotiateError::IO { err, .. } => err.scope(),
+            SOCKS5NegotiateError::BadSplit => ErrorScope::Unrecoverable
         }
     }
 }
@@ -534,7 +444,8 @@ where
     fn scope(&self) -> ErrorScope {
         match self {
             SOCKS5CreateError::Proxy { proxy } => proxy.scope(),
-            SOCKS5CreateError::Datagram { datagram } => datagram.scope()
+            SOCKS5CreateError::Datagram { datagram } => datagram.scope(),
+            SOCKS5CreateError::NoTokens => ErrorScope::Unrecoverable
         }
     }
 }
@@ -661,15 +572,21 @@ where
         datagram: Datagram::Acquired,
         target: IPEndpoint
     ) -> Result<
-        SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+        NegotiatorResult<
+            SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+            SOCKS5NegotiatePending<
+                Datagram::Acquired,
+                Datagram::State,
+                Datagram::NegotiatePending,
+                Proxy::Conn,
+                Proxy::Pending
+            >
+        >,
         SOCKS5NegotiateError<
-            Datagram::Acquired,
-            Datagram::State,
             Datagram::NegotiateError,
-            Proxy::Conn,
             Proxy::NegotiateError,
             Error,
-            RawStateMachineError<SOCKS5State>
+            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
     > {
         let params = match &self.auth {
@@ -705,18 +622,26 @@ where
                       "established SOCKS5 UDP association for {} with {}",
                       endpoint, self.proxy.endpoint());
 
-                Ok(SOCKS5Acquired {
+                Ok(NegotiatorResult::Complete(SOCKS5Acquired {
                     addr: PhantomData,
                     datagram: datagram,
                     proxy: endpoint
-                })
+                }))
             }
-            Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
-                datagram: datagram,
-                endpoint: target,
-                proxy: stream,
-                err: err
-            })
+            Err(err) => match err.split() {
+                (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                    SOCKS5NegotiatePending::SOCKS5 {
+                        endpoint: target,
+                        datagram: datagram,
+                        proxy: stream,
+                        pending: pending
+                    }
+                )),
+                (None, Some(err)) => Err(SOCKS5NegotiateError::SOCKS5 {
+                    err: err
+                }),
+                _ => Err(SOCKS5NegotiateError::BadSplit)
+            }
         }
     }
 
@@ -725,22 +650,26 @@ where
         stream: Proxy::Conn,
         datagram: Datagram::Acquired
     ) -> Result<
-        SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+        NegotiatorResult<
+            SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+            SOCKS5NegotiatePending<
+                Datagram::Acquired,
+                Datagram::State,
+                Datagram::NegotiatePending,
+                Proxy::Conn,
+                Proxy::Pending
+            >
+        >,
         SOCKS5NegotiateError<
-            Datagram::Acquired,
-            Datagram::State,
             Datagram::NegotiateError,
-            Proxy::Conn,
             Proxy::NegotiateError,
             Error,
-            RawStateMachineError<SOCKS5State>
+            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
     > {
         match self.datagram.socks5_target(&datagram) {
             Ok(target) => self.negotiate_endpoint(stream, datagram, target),
             Err(err) => Err(SOCKS5NegotiateError::IO {
-                datagram: datagram,
-                proxy: stream,
                 err: err
             })
         }
@@ -751,23 +680,32 @@ where
         stream: Proxy::Conn,
         datagram: Datagram::State
     ) -> Result<
-        SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+        NegotiatorResult<
+            SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+            SOCKS5NegotiatePending<
+                Datagram::Acquired,
+                Datagram::State,
+                Datagram::NegotiatePending,
+                Proxy::Conn,
+                Proxy::Pending
+            >
+        >,
         SOCKS5NegotiateError<
-            Datagram::Acquired,
-            Datagram::State,
             Datagram::NegotiateError,
-            Proxy::Conn,
             Proxy::NegotiateError,
             Error,
-            RawStateMachineError<SOCKS5State>
+            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
     > {
-        match self.datagram.negotiate(datagram) {
-            Ok(acquired) => self.negotiate_acquired(stream, acquired),
-            Err(err) => Err(SOCKS5NegotiateError::Datagram {
-                proxy: stream,
-                err: err
-            })
+        match self.datagram.negotiate(datagram)
+            .map_err(|err| SOCKS5NegotiateError::Datagram { err: err })? {
+            NegotiatorResult::Complete(acquired) =>
+                    self.negotiate_acquired(stream, acquired),
+            NegotiatorResult::Pending(pending) =>
+                Ok(NegotiatorResult::Pending(SOCKS5NegotiatePending::Datagram {
+                    pending: pending,
+                    proxy: stream
+                }))
         }
     }
 }
@@ -782,13 +720,17 @@ where
 {
     type State = SOCKS5SessionNegotiation<Proxy::State, Datagram::State>;
     type NegotiateError = SOCKS5NegotiateError<
-        Datagram::Acquired,
-        Datagram::State,
         Datagram::NegotiateError,
-        Proxy::Conn,
         Proxy::NegotiateError,
         Error,
-        RawStateMachineError<SOCKS5State>
+        <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
+    >;
+    type NegotiatePending = SOCKS5NegotiatePending<
+        Datagram::Acquired,
+        Datagram::State,
+        Datagram::NegotiatePending,
+        Proxy::Conn,
+        Proxy::Pending
     >;
     type AcquireError = SOCKS5AcquireError<
         Proxy::StartError,
@@ -806,15 +748,16 @@ where
     }
 
     fn acquire(
-        &mut self
+        &mut self,
+        registry: &Registry
     ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
         self
             .proxy
-            .start()
+            .start(registry, self.token.clone())
             .map_err(|err| SOCKS5AcquireError::Proxy { proxy: err })?
             .flat_map_ok(|proxy| self
                     .datagram
-                    .acquire()
+                    .acquire(registry)
                     .map_err(|err| SOCKS5AcquireError::Datagram {
                         datagram: err
                     })?
@@ -827,44 +770,56 @@ where
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<Self::Acquired, Self::NegotiateError> {
-        match self.proxy.negotiate(state.proxy) {
-            Ok((stream, _)) => self.negotiate_datagram(stream, state.datagram),
-            Err(err) => Err(SOCKS5NegotiateError::Proxy {
-                state: state.datagram,
-                err: err
-            })
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        match self.proxy.negotiate(state.proxy)
+            .map_err(|err| SOCKS5NegotiateError::Proxy { err: err })? {
+            NegotiatorResult::Complete((stream, _)) =>
+                self.negotiate_datagram(stream, state.datagram),
+            NegotiatorResult::Pending(pending) =>
+                Ok(NegotiatorResult::Pending(SOCKS5NegotiatePending::Proxy {
+                    state: state.datagram,
+                    pending: pending
+                })),
         }
     }
 
     #[inline]
     fn complete_negotiate(
         &self,
-        err: <Self::NegotiateError as RecoverableError>::Completable
-    ) -> Result<Self::Acquired, Self::NegotiateError> {
+        err: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
         match err {
-            SOCKS5NegotiateError::Proxy { state, err } => match self.proxy
-                .complete_negotiate(err) {
-                Ok((stream, _)) =>
+            SOCKS5NegotiatePending::Proxy { state, pending } => match self.proxy
+                .complete_negotiate(pending)
+                .map_err(|err| SOCKS5NegotiateError::Proxy { err: err })? {
+                NegotiatorResult::Complete((stream, _)) =>
                     self.negotiate_datagram(stream, state),
-                Err(err) => Err(SOCKS5NegotiateError::Proxy {
-                    state: state,
-                    err: err
-                })
+                NegotiatorResult::Pending(pending) =>
+                    Ok(NegotiatorResult::Pending(SOCKS5NegotiatePending::Proxy {
+                        pending: pending,
+                        state: state
+                    })),
             }
-            SOCKS5NegotiateError::Datagram { proxy, err } => match self
-                .datagram.complete_negotiate(err) {
-                Ok(acquired) => self.negotiate_acquired(proxy, acquired),
-                Err(err) => Err(SOCKS5NegotiateError::Datagram {
-                    proxy: proxy,
-                    err: err
-                })
+            SOCKS5NegotiatePending::Datagram { proxy, pending } => match self
+                .datagram.complete_negotiate(pending)
+                .map_err(|err| SOCKS5NegotiateError::Datagram { err: err })? {
+                NegotiatorResult::Complete(acquired) =>
+                    self.negotiate_acquired(proxy, acquired),
+                NegotiatorResult::Pending(pending) =>
+                    Ok(NegotiatorResult::Pending(
+                        SOCKS5NegotiatePending::Datagram {
+                            pending: pending,
+                            proxy: proxy
+                        }
+                    ))
             }
-            SOCKS5NegotiateError::SOCKS5 {
-                endpoint, datagram, mut proxy, err
+            SOCKS5NegotiatePending::SOCKS5 {
+                endpoint, datagram, mut proxy, pending
             } => {
                 let machine: RawStateMachine<SOCKS5State> =
-                    RawStateMachine::complete(err);
+                    RawStateMachine::complete(pending);
 
                 // Run the protocol negotiation
                 match machine.run(&mut proxy) {
@@ -876,26 +831,32 @@ where
                                       "for {} with {}"),
                               endpoint, self.proxy.endpoint());
 
-                        Ok(SOCKS5Acquired {
+                        Ok(NegotiatorResult::Complete(SOCKS5Acquired {
                             addr: PhantomData,
                             datagram: datagram,
                             proxy: endpoint
-                        })
+                        }))
                     }
-                    Err(err) => Err(SOCKS5NegotiateError::SOCKS5 {
-                        datagram: datagram,
-                        endpoint: endpoint,
-                        proxy: proxy,
-                        err: err
-                    })
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            SOCKS5NegotiatePending::SOCKS5 {
+                                endpoint: endpoint.clone(),
+                                datagram: datagram,
+                                proxy: proxy,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => Err(SOCKS5NegotiateError::SOCKS5 {
+                            err: err
+                        }),
+                        _ => Err(SOCKS5NegotiateError::BadSplit)
+                    }
                 }
             }
-            SOCKS5NegotiateError::IO { datagram, proxy, .. } => match self
+            SOCKS5NegotiatePending::IO { datagram, proxy } => match self
                 .datagram.socks5_target(&datagram) {
                 Ok(target) => self.negotiate_endpoint(proxy, datagram, target),
                 Err(err) => Err(SOCKS5NegotiateError::IO {
-                    datagram: datagram,
-                    proxy: proxy,
                     err: err
                 })
             }
@@ -980,14 +941,17 @@ where
     type CreateError =
         SOCKS5CreateError<Proxy::CreateError, Datagram::CreateError>;
 
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
-        config: SOCKS5AssocConfig<Proxy::Config, Datagram::Config>
+        tokens: &mut I,
+        config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
+        let token = tokens.next().ok_or(SOCKS5CreateError::NoTokens)?;
         let (bind, auth, proxy) = config.take();
-        let datagram = Datagram::new(caches, bind)
+        let datagram = Datagram::new(caches, tokens, bind)
             .map_err(|e| SOCKS5CreateError::Datagram { datagram: e })?;
         let proxy = Proxy::new(caches, proxy)
             .map_err(|e| SOCKS5CreateError::Proxy { proxy: e })?;
@@ -998,31 +962,12 @@ where
             auth: auth,
             proxy: proxy,
             nretries: 0,
-            datagram: datagram
+            datagram: datagram,
+            token: token
         })
     }
 }
 
-impl<Proxy, Datagram, InboundNego, OutboundNego, PeerAddr>
-    FarChannelNegotiator<InboundNego, OutboundNego>
-    for SOCKS5FarChannel<Proxy, PeerAddr, Datagram>
-where
-    Proxy: NearConnector + NearChannelCreate,
-    Datagram: FarChannelNegotiator<InboundNego, OutboundNego>
-        + FarChannelSocket + FarChannel,
-    Datagram::Socket: Socket,
-    <Datagram::Socket as Socket>::Addr: From<SocketAddr>
-{
-    #[inline]
-    fn inbound_negotiator(&self) -> InboundNego {
-        self.datagram.inbound_negotiator()
-    }
-
-    #[inline]
-    fn outbound_negotiator(&self) -> OutboundNego {
-        self.datagram.outbound_negotiator()
-    }
-}
 
 impl<Proxy, Datagram, InnerXfrm> FarChannelFlows<InnerXfrm>
     for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
@@ -1031,63 +976,40 @@ where
     Proxy: NearConnector + NearChannelCreate,
     Datagram: FarChannelFlows<InnerXfrm> + FarChannelSocket + FarChannel,
     Datagram::Socket: Socket,
+    Datagram::InboundNego: NegotiatorStart<
+        Datagram::Flow,
+        BufferedFlow<Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>>
+    >,
+    Datagram::OutboundNego: NegotiatorStart<
+        Datagram::Flow,
+        BufferedFlow<Datagram::Socket, SOCKS5UDPXfrm<Datagram::Xfrm>>
+    >,
     <Datagram::Xfrm as DatagramXfrm>::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
     type OutboundNego = Datagram::OutboundNego;
     type InboundNego = Datagram::InboundNego;
-}
+    type OutboundNegoError = Datagram::OutboundNegoError;
+    type InboundNegoError = Datagram::InboundNegoError;
+    type Flow = Datagram::Flow;
 
-impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
-    Debug for
-    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
-                         Proxy, ProxyErr, IO, SOCKS5>
-where DatagramErr: Debug,
-      ProxyErr: Debug,
-      SOCKS5: Debug,
-      IO: Debug
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            SOCKS5NegotiateError::Proxy { err, .. } =>
-                write!(f, "Proxy {{ err: {:?} }}", err),
-            SOCKS5NegotiateError::Datagram { err, .. } =>
-                write!(f, "Datagram {{ err: {:?} }}", err),
-            SOCKS5NegotiateError::SOCKS5 { err, .. } =>
-                write!(f, "SOCKS5 {{ err: {:?} }}", err),
-            SOCKS5NegotiateError::IO { err, .. } =>
-                write!(f, "IO {{ err: {:?} }}", err)
-        }
+    #[inline]
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
+        self.datagram.inbound_negotiator()
+    }
+
+    #[inline]
+    fn outbound_negotiator(
+        &self
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
+        self.datagram.outbound_negotiator()
     }
 }
 
-impl<Datagram, DatagramState, DatagramErr, Proxy, ProxyErr, IO, SOCKS5>
-    Display for
-    SOCKS5NegotiateError<Datagram, DatagramState, DatagramErr,
-                         Proxy, ProxyErr, IO, SOCKS5>
-where DatagramErr: Display,
-      ProxyErr: Display,
-      SOCKS5: Display,
-      IO: Display
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            SOCKS5NegotiateError::Proxy { err, .. } => err.fmt(f),
-            SOCKS5NegotiateError::Datagram { err, .. } => err.fmt(f),
-            SOCKS5NegotiateError::SOCKS5 { err, .. } => err.fmt(f),
-            SOCKS5NegotiateError::IO { err, .. } => write!(f, "{}", err)
-        }
-    }
-}
-
-impl<Datagram, Proxy, IO, SOCKS5> Display for
-    SOCKS5NegotiatePermanentError<Datagram, Proxy, IO, SOCKS5>
+impl<Datagram, Proxy, IO, SOCKS5> Display
+    for SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5>
 where Datagram: Display,
       Proxy: Display,
       SOCKS5: Display,
@@ -1098,10 +1020,12 @@ where Datagram: Display,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SOCKS5NegotiatePermanentError::Proxy { err } => err.fmt(f),
-            SOCKS5NegotiatePermanentError::Datagram { err } => err.fmt(f),
-            SOCKS5NegotiatePermanentError::SOCKS5 { err } => err.fmt(f),
-            SOCKS5NegotiatePermanentError::IO { err } => write!(f, "{}", err)
+            SOCKS5NegotiateError::Proxy { err } => err.fmt(f),
+            SOCKS5NegotiateError::Datagram { err } => err.fmt(f),
+            SOCKS5NegotiateError::SOCKS5 { err } => err.fmt(f),
+            SOCKS5NegotiateError::IO { err } => write!(f, "{}", err),
+            SOCKS5NegotiateError::BadSplit =>
+                write!(f, "invalid result from split()")
         }
     }
 }
@@ -1117,7 +1041,8 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             SOCKS5CreateError::Proxy { proxy } => proxy.fmt(f),
-            SOCKS5CreateError::Datagram { datagram } => datagram.fmt(f)
+            SOCKS5CreateError::Datagram { datagram } => datagram.fmt(f),
+            SOCKS5CreateError::NoTokens => write!(f, "tokens exhausted")
         }
     }
 }

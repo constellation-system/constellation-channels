@@ -67,6 +67,7 @@ use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::net::PassthruNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
@@ -118,6 +119,7 @@ use crate::unix::UnixSocketPath;
 /// The following example shows how to create a `UnixFarChannel`:
 ///
 /// ```
+/// # use std::iter::empty;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::unix::UnixFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -128,7 +130,8 @@ use crate::unix::UnixSocketPath;
 /// let unix_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let mut channel = UnixFarChannel::new(&mut nscaches, unix_config)
+/// let mut channel = UnixFarChannel::new(&mut nscaches, &mut empty(),
+///                                       unix_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UnixFarChannel {
@@ -219,6 +222,7 @@ impl DatagramXfrmCreate for UnixDatagramXfrm {
 impl FarChannel for UnixFarChannel {
     type Acquired = UnixSocketPath;
     type State = UnixSocketPath;
+    type NegotiatePending = Infallible;
     type AcquireError = Infallible;
     type NegotiateError = Infallible;
 
@@ -232,8 +236,29 @@ impl FarChannel for UnixFarChannel {
     }
 
     #[inline]
-    fn acquire(&mut self) -> Result<RetryResult<UnixSocketPath>, Infallible> {
+    fn acquire(
+        &mut self,
+        _registry: &Registry
+    ) -> Result<RetryResult<UnixSocketPath>, Infallible> {
         Ok(RetryResult::Success(self.bind.clone()))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        panic!("This should never be called!")
     }
 }
 
@@ -259,12 +284,14 @@ impl FarChannelCreate for UnixFarChannel {
     type CreateError = Error;
 
     #[inline]
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         _caches: &mut Ctx,
-        config: UnixFarChannelConfig
-    ) -> Result<Self, Error>
+        _tokens: &mut I,
+        config: Self::Config
+    ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
         let addr = UnixSocketPath::from(config.path());
 
         Ok(UnixFarChannel { bind: addr })
@@ -471,6 +498,8 @@ impl Receiver for UnixDatagramSocket {
 #[cfg(test)]
 use std::fs::metadata;
 #[cfg(test)]
+use std::iter::empty;
+#[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Barrier;
@@ -525,11 +554,13 @@ fn test_send_recv() {
     let server_barrier = barrier.clone();
     let mut server_nscaches = nscaches.clone();
     let listen = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            UnixFarChannel::new(&mut server_nscaches, server_config)
+            UnixFarChannel::new(&mut server_nscaches, &mut empty(),
+                                server_config)
             .expect("Expected success");
         let config = FlowsConfig::default();
-        let param = match listener.acquire()
+        let param = match listener.acquire(poll.registry())
             .expect("Expected success") {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
@@ -537,7 +568,6 @@ fn test_send_recv() {
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows = listener.flows(config, param, xfrm)
             .expect("Expected success");
-        let mut poll = Poll::new().expect("Expected success");
         let token = Token(0);
 
         poll.registry().register(&mut flows, token,
@@ -571,11 +601,13 @@ fn test_send_recv() {
     let client_barrier = barrier;
     let mut client_nscaches = nscaches.clone();
     let send = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
         let mut conn =
-            UnixFarChannel::new(&mut client_nscaches, client_config)
+            UnixFarChannel::new(&mut client_nscaches, &mut empty(),
+                                client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
-        let param = match conn.acquire()
+        let param = match conn.acquire(poll.registry())
             .expect("Expected success") {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
@@ -583,7 +615,6 @@ fn test_send_recv() {
         let xfrm = PassthruDatagramXfrm::new();
         let mut flows = conn.flows(config, param, xfrm)
             .expect("Expected success");
-        let mut poll = Poll::new().expect("Expected success");
         let token = Token(0);
 
         poll.registry().register(&mut flows, token,

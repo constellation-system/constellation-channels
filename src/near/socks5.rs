@@ -216,15 +216,14 @@ pub enum SOCKS5NegotiateError<Inner, Proxy, Endpoint> {
     BadSplit
 }
 
-#[derive(Debug)]
-pub enum SOCKS5NegotiatePending<Inner, Proxy, Endpoint, SOCKS5> {
+pub enum SOCKS5NegotiatePending<Inner, Proxy, Endpoint> {
     Inner {
         pending: Inner,
     },
     SOCKS5 {
         endpoint: Endpoint,
         proxy: Proxy,
-        err: SOCKS5
+        err: <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
     }
 }
 
@@ -243,8 +242,7 @@ where
         Inner::Pending,
         Inner::Conn,
         Inner::Endpoint,
-        <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
-    >;
+     >;
 
     fn negotiate(
         &self,
@@ -290,7 +288,6 @@ where
             Inner::Pending,
             Inner::Conn,
             Inner::Endpoint,
-            <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
         >
     ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint),
                                  Self::Pending>,

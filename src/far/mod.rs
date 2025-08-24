@@ -157,16 +157,18 @@ use std::io::Error;
 use std::net::SocketAddr;
 
 use constellation_common::error::ErrorScope;
-use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
+use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
+use mio::Registry;
+use mio::Token;
 use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
@@ -185,8 +187,8 @@ use crate::unix::UnixSocketAddr;
 pub mod dtls;
 pub mod flows;
 //pub mod registry;
-//#[cfg(feature = "socks5")]
-//pub mod socks5;
+#[cfg(feature = "socks5")]
+pub mod socks5;
 pub mod udp;
 #[cfg(feature = "unix")]
 pub mod unix;
@@ -327,7 +329,8 @@ pub trait FarChannel: Sized {
     /// Type of errors that can occur in the acquisition phase.
     type AcquireError: Display + ScopedError;
     /// Errors that can occur during negotiations.
-    type NegotiateError: Debug + Display + RecoverableError;
+    type NegotiateError: Debug + Display;
+    type NegotiatePending;
 
     /// Perform the acquisition phase of establishing the channel.
     ///
@@ -348,8 +351,23 @@ pub trait FarChannel: Sized {
     /// In channel types that do not have an initial negotiation step,
     /// this will simply create a socket and return it.
     fn acquire(
-        &mut self
+        &mut self,
+        registry: &Registry,
     ) -> Result<RetryResult<Self::State>, Self::AcquireError>;
+
+    /// Perform negotiations.
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError>;
+
+    /// Complete a failed negotiation.
+    fn complete_negotiate(
+        &self,
+        err: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError>;
 
     #[cfg(feature = "socks5")]
     /// Obtain the address to use in the SOCKS5 target field.
@@ -397,12 +415,14 @@ pub trait FarChannelCreate: FarChannel {
     /// This creates an instance of this `FarChannel` from the
     /// configuration given by `config`, which binds to the address
     /// given by `bind`.
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
+        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx;
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token>;
 }
 
 pub trait FarChannelXfrm<InnerXfrm>: FarChannelSocket
