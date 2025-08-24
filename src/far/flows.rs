@@ -416,6 +416,10 @@ where
 
         while {
             if let Some((addr, msg)) = outbuf.front() {
+                trace!(target: "flows",
+                       "sending buffered {} byte message to {}",
+                       msg.len(), addr);
+
                 if let Err(err) = self.socket.try_borrow_mut()
                     .map_err(|_| Error::new(ErrorKind::Other,
                                             "socket get mut failed"))?
@@ -603,7 +607,7 @@ where
                         }
                         NegotiatorResult::Pending(pending) => {
                             trace!(target: "flows",
-                                   "continuing negotiation for {}",
+                                   "saving pending negotiation for {}",
                                    addr);
 
                             // Set up a pending negotiation.
@@ -638,7 +642,7 @@ where
                         }
                         NegotiatorResult::Pending(pending) => {
                             trace!(target: "flows",
-                                   "continuing negotiation for {}",
+                                   "saving pending negotiation for {}",
                                    addr);
 
                             // Set up a pending negotiation.
@@ -839,54 +843,71 @@ where
     ) -> Result<usize, Error> {
         let len = buf.len();
 
-
         match self.xfrm.try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "get_mut failed"))?
             .wrap(buf, self.addr.clone()) {
             // Copied transformation.
-                Ok((Some(buf), addr)) => self.socket.try_borrow_mut()
+            Ok((Some(buf), addr)) => {
+                trace!(target: "flows",
+                       "sending {} byte message to {}",
+                       buf.len(), addr);
+
+                self.socket.try_borrow_mut()
                     .map_err(|_| Error::new(ErrorKind::Other,
                                             "socket get mut failed"))?
                     .send_to(&addr, &buf)
                     .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
-                    // Would block.  Buffer the message and succeed.
+                        // Would block.  Buffer the message and succeed.
+                        trace!(target: "flows",
+                               "buffering {} byte message to {}",
+                               buf.len(), addr);
 
-                    // Try to get the output buffer to push the message.
-                    self.outbuf
-                        .try_borrow_mut()
-                        .map_err(|_| Error::new(ErrorKind::Other,
-                                                "outbuf get_mut failed"))
-                        .map(|mut outbuf| {
-                            outbuf.push_back((addr, buf));
+                        // Try to get the output buffer to push the message.
+                        self.outbuf
+                            .try_borrow_mut()
+                            .map_err(|_| Error::new(ErrorKind::Other,
+                                                    "outbuf get_mut failed"))
+                            .map(|mut outbuf| {
+                                outbuf.push_back((addr, buf));
 
-                            Ok(len)
-                        })?
+                                Ok(len)
+                            })?
                 } else {
                     // Propagate the error.
                     Err(err)
-                }),
+                })
+            }
             // In-place transformation
-            Ok((None, addr)) => self.socket.try_borrow_mut()
+            Ok((None, addr)) => {
+                trace!(target: "flows",
+                       "sending {} byte message to {}",
+                       buf.len(), addr);
+
+                self.socket.try_borrow_mut()
                     .map_err(|_| Error::new(ErrorKind::Other,
                                             "socket get mut failed"))?
                     .send_to(&addr, &buf)
-                .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
-                    // Would block.  Buffer the message and succeed.
+                    .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
+                        // Would block.  Buffer the message and succeed.
+                        trace!(target: "flows",
+                               "buffering {} byte message to {}",
+                               buf.len(), addr);
 
-                    // Try to get the output buffer to push the message.
-                    self.outbuf
-                        .try_borrow_mut()
-                        .map_err(|_| Error::new(ErrorKind::Other,
-                                                "outbuf get_mut failed"))
-                        .map(|mut outbuf| {
-                            outbuf.push_back((addr, buf.to_vec()));
+                        // Try to get the output buffer to push the message.
+                        self.outbuf
+                            .try_borrow_mut()
+                            .map_err(|_| Error::new(ErrorKind::Other,
+                                                    "outbuf get_mut failed"))
+                            .map(|mut outbuf| {
+                                outbuf.push_back((addr, buf.to_vec()));
 
-                            Ok(len)
-                        })?
-                } else {
-                    // Propagate the error.
-                    Err(err)
-                }),
+                                Ok(len)
+                            })?
+                    } else {
+                        // Propagate the error.
+                        Err(err)
+                    })
+            }
             // Error occurred transforming.
             Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
         }
@@ -1002,15 +1023,38 @@ where
     }
 }
 
+pub fn connect_one<F, Sock, InboundNego, OutboundNego, Xfrm>(
+    flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
+    poll: &mut Poll,
+    out_param: &OutboundNego::Param,
+    in_param: &InboundNego::Param,
+    addr: Xfrm::PeerAddr,
+    token: Token,
+) -> Result<F, Error>
+where
+    F: Flow,
+    Sock: Socket + Sender + Receiver + Source,
+    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm::PeerAddr: Clone + Display + Eq + Hash {
+    flows.flow(out_param, addr)
+        .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?
+        .map(Ok)
+        .unwrap_or_else(|| {
+            let (flow, _) = accept_one(flows, poll, in_param, token)
+                .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+
+            Ok(flow)
+        })
+}
+
 pub fn accept_one<F, Sock, InboundNego, OutboundNego, Xfrm>(
     flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
     param: &InboundNego::Param,
     token: Token,
-) -> Result<(F, Xfrm::PeerAddr),
-            FlowsListenError<Xfrm::Error, InboundNego::StartError,
-                             InboundNego::NegotiateError,
-                             OutboundNego::NegotiateError>>
+) -> Result<(F, Xfrm::PeerAddr), Error>
 where
     F: Flow,
     Sock: Socket + Sender + Receiver + Source,
@@ -1024,30 +1068,44 @@ where
         trace!(target: "accept-one",
                "poll wait");
 
-        poll.poll(&mut events, None).expect("Expected success");
+        poll.poll(&mut events, None)
+            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
 
         for event in events.iter() {
             trace!(target: "accept-one",
                    "event for token {:?}", event.token());
 
             if event.token() == token {
-                match flows.listen(param) {
-                    Ok(Some(ListenResult::New { endpoint, flow })) => {
-                        return Ok((flow, endpoint));
-                    }
-                    Ok(_) => {},
-                    Err(err) => if let FlowsListenError::IO {
-                        err: ioerr
-                    } = &err {
-                        match ioerr.kind() {
-                            ErrorKind::WouldBlock |
-                            ErrorKind::Interrupted => {},
-                            _ => return Err(err)
+                let mut valid = true;
+
+                while valid {
+                    match flows.listen(param) {
+                        Ok(Some(ListenResult::New { endpoint, flow })) => {
+                            return Ok((flow, endpoint));
                         }
-                    } else {
-                        return Err(err)
+                        Ok(_) => {}
+                        Err(err) => if let FlowsListenError::IO {
+                            err: ioerr
+                        } = &err {
+                            match ioerr.kind() {
+                                ErrorKind::WouldBlock |
+                                ErrorKind::Interrupted => {
+                                    valid = false
+                                }
+                                _ => return Err(Error::new(ErrorKind::Other,
+                                                           err.to_string()))
+                            }
+                        } else {
+                            return Err(Error::new(ErrorKind::Other,
+                                              err.to_string()))
+                        }
                     }
                 }
+
+                flows.push()
+                    .map_err(|err| Error::new(
+                        ErrorKind::Other, err.to_string()
+                    ))?
             }
         }
     }

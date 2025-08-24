@@ -54,6 +54,7 @@ use constellation_common::retry::RetryResult;
 use constellation_streams::stream::ConcurrentStream;
 use log::debug;
 use log::info;
+use log::trace;
 use log::warn;
 use openssl::error::ErrorStack;
 use openssl::ssl::SslAcceptor;
@@ -281,6 +282,19 @@ pub enum DTLSInboundNegoError<Inner> {
     },
 }
 
+impl<Inner> DTLSOutboundParam<Inner> {
+    #[inline]
+    pub fn new(
+        verify_endpoint: IPEndpointAddr,
+        inner: Inner
+    ) -> Self {
+        DTLSOutboundParam {
+            verify_endpoint: verify_endpoint,
+            inner: inner
+        }
+    }
+}
+
 impl<Inner> ScopedError for DTLSNegotiateError<Inner>
 where
     Inner: ScopedError
@@ -498,6 +512,10 @@ where
                             })
                         }
                         HandshakeError::WouldBlock(pending) => {
+                            trace!(target: "far-dtls",
+                                   "pausing DTLS negotiation with {}",
+                                   addr);
+
                             Ok(NegotiatorResult::Pending(
                                 DTLSInboundNegoPending::DTLS {
                                     pending: pending
@@ -553,6 +571,10 @@ where
                                 })
                             }
                             HandshakeError::WouldBlock(pending) => {
+                                trace!(target: "far-dtls",
+                                       "pausing DTLS negotiation with {}",
+                                       addr);
+
                                 Ok(NegotiatorResult::Pending(
                                     DTLSInboundNegoPending::DTLS {
                                         pending: pending
@@ -571,31 +593,37 @@ where
                     )
                 )
             }
-            DTLSInboundNegoPending::DTLS { pending } => match pending
-                .handshake() {
-                Ok(stream) => {
-                    let addr = stream.get_ref().peer_addr();
+            DTLSInboundNegoPending::DTLS { pending } => {
+                let addr = pending.get_ref().peer_addr();
 
-                    info!(target: "far-dtls",
-                          "established DTLS session with {}", addr);
+                trace!(target: "far-dtls",
+                       "resuming DTLS negotiation with {}",
+                       addr);
 
-                    Ok(NegotiatorResult::Complete(DTLSFlow { ssl: stream }))
-                }
-                Err(err) => match err {
-                    HandshakeError::SetupFailure(stack) =>
-                        Err(DTLSNegotiateError::OpenSSL {
-                            err: stack
-                        }),
-                    HandshakeError::Failure(err) =>
-                        Err(DTLSNegotiateError::Handshake {
-                            err: err.into_error()
-                        }),
-                    HandshakeError::WouldBlock(pending) =>
-                        Ok(NegotiatorResult::Pending(
-                            DTLSInboundNegoPending::DTLS {
-                                pending: pending
-                            }
-                        )),
+                match pending .handshake() {
+                    Ok(stream) => {
+                        info!(target: "far-dtls",
+                              "established DTLS session with {}", addr);
+
+                        Ok(NegotiatorResult::Complete(DTLSFlow { ssl: stream }))
+                    }
+                    Err(err) => match err {
+                        HandshakeError::SetupFailure(stack) =>
+                            Err(DTLSNegotiateError::OpenSSL {
+                                err: stack
+                            }),
+                        HandshakeError::Failure(err) =>
+                            Err(DTLSNegotiateError::Handshake {
+                                err: err.into_error()
+                            }),
+                        HandshakeError::WouldBlock(pending) => {
+                            Ok(NegotiatorResult::Pending(
+                                DTLSInboundNegoPending::DTLS {
+                                    pending: pending
+                                }
+                            ))
+                        }
+                    }
                 }
             }
         }
@@ -655,12 +683,14 @@ where
                 let addr = flow.peer_addr();
 
                 debug!(target: "far-dtls",
-                       "establishing DTLS session with {}", addr);
+                       "establishing DTLS session with {}",
+                       addr);
 
                 match state.connector.connect(state.domain.as_str(), flow) {
                     Ok(stream) => {
                         info!(target: "far-dtls",
-                              "established DTLS session with {}", addr);
+                              "established DTLS session with {}",
+                              addr);
 
                         Ok(NegotiatorResult::Complete(DTLSFlow { ssl: stream }))
                     }
@@ -674,6 +704,10 @@ where
                             })
                         }
                         HandshakeError::WouldBlock(pending) => {
+                            trace!(target: "far-dtls",
+                                   "pausing DTLS negotiation with {}",
+                                   addr);
+
                             Ok(NegotiatorResult::Pending(
                                 DTLSOutboundNegoPending::DTLS {
                                     pending: pending
@@ -732,6 +766,9 @@ where
                                 })
                             }
                             HandshakeError::WouldBlock(pending) => {
+                                trace!(target: "far-dtls",
+                                       "pausing DTLS session with {}", addr);
+
                                 Ok(NegotiatorResult::Pending(
                                     DTLSOutboundNegoPending::DTLS {
                                         pending: pending
@@ -751,31 +788,42 @@ where
                     )
                 )
             }
-            DTLSOutboundNegoPending::DTLS { pending } => match pending
-                .handshake() {
-                Ok(stream) => {
-                    let addr = stream.get_ref().peer_addr();
+            DTLSOutboundNegoPending::DTLS { pending } => {
+                let addr = pending.get_ref().peer_addr();
 
-                    info!(target: "far-dtls",
-                          "established DTLS session with {}", addr);
+                trace!(target: "far-dtls",
+                       "resuming DTLS negotiation with {}",
+                       addr);
 
-                    Ok(NegotiatorResult::Complete(DTLSFlow { ssl: stream }))
-                }
-                Err(err) => match err {
-                    HandshakeError::SetupFailure(stack) =>
-                        Err(DTLSNegotiateError::OpenSSL {
-                            err: stack
-                        }),
-                    HandshakeError::Failure(err) =>
-                        Err(DTLSNegotiateError::Handshake {
-                            err: err.into_error()
-                        }),
-                    HandshakeError::WouldBlock(pending) =>
-                        Ok(NegotiatorResult::Pending(
-                            DTLSOutboundNegoPending::DTLS {
-                                pending: pending
-                            }
-                        )),
+                match pending.handshake() {
+                    Ok(stream) => {
+                        info!(target: "far-dtls",
+                              "established DTLS session with {}",
+                              addr);
+
+                        Ok(NegotiatorResult::Complete(DTLSFlow { ssl: stream }))
+                    }
+                    Err(err) => match err {
+                        HandshakeError::SetupFailure(stack) =>
+                            Err(DTLSNegotiateError::OpenSSL {
+                                err: stack
+                            }),
+                        HandshakeError::Failure(err) =>
+                            Err(DTLSNegotiateError::Handshake {
+                                err: err.into_error()
+                            }),
+                        HandshakeError::WouldBlock(pending) => {
+                            trace!(target: "far-dtls",
+                                   "pausing DTLS negotiation with {}",
+                                   addr);
+
+                            Ok(NegotiatorResult::Pending(
+                                DTLSOutboundNegoPending::DTLS {
+                            pending: pending
+                                }
+                            ))
+                        }
+                    }
                 }
             }
         }
@@ -930,6 +978,8 @@ impl<F> Drop for DTLSFlow<F>
 where
     F: Flow + Read + Write
 {
+    // XXX this actually doesn't shut down cleanly, because the wait
+    // will always fail.
     fn drop(&mut self) {
         loop {
             match self.ssl.shutdown() {
@@ -1062,24 +1112,32 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 #[cfg(test)]
-use constellation_auth::authn::AuthNed;
-#[cfg(test)]
-use constellation_auth::authn::PassthruSessionAuthN;
-#[cfg(test)]
-use constellation_auth::cred::NullCred;
-#[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use mio::Interest;
+#[cfg(test)]
+use mio::Poll;
+#[cfg(test)]
+use mio::Token;
 
 #[cfg(test)]
+use crate::config::FlowsConfig;
+#[cfg(test)]
 use crate::config::UDPFarChannelConfig;
-#[cfg(test)]
-use crate::far::udp::UDPFarChannel;
-#[cfg(test)]
-use crate::far::udp::UDPFarSocket;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
+#[cfg(test)]
+use crate::far::flows::accept_one;
+#[cfg(test)]
+use crate::far::flows::connect_one;
+#[cfg(test)]
+use crate::far::flows::read_one;
+#[cfg(test)]
+use crate::far::flows::write_one;
+#[cfg(test)]
+use crate::far::udp::UDPFarChannel;
 
 #[cfg(test)]
 const CHANNEL_CONFIG: &'static str = concat!(
@@ -1127,13 +1185,13 @@ fn test_send_recv() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let channel_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
+    let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
         serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
     let client_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
         serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-    let channel_addr = SocketAddr::new(
-        channel_config.tls().underlying().addr().clone(),
-        channel_config.tls().underlying().port()
+    let server_addr = SocketAddr::new(
+        server_config.tls().underlying().addr().clone(),
+        server_config.tls().underlying().port()
     );
     let client_addr = SocketAddr::new(
         client_config.tls().underlying().addr().clone(),
@@ -1142,90 +1200,98 @@ fn test_send_recv() {
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier.clone();
+    let mut server_nscaches = nscaches.clone();
+    let server_barrier = barrier.clone();
     let listen = spawn(move || {
-        let mut listener = DTLSFarChannel::<UDPFarChannel>::new(
-            &mut client_nscaches,
-            channel_config
-        )
-        .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = listener.acquire().unwrap();
+        let mut listener = DTLSFarChannel::<UDPFarChannel>
+            ::new(&mut server_nscaches, server_config)
+            .expect("Expected success");
+        let config = FlowsConfig::default();
+        let param = match listener.acquire()
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
         let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: MultiFlows<
-            UDPFarSocket,
-            PassthruDatagramXfrm<SocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
+        let mut flows = listener.flows(config, param, xfrm)
+            .expect("Expected success");
+        let mut poll = Poll::new().expect("Expected success");
+        let token = Token(0);
+
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
+        let (mut flow, peer_addr) =
+            accept_one(&mut flows, &mut poll, &(), token)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
         let mut buf = [0; FIRST_BYTES.len()];
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &peer_addr, &(), token)
+            .expect("Expected success");
 
-        client_barrier.wait();
+        write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
+            .expect("Expected success");
 
-        let (session, peer_addr) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-        let (NullCred, mut flow) = session.take();
-
-        client_barrier.wait();
-
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
+        server_barrier.wait();
 
         assert_eq!(peer_addr, client_addr);
         assert_eq!(FIRST_BYTES.len(), nbytes);
         assert_eq!(FIRST_BYTES, buf);
     });
-    let channel_barrier = barrier;
-    let mut channel_nscaches = nscaches.clone();
+
+    let mut client_nscaches = nscaches.clone();
+    let client_barrier = barrier;
     let send = spawn(move || {
-        let mut conn = DTLSFarChannel::<UDPFarChannel>::new(
-            &mut channel_nscaches,
-            client_config
-        )
-        .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = conn.acquire().unwrap();
-        let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: SingleFlow<
-            UDPFarSocket,
-            PassthruDatagramXfrm<SocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
-
-        channel_barrier.wait();
-
-        let session = match flows
-            .flow(
-                &nego,
-                &PassthruSessionAuthN,
-                channel_addr.clone(),
-                Some(&endpoint)
-            )
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
+        let dtlsparam = DTLSOutboundParam {
+            verify_endpoint: endpoint,
+            inner: ()
         };
-        let (NullCred, mut flow) = session.take();
+        let mut conn = DTLSFarChannel::<UDPFarChannel>
+            ::new(&mut client_nscaches, client_config)
+                .expect("expected success");
+        let config = FlowsConfig::default();
+        let param = match conn.acquire()
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
+        let xfrm = PassthruDatagramXfrm::new();
+        let mut flows = conn.flows(config, param, xfrm)
+            .expect("Expected success");
+        let mut poll = Poll::new().expect("Expected success");
+        let token = Token(0);
 
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
 
-        channel_barrier.wait();
+        client_barrier.wait();
+
+        let mut flow = connect_one(&mut flows, &mut poll, &dtlsparam, &(),
+                                   server_addr.clone(), token)
+            .expect("Expected success");
+
+        write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
+            .expect("Expected success");
+
+        client_barrier.wait();
+        client_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        channel_barrier.wait();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &server_addr, &(), token)
+            .expect("Expected success");
 
-        flow.read_exact(&mut buf).unwrap();
-
+        assert_eq!(SECOND_BYTES.len(), nbytes);
         assert_eq!(SECOND_BYTES, buf);
     });
 

@@ -19,25 +19,65 @@
 use std::net::SocketAddr;
 
 use constellation_channels::config::FlowsConfig;
+use constellation_channels::config::DTLSFarChannelConfig;
 use constellation_channels::config::UDPFarChannelConfig;
 use constellation_channels::far::FarChannel;
 use constellation_channels::far::FarChannelCreate;
 use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::flows::accept_one;
+use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
+use constellation_channels::far::dtls::DTLSFarChannel;
+use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::udp::UDPFarChannel;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
+use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::retry::RetryResult;
-use log::info;
 use log::LevelFilter;
 use mio::Interest;
 use mio::Poll;
 use mio::Token;
 
-const SERVER_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7007\n");
-const CLIENT_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7008\n");
+const SERVER_CONFIG: &'static str = concat!(
+    "addr: ::1\n",
+    "port: 8281\n",
+    "cipher-suites:\n",
+    "  - TLS_AES_256_GCM_SHA384\n",
+    "  - TLS_CHACHA20_POLY1305_SHA256\n",
+    "key-exchange-groups:\n",
+    "  - P-384\n",
+    "  - X25519\n",
+    "  - P-256\n",
+    "trust-root:\n",
+    "  root-certs:\n",
+    "    - test/data/certs/client/ca_cert.pem\n",
+    "  crls: []\n",
+    "cert: test/data/certs/server/certs/test_server_cert.pem\n",
+    "key: test/data/certs/server/private/test_server_key.pem\n",
+);
+
+const CLIENT_CONFIG: &'static str = concat!(
+    "addr: ::1\n",
+    "port: 8282\n",
+    "cipher-suites:\n",
+    "  - TLS_AES_256_GCM_SHA384\n",
+    "  - TLS_CHACHA20_POLY1305_SHA256\n",
+    "key-exchange-groups:\n",
+    "  - P-384\n",
+    "  - X25519\n",
+    "  - P-256\n",
+    "trust-root:\n",
+    "  root-certs:\n",
+    "    - test/data/certs/server/ca_cert.pem\n",
+    "  crls: []\n",
+    "cert: test/data/certs/client/certs/test_client_cert.pem\n",
+    "key: test/data/certs/client/private/test_client_key.pem\n",
+);
+
+//const SERVER_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7007\n");
+//const CLIENT_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7008\n");
 //const SERVER_CONFIG: &'static str =
 //    concat!("path: test_far_send_recv_channel.sock\n",);
 //const CLIENT_CONFIG: &'static str =
@@ -46,10 +86,11 @@ const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
 fn server() {
-    let server_config = serde_yaml::from_str(SERVER_CONFIG).unwrap();
+    let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
+        serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
-    let mut listener =
-        UDPFarChannel::new(&mut nscaches, server_config)
+    let mut listener = DTLSFarChannel::<UDPFarChannel>
+        ::new(&mut nscaches, server_config)
         .expect("Expected success");
     let config = FlowsConfig::default();
     let param = match listener.acquire()
@@ -67,12 +108,12 @@ fn server() {
                              Interest::READABLE | Interest::WRITABLE)
         .expect("Expected success");
 
-    let (mut flow, peer_addr) = accept_one(&mut flows, &mut poll, token)
+    let (mut flow, peer_addr) = accept_one(&mut flows, &mut poll, &(), token)
         .expect("Expected success");
 
     let mut buf = [0; FIRST_BYTES.len()];
     let nbytes = read_one(&mut flows, &mut poll, &mut flow,
-                          &mut buf, &peer_addr, token)
+                          &mut buf, &peer_addr, &(), token)
         .expect("Expected success");
 
     write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
@@ -83,14 +124,19 @@ fn server() {
 }
 
 fn client() {
-    let server_config: UDPFarChannelConfig =
+    let servername = "test-server.nowhere.com";
+    let endpoint = IPEndpointAddr::name(String::from(servername));
+    let dtlsparam = DTLSOutboundParam::new(endpoint, ());
+    let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
         serde_yaml::from_str(SERVER_CONFIG).unwrap();
-    let server_addr =
-        SocketAddr::new(server_config.addr().clone(), server_config.port());
+    let server_addr = SocketAddr::new(
+        server_config.tls().underlying().addr().clone(),
+        server_config.tls().underlying().port()
+    );
     let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
-    let mut conn =
-        UDPFarChannel::new(&mut nscaches, client_config)
+    let mut conn = DTLSFarChannel::<UDPFarChannel>
+        ::new(&mut nscaches, client_config)
         .expect("expected success");
     let config = FlowsConfig::default();
     let param = match conn.acquire()
@@ -108,9 +154,9 @@ fn client() {
                              Interest::READABLE | Interest::WRITABLE)
         .expect("Expected success");
 
-    let mut flow = flows.flow(server_addr.clone())
-        .expect("Expected success")
-        .expect("Expected some");
+    let mut flow = connect_one(&mut flows, &mut poll, &dtlsparam, &(),
+                               server_addr.clone(), token)
+        .expect("Expected success");
 
     write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
         .expect("Expected success");
@@ -118,7 +164,7 @@ fn client() {
     let mut buf = [0; SECOND_BYTES.len()];
 
     let nbytes = read_one(&mut flows, &mut poll, &mut flow,
-                          &mut buf, &server_addr, token)
+                          &mut buf, &server_addr, &(), token)
         .expect("Expected success");
 
     assert_eq!(SECOND_BYTES.len(), nbytes);

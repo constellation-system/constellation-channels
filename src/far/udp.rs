@@ -458,6 +458,8 @@ use crate::resolve::cache::SharedNSNameCaches;
 #[cfg(test)]
 use crate::far::flows::accept_one;
 #[cfg(test)]
+use crate::far::flows::connect_one;
+#[cfg(test)]
 use crate::far::flows::read_one;
 #[cfg(test)]
 use crate::far::flows::write_one;
@@ -552,9 +554,10 @@ fn test_send_recv() {
 
         client_barrier.wait();
 
-        let mut flow = flows.flow(&(), server_addr.clone())
-            .expect("Expected success")
-            .expect("Expected some");
+
+        let mut flow = connect_one(&mut flows, &mut poll, &(), &(),
+                                   server_addr.clone(), token)
+            .expect("Expected success");
 
         write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
             .expect("Expected success");
