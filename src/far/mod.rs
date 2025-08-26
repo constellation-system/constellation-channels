@@ -180,9 +180,9 @@ use crate::far::flows::Flows;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
-use crate::unix::UnixSocketAddr;
+use crate::unix::UnixSocketPath;
 
-//pub mod compound;
+pub mod compound;
 #[cfg(feature = "dtls")]
 pub mod dtls;
 pub mod flows;
@@ -640,8 +640,8 @@ impl FarChannelAcquiredResolve for SocketAddr {
     }
 }
 
-impl FarChannelAcquired for UnixSocketAddr {
-    type Resolved = UnixSocketAddr;
+impl FarChannelAcquired for UnixSocketPath {
+    type Resolved = UnixSocketPath;
     type WrapError = AcquiredResolveStaticError;
 
     #[inline]
@@ -653,7 +653,7 @@ impl FarChannelAcquired for UnixSocketAddr {
     }
 }
 
-impl FarChannelAcquiredResolve for UnixSocketAddr {
+impl FarChannelAcquiredResolve for UnixSocketPath {
     type ResolverError = Infallible;
 
     #[inline]

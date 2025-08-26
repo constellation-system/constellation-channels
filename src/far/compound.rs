@@ -24,205 +24,8 @@
 //! applications should use these implementations, unless there is a
 //! good reason to impose more stringent restrictions on what types of
 //! channels can be configured.
-//!
-//! ### Examples
-//!
-//! The following shows an example use of [CompoundFarChannel].
-//! establishing a DTLS session over UDP (note that `CLIENT_CONFIG`
-//! and `SERVER_CONFIG` can be modified to support any alternate
-//! configuration):
-//!
-//! ```
-//! # use constellation_auth::authn::PassthruSessionAuthN;
-//! # use constellation_common::net::DatagramXfrmCreate;
-//! # use constellation_common::net::IPEndpointAddr;
-//! # use constellation_common::net::PassthruDatagramXfrm;
-//! # use constellation_common::retry::RetryResult;
-//! # use constellation_channels::config::CompoundFarChannelConfig;
-//! # use constellation_channels::config::CompoundXfrmCreateParam;
-//! # use constellation_channels::far::compound::CompoundFarChannel;
-//! # use constellation_channels::far::compound::CompoundFarChannelAcquired;
-//! # use constellation_channels::far::compound::CompoundFarChannelAddr;
-//! # use constellation_channels::far::compound::CompoundFarChannelXfrm;
-//! # use constellation_channels::far::compound::CompoundFarChannelXfrmPeerAddr;
-//! # use constellation_channels::far::compound::CompoundFarChannelMultiFlows;
-//! # use constellation_channels::far::compound::CompoundFarChannelParam;
-//! # use constellation_channels::far::compound::CompoundFarChannelSingleFlow;
-//! # use constellation_channels::far::compound::CompoundFarChannelSocket;
-//! # use constellation_channels::far::compound::CompoundFarIPChannelAcquired;
-//! # use constellation_channels::far::compound::CompoundFarIPChannelParam;
-//! # use constellation_channels::far::FarChannel;
-//! # use constellation_channels::far::FarChannelCreate;
-//! # use constellation_channels::far::FarChannelBorrowFlows;
-//! # use constellation_channels::far::FarChannelNegotiator;
-//! # use constellation_channels::far::flows::MultiFlows;
-//! # use constellation_channels::far::flows::SingleFlow;
-//! # use constellation_channels::far::flows::BorrowedFlows;
-//! # use constellation_channels::resolve::cache::SharedNSNameCaches;
-//! # use constellation_channels::unix::UnixSocketAddr;
-//! # use std::net::Shutdown;
-//! # use std::net::SocketAddr;
-//! # use std::thread::spawn;
-//! # use std::io::Read;
-//! # use std::io::Write;
-//! # use std::sync::Arc;
-//! # use std::sync::Barrier;
-//! # use std::thread::sleep;
-//! # use std::time::Duration;
-//! #
-//! const CHANNEL_CONFIG: &'static str =
-//!     concat!(
-//!         "dtls:\n",
-//!         "  cipher-suites:\n",
-//!         "    - TLS_AES_256_GCM_SHA384\n",
-//!         "    - TLS_CHACHA20_POLY1305_SHA256\n",
-//!         "  key-exchange-groups:\n",
-//!         "    - P-384\n",
-//!         "    - X25519\n",
-//!         "    - P-256\n",
-//!         "  trust-root:\n",
-//!         "    root-certs:\n",
-//!         "      - test/data/certs/client/ca_cert.pem\n",
-//!         "    crls: []\n",
-//!         "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-//!         "  key: test/data/certs/server/private/test_server_key.pem\n",
-//!         "  udp:\n",
-//!         "    addr: ::1\n",
-//!         "    port: 7000\n"
-//!     );
-//! const CLIENT_CONFIG: &'static str =
-//!     concat!(
-//!         "dtls:\n",
-//!         "  cipher-suites:\n",
-//!         "    - TLS_AES_256_GCM_SHA384\n",
-//!         "    - TLS_CHACHA20_POLY1305_SHA256\n",
-//!         "  key-exchange-groups:\n",
-//!         "    - P-384\n",
-//!         "    - X25519\n",
-//!         "    - P-256\n",
-//!         "  trust-root:\n",
-//!         "    root-certs:\n",
-//!         "      - test/data/certs/server/ca_cert.pem\n",
-//!         "    crls: []\n",
-//!         "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-//!         "  key: test/data/certs/client/private/test_client_key.pem\n",
-//!         "  udp:\n",
-//!         "    addr: ::1\n",
-//!         "    port: 7001\n"
-//!     );
-//! const FIRST_BYTES: [u8; 8] = [ 0x00, 0x01, 0x02, 0x03,
-//!                                0x04, 0x05, 0x06, 0x07 ];
-//! const SECOND_BYTES: [u8; 8] = [ 0x08, 0x09, 0x0a, 0x0b,
-//!                                 0x0c, 0x0d, 0x0e, 0x0f ];
-//! let channel_config: CompoundFarChannelConfig =
-//!     serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
-//! let client_config: CompoundFarChannelConfig =
-//!     serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-//! let nscaches = SharedNSNameCaches::new();
-//! # let barrier = Arc::new(Barrier::new(2));
-//!
-//! let client_addr =
-//!     CompoundFarChannelXfrmPeerAddr::udp("[::1]:7001".parse().unwrap());
-//! let mut client_nscaches = nscaches.clone();
-//! let client_barrier = barrier.clone();
-//! let listen = spawn(move || {
-//!     let mut listener =
-//!         CompoundFarChannel::new(&mut client_nscaches, channel_config)
-//!             .expect("Expected success");
-//!     let nego = FarChannelNegotiator::negotiator(&listener);
-//!     let param = match listener.acquire().unwrap() {
-//!         CompoundFarChannelAcquired::IP {
-//!             ip: CompoundFarIPChannelAcquired::UDP { udp }
-//!         } => CompoundFarChannelParam::IP {
-//!             ip: CompoundFarIPChannelParam::UDP { udp: udp }
-//!         },
-//!         _ => panic!("Expected UDP acquired")
-//!     };
-//!     let create_param = CompoundXfrmCreateParam::default();
-//!     let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-//!     let mut flows: CompoundFarChannelMultiFlows<
-//!         PassthruDatagramXfrm<UnixSocketAddr>,
-//!         PassthruDatagramXfrm<SocketAddr>
-//!     > = listener.borrowed_flows(param, xfrm, ()).unwrap();
-//!
-//! #   client_barrier.wait();
-//!
-//!     let mut buf = [0; FIRST_BYTES.len()];
-//!     let (mut flow, peer_addr, NullCred) =
-//!         match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-//!             RetryResult::Success(flow) => flow,
-//!             _ => panic!("Shouldn't see retry")
-//!         };
-//!
-//! #   client_barrier.wait();
-//!
-//!     let nbytes = flow.read(&mut buf).unwrap();
-//!
-//!     flow.write_all(&SECOND_BYTES).expect("Expected success");
-//!
-//! #   client_barrier.wait();
-//!
-//!     assert_eq!(peer_addr, client_addr);
-//!     assert_eq!(FIRST_BYTES.len(), nbytes);
-//!     assert_eq!(FIRST_BYTES, buf);
-//! });
-//!
-//! let channel_addr =
-//!     CompoundFarChannelXfrmPeerAddr::udp("[::1]:7000".parse().unwrap());
-//! let mut channel_nscaches = nscaches.clone();
-//! let channel_barrier = barrier;
-//! let send = spawn(move || {
-//!     let mut conn =
-//!         CompoundFarChannel::new(&mut channel_nscaches, client_config)
-//!             .expect("expected success");
-//!     let nego = FarChannelNegotiator::negotiator(&conn);
-//!     let param = match conn.acquire().unwrap() {
-//!         CompoundFarChannelAcquired::IP {
-//!             ip: CompoundFarIPChannelAcquired::UDP { udp }
-//!         } => CompoundFarChannelParam::IP {
-//!             ip: CompoundFarIPChannelParam::UDP { udp: udp }
-//!         },
-//!         _ => panic!("Expected UDP acquired")
-//!     };
-//!     let create_param = CompoundXfrmCreateParam::default();
-//!     let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-//!
-//! #   channel_barrier.wait();
-//!
-//!     let mut flows: CompoundFarChannelSingleFlow<
-//!         PassthruDatagramXfrm<UnixSocketAddr>,
-//!         PassthruDatagramXfrm<SocketAddr>
-//!     > = conn
-//!         .borrowed_flows(param, xfrm, channel_addr.clone())
-//!         .unwrap();
-//!     let servername = "test-server.nowhere.com";
-//!     let endpoint = IPEndpointAddr::name(String::from(servername));
-//!     let (mut flow, NullCred) = match flows
-//!         .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(),
-//!               Some(&endpoint))
-//!         .unwrap()
-//!     {
-//!         RetryResult::Success(flow) => flow,
-//!         _ => panic!("Shouldn't see retry")
-//!     };
-//!
-//!     flow.write_all(&FIRST_BYTES).expect("Expected success");
-//!
-//! #   channel_barrier.wait();
-//!
-//!     let mut buf = [0; SECOND_BYTES.len()];
-//!
-//! #   channel_barrier.wait();
-//!
-//!     flow.read_exact(&mut buf).unwrap();
-//!
-//!     assert_eq!(SECOND_BYTES, buf);
-//! });
-//!
-//! send.join().unwrap();
-//! listen.join().unwrap();
-//! ```
 
+use std::cell::BorrowMutError;
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -238,7 +41,6 @@ use std::net::SocketAddr;
 use std::os::unix::net::UCred;
 use std::sync::Arc;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::Credentials;
 #[cfg(feature = "tls")]
 use constellation_auth::cred::SSLCred;
@@ -249,10 +51,12 @@ use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
-use constellation_common::nonblock::NonblockResult;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
 #[cfg(feature = "socks5")]
@@ -262,6 +66,10 @@ use constellation_socks5::comm::SOCKS5UDPXfrm;
 #[cfg(feature = "socks5")]
 use constellation_socks5::error::SOCKS5UDPError;
 use constellation_streams::channels::ChannelParam;
+use mio::event::Source;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::tls::TLSPeerConfig;
@@ -288,6 +96,12 @@ use crate::far::socks5::SOCKS5CreateError;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5FarChannel;
 #[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5NegotiateError;
+#[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5NegotiatePending;
+#[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5SessionNegotiation;
+#[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5SocketError;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5XfrmError;
@@ -302,14 +116,18 @@ use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelCreate;
-use crate::far::FarChannelNegotiator;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::near::compound::CompoundNearClientConn;
 use crate::near::compound::CompoundNearConnector;
+use crate::near::compound::CompoundNearConnectorState;
 use crate::near::compound::CompoundNearConnectorCreateError;
+use crate::near::compound::CompoundNearConnectorStartError;
+use crate::near::compound::CompoundNearConnectorNegotiateError;
+use crate::near::compound::CompoundNearConnectorNegotiatePending;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolution;
-use crate::unix::UnixSocketAddr;
+use crate::unix::UnixSocketPath;
 
 /// Type alias for [CompoundNearConnector] instances that use
 /// [TLSPeerConfig] as their TLS configuration.
@@ -409,6 +227,27 @@ pub enum CompoundFarChannel {
     }
 }
 
+pub enum CompoundFarIPChannelAcquireState {
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: Box<SOCKS5SessionNegotiation<CompoundNearConnectorState,
+                                             CompoundFarIPChannelAcquireState>>
+    },
+    UDP {
+        udp: SocketAddr
+    },
+}
+
+pub enum CompoundFarChannelAcquireState {
+    #[cfg(feature = "unix")]
+    Unix {
+        unix: UnixSocketPath
+    },
+    IP {
+        ip: CompoundFarIPChannelAcquireState
+    }
+}
+
 /// Multiplexer for [Acquired](FarChannel::Acquired)s for
 /// [CompoundFarIPChannel].
 pub enum CompoundFarIPChannelAcquired {
@@ -426,7 +265,7 @@ pub enum CompoundFarIPChannelAcquired {
 pub enum CompoundFarChannelAcquired {
     #[cfg(feature = "unix")]
     Unix {
-        unix: UnixSocketAddr
+        unix: UnixSocketPath
     },
     IP {
         ip: CompoundFarIPChannelAcquired
@@ -435,7 +274,7 @@ pub enum CompoundFarChannelAcquired {
 
 /// Multiplexer for [Param](FarChannelSocket::Param)s for
 /// [CompoundFarIPChannel].
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum CompoundFarIPChannelParam {
     UDP {
         udp: SocketAddr
@@ -453,11 +292,11 @@ pub enum CompoundFarIPChannelParam {
 
 /// Multiplexer for [Param](FarChannelSocket::Param)s for
 /// [CompoundFarChannel].
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum CompoundFarChannelParam {
     #[cfg(feature = "unix")]
     Unix {
-        unix: UnixSocketAddr
+        unix: UnixSocketPath
     },
     IP {
         ip: CompoundFarIPChannelParam
@@ -467,7 +306,7 @@ pub enum CompoundFarChannelParam {
 /// [DatagramXfrm] instance for [CompoundFarChannel]s.
 pub enum CompoundFarChannelXfrm<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     #[cfg(feature = "unix")]
@@ -496,15 +335,22 @@ where
 /// Multiplexer for [AcquireError](FarChannel::AcquireError)s for
 /// [CompoundFarChannel].
 #[derive(Debug)]
-pub enum CompoundFarChannelAcquireError {
+pub enum CompoundFarIPChannelAcquireError {
     #[cfg(feature = "socks5")]
     SOCKS5 {
         socks5: Box<
             SOCKS5AcquireError<
-                CompoundNearConnectorTakeConnectError,
-                CompoundFarChannelAcquireError
+                CompoundNearConnectorStartError,
+                CompoundFarIPChannelAcquireError
             >
         >
+    }
+}
+
+#[derive(Debug)]
+pub enum CompoundFarChannelAcquireError {
+    IP {
+        ip: CompoundFarIPChannelAcquireError
     }
 }
 
@@ -512,6 +358,62 @@ pub enum CompoundFarChannelAcquireError {
 /// [CompoundFarChannel].
 #[derive(Debug)]
 pub enum CompoundFarChannelCreateError {
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: Box<
+            SOCKS5CreateError<
+                CompoundNearConnectorCreateError,
+                CompoundFarChannelCreateError
+            >
+        >
+    }
+}
+
+pub enum CompoundFarIPChannelAcquireNegoPending {
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: Box<
+            SOCKS5NegotiatePending<
+                CompoundFarIPChannelAcquired,
+                CompoundFarIPChannelAcquireState,
+                CompoundFarIPChannelAcquireNegoPending,
+                CompoundNearClientConn,
+                CompoundNearConnectorNegotiatePending
+            >
+        >
+    }
+}
+
+pub enum CompoundFarChannelAcquireNegoPending {
+    IP {
+        ip: CompoundFarIPChannelAcquireNegoPending
+    }
+}
+
+#[derive(Debug)]
+pub enum CompoundFarIPChannelAcquireNegoError {
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: Box<
+            SOCKS5NegotiateError<
+                CompoundFarIPChannelAcquireNegoError,
+                CompoundNearConnectorNegotiateError,
+            >
+        >
+    },
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum CompoundFarChannelAcquireNegoError {
+    IP {
+        err: CompoundFarIPChannelAcquireNegoError
+    },
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum CompoundFarChannelCreateNegoError {
     #[cfg(feature = "socks5")]
     SOCKS5 {
         socks5: Box<
@@ -547,7 +449,7 @@ pub enum CompoundFarChannelSocket {
 pub enum CompoundFarChannelAddr {
     #[cfg(feature = "unix")]
     Unix {
-        unix: UnixSocketAddr
+        unix: UnixSocketPath
     },
     IP {
         ip: SocketAddr
@@ -570,7 +472,7 @@ pub enum CompoundFarIPChannelXfrmPeerAddr {
 #[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd)]
 pub enum CompoundFarChannelXfrmPeerAddr {
     #[cfg(feature = "unix")]
-    Unix { unix: UnixSocketAddr },
+    Unix { unix: UnixSocketPath },
     IP {
         ip: CompoundFarIPChannelXfrmPeerAddr
     }
@@ -651,24 +553,22 @@ pub enum CompoundFarChannelXfrmWrapError<Unix, UDP> {
 
 /// [Negotiator] instance for inbound sessions for [CompoundFarChannel]s.
 #[derive(Clone)]
-pub enum CompoundInboundNegotiator<F> {
+pub enum CompoundInboundNegotiator {
     Basic,
     DTLS {
         dtls: DTLSInboundNegotiator<
-            Box<CompoundInboundNegotiator<F>>,
-            CompoundFlow<F>
+            Box<CompoundInboundNegotiator>,
         >
     }
 }
 
 /// [Negotiator] instance for outbound sessions for [CompoundFarChannel]s.
 #[derive(Clone)]
-pub enum CompoundOutboundNegotiator<F> {
+pub enum CompoundOutboundNegotiator {
     Basic,
     DTLS {
         dtls: DTLSOutboundNegotiator<
-            Box<CompoundOutboundNegotiator<F>>,
-            CompoundFlow<F>
+            Box<CompoundOutboundNegotiator>,
         >
     }
 }
@@ -723,12 +623,32 @@ pub enum CompoundFarChannelSessionCred<Basic> {
 }
 
 /// Multiplexer for [Flow]s for [CompoundFarChannel].
-pub enum CompoundFlow<F> {
+pub enum CompoundIPFlow<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     Basic {
-        flow: F
+        flow: BufferedFlow<
+            CompoundFarIPChannelSocket,
+            CompoundFarIPChannelXfrm<UDP>
+        >
     },
     DTLS {
-        flow: DTLSFlow<Box<CompoundFlow<F>>>
+        flow: DTLSFlow<Box<CompoundIPFlow<UDP>>>
+    }
+}
+
+pub enum CompoundFlow<Unix, UDP>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    Basic {
+        flow: BufferedFlow<
+            CompoundFarChannelSocket,
+            CompoundFarChannelXfrm<Unix, UDP>
+        >
+    },
+    DTLS {
+        flow: DTLSFlow<Box<CompoundFlow<Unix, UDP>>>
     }
 }
 
@@ -791,19 +711,18 @@ pub enum CompoundFarIPChannelXfrmPeerAddrError {
 
 impl<Unix, UDP> Credentials for CompoundFlow<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Cred = CompoundFarChannelSessionCred<F::Cred>;
-    type CredError =
-        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>;
+    type Cred = CompoundFarChannelSessionCred<CompoundFarChannelMsgCred>;
+    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred>,
-        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>
+        CompoundFarChannelSessionCredError<BorrowMutError>
     > {
         match self {
             CompoundFlow::DTLS { flow } => {
@@ -828,19 +747,71 @@ where
 
 impl<Unix, UDP> Credentials for Box<CompoundFlow<Unix, UDP>>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Cred = CompoundFarChannelSessionCred<F::Cred>;
-    type CredError =
-        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>;
+    type Cred = CompoundFarChannelSessionCred<CompoundFarChannelMsgCred>;
+    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred>,
-        CompoundFarChannelSessionCredError<<F as Credentials>::CredError>
+        CompoundFarChannelSessionCredError<BorrowMutError>
+    > {
+        self.as_ref().creds()
+    }
+}
+
+impl<UDP> Credentials for CompoundIPFlow<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+{
+    type Cred = CompoundFarChannelSessionCred<CompoundFarIPChannelMsgCred>;
+    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
+
+    #[inline]
+    fn creds(
+        &self
+    ) -> Result<
+        Option<Self::Cred>,
+        CompoundFarChannelSessionCredError<BorrowMutError>
+    > {
+        match self {
+            CompoundIPFlow::DTLS { flow } => {
+                let cred = flow.creds()?;
+
+                Ok(cred.map(|cred| CompoundFarChannelSessionCred::DTLS {
+                    dtls: Box::new(cred)
+                }))
+            }
+            CompoundIPFlow::Basic { flow } => {
+                let cred = flow.creds().map_err(|err| {
+                    CompoundFarChannelSessionCredError::Basic { error: err }
+                })?;
+
+                Ok(cred.map(|cred| CompoundFarChannelSessionCred::Basic {
+                    basic: cred
+                }))
+            }
+        }
+    }
+}
+
+impl<UDP> Credentials for Box<CompoundIPFlow<UDP>>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+{
+    type Cred = CompoundFarChannelSessionCred<CompoundFarIPChannelMsgCred>;
+    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
+
+    #[inline]
+    fn creds(
+        &self
+    ) -> Result<
+        Option<Self::Cred>,
+        CompoundFarChannelSessionCredError<BorrowMutError>
     > {
         self.as_ref().creds()
     }
@@ -1047,7 +1018,7 @@ impl FarChannelAcquiredResolve for CompoundFarIPChannelAcquired {
 impl<Unix, UDP> From<CompoundFarIPChannelXfrm<UDP>>
     for CompoundFarChannelXfrm<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     #[inline]
@@ -1056,9 +1027,9 @@ where
     }
 }
 
-impl From<UnixSocketAddr> for CompoundFarChannelXfrmPeerAddr {
+impl From<UnixSocketPath> for CompoundFarChannelXfrmPeerAddr {
     #[inline]
-    fn from(val: UnixSocketAddr) -> Self {
+    fn from(val: UnixSocketPath) -> Self {
         CompoundFarChannelXfrmPeerAddr::Unix { unix: val }
     }
 }
@@ -1115,7 +1086,7 @@ impl TryFrom<CompoundFarEndpoint>
             CompoundFarEndpoint::Unix { unix_datagram } => {
                 Ok(Resolution::Static {
                     addr: CompoundFarChannelXfrmPeerAddr::Unix {
-                        unix: UnixSocketAddr::try_from(unix_datagram)?
+                        unix: UnixSocketPath::from(unix_datagram)
                     }
                 })
             }
@@ -1125,7 +1096,7 @@ impl TryFrom<CompoundFarEndpoint>
 
 impl CompoundFarChannelXfrmPeerAddr {
     #[inline]
-    pub fn unix(addr: UnixSocketAddr) -> Self {
+    pub fn unix(addr: UnixSocketPath) -> Self {
         CompoundFarChannelXfrmPeerAddr::Unix { unix: addr }
     }
 
@@ -1185,11 +1156,11 @@ impl ChannelParam<SocketAddr> for CompoundFarChannelParam {
     }
 }
 
-impl ChannelParam<UnixSocketAddr> for CompoundFarChannelParam {
+impl ChannelParam<UnixSocketPath> for CompoundFarChannelParam {
     #[inline]
     fn accepts_addr(
         &self,
-        _addr: &UnixSocketAddr
+        _addr: &UnixSocketPath
     ) -> bool {
         matches!(self, CompoundFarChannelParam::Unix { .. })
     }
@@ -1197,7 +1168,7 @@ impl ChannelParam<UnixSocketAddr> for CompoundFarChannelParam {
 
 impl<Unix, UDP> DatagramXfrm for CompoundFarChannelXfrm<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Error = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
@@ -1406,10 +1377,10 @@ where
 
 impl<Unix, UDP> DatagramXfrmCreateParam for CompoundFarChannelXfrm<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
         + DatagramXfrmCreateParam<
             Socket = UnixDatagramSocket,
-            Param = UnixSocketAddr
+            Param = UnixSocketPath
         >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
         + DatagramXfrmCreateParam<Socket = UDPFarSocket, Param = SocketAddr>
@@ -1451,8 +1422,8 @@ where
 
 impl<Unix, UDP> DatagramXfrmCreate for CompoundFarChannelXfrm<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>
-        + DatagramXfrmCreate<Addr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
         + DatagramXfrmCreate<Addr = SocketAddr>
 {
@@ -1541,7 +1512,7 @@ where
 
 impl<Unix, UDP> DatagramXfrm for Box<CompoundFarChannelXfrm<Unix, UDP>>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Error = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
@@ -1770,24 +1741,6 @@ impl Receiver for CompoundFarChannelSocket {
             }
         }
     }
-
-    fn peek_from(
-        &self,
-        buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
-        match self {
-            CompoundFarChannelSocket::Unix { unix } => {
-                let (nbytes, addr) = unix.peek_from(buf)?;
-
-                Ok((nbytes, CompoundFarChannelAddr::Unix { unix: addr }))
-            }
-            CompoundFarChannelSocket::IP { ip } => {
-                let (nbytes, addr) = ip.peek_from(buf)?;
-
-                Ok((nbytes, CompoundFarChannelAddr::IP { ip: addr }))
-            }
-        }
-    }
 }
 
 impl Receiver for CompoundFarIPChannelSocket {
@@ -1821,20 +1774,6 @@ impl Receiver for CompoundFarIPChannelSocket {
                 });
 
                 Ok((nbytes, addr, cred))
-            }
-        }
-    }
-
-    #[inline]
-    fn peek_from(
-        &self,
-        buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
-        match self {
-            CompoundFarIPChannelSocket::UDP { udp } => {
-                let (nbytes, addr) = udp.peek_from(buf)?;
-
-                Ok((nbytes, addr))
             }
         }
     }
@@ -1916,10 +1855,19 @@ where
     }
 }
 
+impl ScopedError for CompoundFarIPChannelAcquireError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarIPChannelAcquireError::SOCKS5 { socks5 } =>
+                socks5.scope()
+        }
+    }
+}
+
 impl ScopedError for CompoundFarChannelAcquireError {
     fn scope(&self) -> ErrorScope {
         match self {
-            CompoundFarChannelAcquireError::SOCKS5 { socks5 } => socks5.scope()
+            CompoundFarChannelAcquireError::IP { ip } => ip.scope()
         }
     }
 }
@@ -1932,29 +1880,124 @@ impl ScopedError for CompoundFarChannelCreateError {
     }
 }
 
-impl FarChannel for CompoundFarIPChannel {
-    type AcquireError = CompoundFarChannelAcquireError;
-    type Acquired = CompoundFarIPChannelAcquired;
+impl ScopedError for CompoundFarIPChannelAcquireNegoError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarIPChannelAcquireNegoError::SOCKS5 { socks5 } =>
+                socks5.scope(),
+            CompoundFarIPChannelAcquireNegoError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
 
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
+impl ScopedError for CompoundFarChannelAcquireNegoError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarChannelAcquireNegoError::IP { err } => err.scope(),
+            CompoundFarChannelAcquireNegoError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl FarChannel for CompoundFarIPChannel {
+    type AcquireError = CompoundFarIPChannelAcquireError;
+    type Acquired = CompoundFarIPChannelAcquired;
+    type State = CompoundFarIPChannelAcquireState;
+    type NegotiateError = CompoundFarIPChannelAcquireNegoError;
+    type NegotiatePending = CompoundFarIPChannelAcquireNegoPending;
+
+    fn acquire(
+        &mut self,
+        registry: &Registry
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
         match self {
             CompoundFarIPChannel::UDP { udp } => {
-                let udp = udp.acquire().unwrap();
+                let Ok(udp) = udp.acquire(registry);
 
-                Ok(CompoundFarIPChannelAcquired::UDP { udp: udp })
+                Ok(udp.map(|udp| CompoundFarIPChannelAcquireState::UDP {
+                    udp: udp
+                }))
             }
-            CompoundFarIPChannel::DTLS { dtls } => dtls.acquire(),
+            CompoundFarIPChannel::DTLS { dtls } => dtls.acquire(registry),
             CompoundFarIPChannel::SOCKS5 { socks5 } => {
-                let socks5 = socks5.acquire().map_err(|err| {
-                    CompoundFarChannelAcquireError::SOCKS5 {
+                let socks5 = socks5.acquire(registry).map_err(|err| {
+                    CompoundFarIPChannelAcquireError::SOCKS5 {
                         socks5: Box::new(err)
                     }
                 })?;
 
-                Ok(CompoundFarIPChannelAcquired::SOCKS5 {
+                Ok(socks5.map(|socks5|
+                              CompoundFarIPChannelAcquireState::SOCKS5 {
+                                  socks5: Box::new(socks5)
+                              }))
+            }
+        }
+    }
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        match (self, state) {
+            (CompoundFarIPChannel::UDP { udp },
+             CompoundFarIPChannelAcquireState::UDP { udp: state }) => {
+                let Ok(NegotiatorResult::Complete(udp)) = udp.negotiate(state);
+
+                Ok(NegotiatorResult::Complete(CompoundFarIPChannelAcquired::UDP { udp: udp }))
+            }
+            (CompoundFarIPChannel::DTLS { dtls }, state) =>
+                dtls.negotiate(state),
+            (CompoundFarIPChannel::SOCKS5 { socks5 },
+             CompoundFarIPChannelAcquireState::SOCKS5 { socks5: state }) => {
+                Ok(socks5.negotiate(*state)
+                   .map_err(|err|
+                            CompoundFarIPChannelAcquireNegoError::SOCKS5 {
+                                socks5: Box::new(err)
+                            })?
+                   .map_pending(|pending|
+                                CompoundFarIPChannelAcquireNegoPending::SOCKS5 {
+                                    socks5: Box::new(pending)
+                                })
+                   .map(|socks5| CompoundFarIPChannelAcquired::SOCKS5 {
+                       socks5: Box::new(socks5)
+                   }))
+            }
+            _ => Err(CompoundFarIPChannelAcquireNegoError::Mismatch)
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        match (self, pending) {
+            (CompoundFarIPChannel::DTLS { dtls }, pending) =>
+                dtls.complete_negotiate(pending),
+            (CompoundFarIPChannel::SOCKS5 { socks5 },
+             CompoundFarIPChannelAcquireNegoPending::SOCKS5 {
+                 socks5: pending
+             }) => {
+                let socks5 = socks5.complete_negotiate(*pending)
+                    .map_err(|err|
+                             CompoundFarIPChannelAcquireNegoError::SOCKS5 {
+                                 socks5: Box::new(err)
+                             })?
+                    .map_pending(|pending|
+                                 CompoundFarIPChannelAcquireNegoPending::SOCKS5 {
+                                     socks5: Box::new(pending)
+                                 })
+                    .map(|socks5| CompoundFarIPChannelAcquired::SOCKS5 {
                     socks5: Box::new(socks5)
                 })
+                    ;
+
+                Ok(socks5)
             }
+            _ => Err(CompoundFarIPChannelAcquireNegoError::Mismatch)
         }
     }
 
@@ -1979,6 +2022,45 @@ impl FarChannel for CompoundFarIPChannel {
                 ErrorKind::Other,
                 "socket and address type mismatch"
             ))
+        }
+    }
+}
+
+impl Source for CompoundFarIPChannelSocket {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        match self {
+            CompoundFarIPChannelSocket::UDP { udp } =>
+                udp.register(registry, token, interests),
+        }
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        match self {
+            CompoundFarIPChannelSocket::UDP { udp } =>
+                udp.reregister(registry, token, interests),
+        }
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        match self {
+            CompoundFarIPChannelSocket::UDP { udp } =>
+                udp.deregister(registry),
         }
     }
 }
@@ -2021,25 +2103,27 @@ impl FarChannelCreate for CompoundFarIPChannel {
     type Config = CompoundFarIPChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
+        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
         match config {
             CompoundFarIPChannelConfig::UDP { udp } => {
-                let udp = UDPFarChannel::new(caches, udp).unwrap();
+                let udp = UDPFarChannel::new(caches, tokens, udp).unwrap();
 
                 Ok(CompoundFarIPChannel::UDP { udp: udp })
             }
             CompoundFarIPChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::new(caches, dtls)?;
+                let dtls = DTLSFarChannel::new(caches, tokens, dtls)?;
 
                 Ok(CompoundFarIPChannel::DTLS { dtls: dtls })
             }
             CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 = SOCKS5FarChannel::new(caches, socks5_udp)
+                let socks5 = SOCKS5FarChannel::new(caches, tokens, socks5_udp)
                     .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
                         socks5: Box::new(err)
                     })?;
@@ -2053,20 +2137,91 @@ impl FarChannelCreate for CompoundFarIPChannel {
 impl FarChannel for CompoundFarChannel {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarChannelAcquired;
+    type State = CompoundFarChannelAcquireState;
+    type NegotiateError = CompoundFarChannelAcquireNegoError;
+    type NegotiatePending = CompoundFarChannelAcquireNegoPending;
 
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
+    fn acquire(
+        &mut self,
+        registry: &Registry
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
         match self {
             CompoundFarChannel::Unix { unix } => {
-                let unix = unix.acquire().unwrap();
+                let Ok(unix) = unix.acquire(registry);
 
-                Ok(CompoundFarChannelAcquired::Unix { unix: unix })
+                Ok(unix.map(|unix| CompoundFarChannelAcquireState::Unix {
+                    unix: unix
+                }))
             }
-            CompoundFarChannel::DTLS { dtls } => dtls.acquire(),
+            CompoundFarChannel::DTLS { dtls } => dtls.acquire(registry),
             CompoundFarChannel::IP { ip } => {
-                let ip = ip.acquire()?;
-
-                Ok(CompoundFarChannelAcquired::IP { ip: ip })
+                Ok(ip.acquire(registry)
+                    .map_err(|err| CompoundFarChannelAcquireError::IP {
+                        ip: err
+                    })?
+                    .map(|ip| CompoundFarChannelAcquireState::IP { ip: ip }))
             }
+        }
+    }
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        match (self, state) {
+            (CompoundFarChannel::Unix { unix },
+             CompoundFarChannelAcquireState::Unix { unix: state }) => {
+                let Ok(NegotiatorResult::Complete(unix)) =
+                    unix.negotiate(state);
+
+                Ok(NegotiatorResult::Complete(CompoundFarChannelAcquired::Unix {
+                    unix: unix
+                }))
+            }
+            (CompoundFarChannel::DTLS { dtls }, state) =>
+                dtls.negotiate(state),
+            (CompoundFarChannel::IP { ip },
+             CompoundFarChannelAcquireState::IP { ip: state }) => {
+                Ok(ip.negotiate(state)
+                   .map_err(|err| {
+                       CompoundFarChannelAcquireNegoError::IP {
+                           err: err
+                       }
+                   })?
+                   .map_pending(|pending|
+                                 CompoundFarChannelAcquireNegoPending::IP {
+                                     ip: pending
+                                 })
+                   .map(|ip| CompoundFarChannelAcquired::IP { ip: ip }))
+            }
+            _ => Err(CompoundFarChannelAcquireNegoError::Mismatch)
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        match (self, pending) {
+            (CompoundFarChannel::DTLS { dtls }, pending) =>
+                dtls.complete_negotiate(pending),
+            (CompoundFarChannel::IP { ip },
+             CompoundFarChannelAcquireNegoPending::IP { ip: pending }) => {
+                Ok(ip.complete_negotiate(pending)
+                   .map_err(|err| {
+                       CompoundFarChannelAcquireNegoError::IP {
+                           err: err
+                       }
+                   })?
+                   .map_pending(|pending|
+                                 CompoundFarChannelAcquireNegoPending::IP {
+                                     ip: pending
+                                 })
+                   .map(|ip| CompoundFarChannelAcquired::IP { ip: ip }))
+            }
+            _ => Err(CompoundFarChannelAcquireNegoError::Mismatch)
         }
     }
 
@@ -2089,6 +2244,51 @@ impl FarChannel for CompoundFarChannel {
                 ErrorKind::Other,
                 "socket and address type mismatch"
             ))
+        }
+    }
+}
+
+impl Source for CompoundFarChannelSocket {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        match self {
+            CompoundFarChannelSocket::Unix { unix } =>
+                unix.register(registry, token, interests),
+            CompoundFarChannelSocket::IP { ip } =>
+                ip.register(registry, token, interests),
+        }
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        match self {
+            CompoundFarChannelSocket::Unix { unix } =>
+                unix.reregister(registry, token, interests),
+            CompoundFarChannelSocket::IP { ip } =>
+                ip.reregister(registry, token, interests),
+        }
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        match self {
+            CompoundFarChannelSocket::Unix { unix } =>
+                unix.deregister(registry),
+            CompoundFarChannelSocket::IP { ip } =>
+                ip.deregister(registry),
         }
     }
 }
@@ -2135,32 +2335,35 @@ impl FarChannelCreate for CompoundFarChannel {
     type Config = CompoundFarChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
+        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
         match config {
             CompoundFarChannelConfig::Unix { unix_datagram } => {
-                let unix = UnixFarChannel::new(caches, unix_datagram).unwrap();
+                let unix = UnixFarChannel::new(caches, tokens,
+                                               unix_datagram).unwrap();
 
                 Ok(CompoundFarChannel::Unix { unix: unix })
             }
             CompoundFarChannelConfig::UDP { udp } => {
-                let udp = UDPFarChannel::new(caches, udp).unwrap();
+                let udp = UDPFarChannel::new(caches, tokens, udp).unwrap();
 
                 Ok(CompoundFarChannel::IP {
                     ip: CompoundFarIPChannel::UDP { udp: udp }
                 })
             }
             CompoundFarChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::new(caches, dtls)?;
+                let dtls = DTLSFarChannel::new(caches, tokens, dtls)?;
 
                 Ok(CompoundFarChannel::DTLS { dtls: dtls })
             }
             CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 = SOCKS5FarChannel::new(caches, socks5_udp)
+                let socks5 = SOCKS5FarChannel::new(caches, tokens, socks5_udp)
                     .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
                         socks5: Box::new(err)
                     })?;
@@ -2174,12 +2377,36 @@ impl FarChannelCreate for CompoundFarChannel {
 }
 
 impl FarChannel for Box<CompoundFarIPChannel> {
-    type AcquireError = CompoundFarChannelAcquireError;
+    type AcquireError = CompoundFarIPChannelAcquireError;
     type Acquired = CompoundFarIPChannelAcquired;
+    type State = CompoundFarIPChannelAcquireState;
+    type NegotiateError = CompoundFarIPChannelAcquireNegoError;
+    type NegotiatePending = CompoundFarIPChannelAcquireNegoPending;
 
     #[inline]
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
-        self.as_mut().acquire()
+    fn acquire(
+        &mut self,
+        registry: &Registry
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+        self.as_mut().acquire(registry)
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
     }
 
     #[cfg(feature = "socks5")]
@@ -2211,23 +2438,49 @@ impl FarChannelCreate for Box<CompoundFarIPChannel> {
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
+        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
-        CompoundFarIPChannel::new(caches, config.as_ref().clone()).map(Box::new)
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
+        CompoundFarIPChannel::new(caches, tokens, config.as_ref().clone()).map(Box::new)
     }
 }
 
 impl FarChannel for Box<CompoundFarChannel> {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarChannelAcquired;
+    type State = CompoundFarChannelAcquireState;
+    type NegotiateError = CompoundFarChannelAcquireNegoError;
+    type NegotiatePending = CompoundFarChannelAcquireNegoPending;
 
     #[inline]
-    fn acquire(&mut self) -> Result<Self::Acquired, Self::AcquireError> {
-        self.as_mut().acquire()
+    fn acquire(
+        &mut self,
+        registry: &Registry
+    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+        self.as_mut().acquire(registry)
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: Self::NegotiatePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
     }
 
     #[cfg(feature = "socks5")]
@@ -2259,20 +2512,22 @@ impl FarChannelCreate for Box<CompoundFarChannel> {
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn new<Ctx, I>(
         caches: &mut Ctx,
+        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
-        CompoundFarChannel::new(caches, config.as_ref().clone()).map(Box::new)
+        Ctx: NSNameCachesCtx,
+        I: Iterator<Item = Token> {
+        CompoundFarChannel::new(caches, tokens, config.as_ref().clone()).map(Box::new)
     }
 }
 
 impl<Unix, UDP> FarChannelXfrm<CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
@@ -2318,138 +2573,10 @@ where
     }
 }
 
-impl<F> FarChannelNegotiator<
-        CompoundInboundNegotiator<F>,
-        CompoundOutboundNegotiator<F>
-    >
-    for CompoundFarChannel<F> {
-    fn inbound_negotiator(&self) -> CompoundInboundNegotiator<F> {
-        match self {
-            CompoundFarChannel::Unix { .. } => CompoundInboundNegotiator::Basic,
-            CompoundFarChannel::IP { ip } => ip.negotiator(),
-            CompoundFarChannel::DTLS { dtls } =>
-                CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                }
-        }
-    }
-
-    fn outbound_negotiator(&self) -> CompoundInboundNegotiator<F> {
-        match self {
-            CompoundFarChannel::Unix { .. } =>
-                CompoundOutboundNegotiator::Basic,
-            CompoundFarChannel::IP { ip } => ip.negotiator(),
-            CompoundFarChannel::DTLS { dtls } =>
-                CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                }
-        }
-    }
-}
-
-impl<F> FarChannelNegotiator<
-        Box<CompoundInboundNegotiator<F>>,
-        Box<CompoundOutboundNegotiator<F>>
-    >
-    for Box<CompoundFarChannel<F>> {
-    fn inbound_negotiator(&self) -> Box<CompoundInboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarChannel::Unix { .. } => {
-                Box::new(CompoundInboundNegotiator::Basic)
-            }
-            CompoundFarChannel::IP { ip } => Box::new(ip.negotiator()),
-            CompoundFarChannel::DTLS { dtls } => {
-                Box::new(CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                })
-            }
-        }
-    }
-
-    fn outbound_negotiator(&self) -> Box<CompoundOutboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarChannel::Unix { .. } => {
-                Box::new(CompoundOutboundNegotiator::Basic)
-            }
-            CompoundFarChannel::IP { ip } => Box::new(ip.negotiator()),
-            CompoundFarChannel::DTLS { dtls } => {
-                Box::new(CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                })
-            }
-        }
-    }
-}
-
-impl<F> FarChannelNegotiator<
-        CompoundInboundNegotiator<F>,
-        CompoundOutboundNegotiator<F>
-    >
-    for CompoundFarIPChannel {
-    fn inbound_negotiator(&self) -> CompoundInboundNegotiator {
-        match self {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } =>
-                CompoundInboundNegotiator::Basic,
-            CompoundFarIPChannel::DTLS { dtls } =>
-                CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                }
-        }
-    }
-
-    fn outbound_negotiator(&self) -> CompoundOutboundNegotiator {
-        match self {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } =>
-                CompoundOutboundNegotiator::Basic,
-            CompoundFarIPChannel::DTLS { dtls } =>
-                CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                }
-        }
-    }
-}
-
-impl<F> FarChannelNegotiator<
-        Box<CompoundInboundNegotiator<F>>,
-        Box<CompoundOutboundNegotiator<F>>,
-    >
-    for Box<CompoundFarIPChannel>
-{
-    fn inbound_negotiator(&self) -> Box<CompoundInboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } => {
-                Box::new(CompoundInboundNegotiator::Basic)
-            }
-            CompoundFarIPChannel::DTLS { dtls } => {
-                Box::new(CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                })
-            }
-        }
-    }
-
-    fn outbound_negotiator(&self) -> Box<CompoundOutboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } => {
-                Box::new(CompoundOutboundNegotiator::Basic)
-            }
-            CompoundFarIPChannel::DTLS { dtls } => {
-                Box::new(CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.negotiator()
-                })
-            }
-        }
-    }
-}
-
 impl<Unix, UDP> FarChannelXfrm<CompoundFarChannelXfrm<Unix, UDP>>
     for Box<CompoundFarChannel>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
@@ -2545,199 +2672,153 @@ where
 impl<Unix, UDP> FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
+    type Flow = CompoundFlow<Unix, UDP>;
     type OutboundNego = CompoundOutboundNegotiator;
     type InboundNego = CompoundInboundNegotiator;
+
+
+    fn inbound_negotiator(&self) -> CompoundInboundNegotiator {
+        match self {
+            CompoundFarChannel::Unix { .. } => CompoundInboundNegotiator::Basic,
+            CompoundFarChannel::IP { ip } => ip.inbound_negotiator(),
+            CompoundFarChannel::DTLS { dtls } =>
+                CompoundInboundNegotiator::DTLS {
+                    dtls: dtls.inbound_negotiator()
+                }
+        }
+    }
+
+    fn outbound_negotiator(&self) -> CompoundInboundNegotiator {
+        match self {
+            CompoundFarChannel::Unix { .. } =>
+                CompoundOutboundNegotiator::Basic,
+            CompoundFarChannel::IP { ip } => ip.outbound_negotiator(),
+            CompoundFarChannel::DTLS { dtls } =>
+                CompoundOutboundNegotiator::DTLS {
+                    dtls: dtls.outbound_negotiator()
+                }
+        }
+    }
 }
 
 impl<Unix, UDP> FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>>
     for Box<CompoundFarChannel>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Nego = Box<CompoundNegotiator>;
+    type Flow = Box<CompoundFlow<Unix, UDP>>;
+    type OutboundNego = CompoundOutboundNegotiator;
+    type InboundNego = CompoundInboundNegotiator;
+
+    fn inbound_negotiator(&self) -> Box<CompoundInboundNegotiator> {
+        match self.as_ref() {
+            CompoundFarChannel::Unix { .. } => {
+                Box::new(CompoundInboundNegotiator::Basic)
+            }
+            CompoundFarChannel::IP { ip } => Box::new(ip.inbound_negotiator()),
+            CompoundFarChannel::DTLS { dtls } => {
+                Box::new(CompoundInboundNegotiator::DTLS {
+                    dtls: dtls.inbound_negotiator()
+                })
+            }
+        }
+    }
+
+    fn outbound_negotiator(&self) -> Box<CompoundOutboundNegotiator> {
+        match self.as_ref() {
+            CompoundFarChannel::Unix { .. } => {
+                Box::new(CompoundOutboundNegotiator::Basic)
+            }
+            CompoundFarChannel::IP { ip } => Box::new(ip.outbound_negotiator()),
+            CompoundFarChannel::DTLS { dtls } => {
+                Box::new(CompoundOutboundNegotiator::DTLS {
+                    dtls: dtls.outbound_negotiator()
+                })
+            }
+        }
+    }
 }
 
-impl<F, AuthN, UDP>
-    FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>
+impl<UDP> FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>
     for CompoundFarIPChannel
 where
-    AuthN: SessionAuthN<<CompoundNegotiator as OwnedFlowNegotiator<F::Flow>>::Flow>
-        + SessionAuthN<Box<CompoundFlow<F::Flow>>>
-        + SessionAuthN<CompoundFlow<F::Flow>>
-        + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
-        + SessionAuthN<DTLSFlow<CompoundFlow<F::Flow>>>,
-    F: OwnedFlowsCreate<
-        CompoundFarIPChannelSocket,
-        CompoundNegotiator,
-        AuthN,
-        CompoundFarIPChannelXfrm<UDP>
-    >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Nego = CompoundNegotiator;
+    type OutboundNego = CompoundOutboundNegotiator;
+    type InboundNego = CompoundInboundNegotiator;
+
+    fn inbound_negotiator(&self) -> CompoundInboundNegotiator {
+        match self {
+            CompoundFarIPChannel::UDP { .. } |
+            CompoundFarIPChannel::SOCKS5 { .. } =>
+                CompoundInboundNegotiator::Basic,
+            CompoundFarIPChannel::DTLS { dtls } =>
+                CompoundInboundNegotiator::DTLS {
+                    dtls: dtls.inbound_negotiator()
+                }
+        }
+    }
+
+    fn outbound_negotiator(&self) -> CompoundOutboundNegotiator {
+        match self {
+            CompoundFarIPChannel::UDP { .. } |
+            CompoundFarIPChannel::SOCKS5 { .. } =>
+                CompoundOutboundNegotiator::Basic,
+            CompoundFarIPChannel::DTLS { dtls } =>
+                CompoundOutboundNegotiator::DTLS {
+                    dtls: dtls.outbound_negotiator()
+                }
+        }
+    }
 }
 
-impl<F, AuthN, UDP>
-    FarChannelOwnedFlows<F, AuthN, CompoundFarIPChannelXfrm<UDP>>
+impl<UDP> FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>
     for Box<CompoundFarIPChannel>
 where
-    AuthN: SessionAuthN<
-            <Box<CompoundNegotiator> as OwnedFlowNegotiator<F::Flow>>::Flow
-        > + SessionAuthN<DTLSFlow<Box<CompoundFlow<F::Flow>>>>
-        + SessionAuthN<Box<CompoundFlow<F::Flow>>>,
-    F: OwnedFlowsCreate<
-        CompoundFarIPChannelSocket,
-        Box<CompoundNegotiator>,
-        AuthN,
-        CompoundFarIPChannelXfrm<UDP>
-    >,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Nego = Box<CompoundNegotiator>;
-}
+    type OutboundNego = CompoundOutboundNegotiator;
+    type InboundNego = CompoundInboundNegotiator;
 
-impl<F> OwnedFlowNegotiator<F> for CompoundNegotiator
-where
-    F: Credentials + Flow + Read + Write
-{
-    type Flow = CompoundFlow<F>;
-    type NegotiateError = CompoundNegotiateError;
-
-    #[inline]
-    fn negotiate_outbound_nonblock(
-        &self,
-        inner: F
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
-        match self {
-            CompoundNegotiator::Basic { .. } => {
-                Ok(NonblockResult::Success(CompoundFlow::Basic { flow: inner }))
+    fn inbound_negotiator(&self) -> Box<CompoundInboundNegotiator> {
+        match self.as_ref() {
+            CompoundFarIPChannel::UDP { .. } |
+            CompoundFarIPChannel::SOCKS5 { .. } => {
+                Box::new(CompoundInboundNegotiator::Basic)
             }
-            CompoundNegotiator::DTLS { .. } => Ok(NonblockResult::Fail(inner))
+            CompoundFarIPChannel::DTLS { dtls } => {
+                Box::new(CompoundInboundNegotiator::DTLS {
+                    dtls: dtls.inbound_negotiator()
+                })
+            }
         }
     }
 
-    fn negotiate_outbound(
-        &self,
-        inner: F,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
-    {
-        match self {
-            CompoundNegotiator::Basic { .. } => {
-                Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
+    fn outbound_negotiator(&self) -> Box<CompoundOutboundNegotiator> {
+        match self.as_ref() {
+            CompoundFarIPChannel::UDP { .. } |
+            CompoundFarIPChannel::SOCKS5 { .. } => {
+                Box::new(CompoundOutboundNegotiator::Basic)
             }
-            CompoundNegotiator::DTLS { dtls } => Ok(
-                OwnedFlowNegotiator::negotiate_outbound(dtls, inner, endpoint)
-                    .map_err(|err| CompoundNegotiateError::DTLS {
-                        error: Box::new(err)
-                    })?
-                    .map(|flow| CompoundFlow::DTLS { flow: flow })
-            )
-        }
-    }
-
-    #[inline]
-    fn negotiate_inbound_nonblock(
-        &self,
-        inner: F
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
-        match self {
-            CompoundNegotiator::Basic { .. } => {
-                Ok(NonblockResult::Success(CompoundFlow::Basic { flow: inner }))
-            }
-            CompoundNegotiator::DTLS { .. } => Ok(NonblockResult::Fail(inner))
-        }
-    }
-
-    fn negotiate_inbound(
-        &self,
-        inner: F
-    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
-    {
-        match self {
-            CompoundNegotiator::Basic { .. } => {
-                Ok(RetryResult::Success(CompoundFlow::Basic { flow: inner }))
-            }
-            CompoundNegotiator::DTLS { dtls } => {
-                Ok(OwnedFlowNegotiator::negotiate_inbound(dtls, inner)
-                    .map_err(|err| CompoundNegotiateError::DTLS {
-                        error: Box::new(err)
-                    })?
-                    .map(|flow| CompoundFlow::DTLS { flow: flow }))
+            CompoundFarIPChannel::DTLS { dtls } => {
+                Box::new(CompoundOutboundNegotiator::DTLS {
+                    dtls: dtls.outbound_negotiator()
+                })
             }
         }
     }
 }
 
-impl<F> OwnedFlowNegotiator<F> for Box<CompoundNegotiator>
+impl<Unix, UDP> Flow for CompoundFlow<Unix, UDP>
 where
-    F: Credentials + Flow + Read + Write
-{
-    type Flow = Box<CompoundFlow<F>>;
-    type NegotiateError = CompoundNegotiateError;
-
-    #[inline]
-    fn negotiate_outbound_nonblock(
-        &self,
-        inner: F
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
-        self.as_ref()
-            .negotiate_inbound_nonblock(inner)
-            .map(|out| match out {
-                NonblockResult::Success(out) => {
-                    NonblockResult::Success(Box::new(out))
-                }
-                NonblockResult::Fail(out) => NonblockResult::Fail(out)
-            })
-    }
-
-    #[inline]
-    fn negotiate_outbound(
-        &self,
-        inner: F,
-        endpoint: Option<&IPEndpointAddr>
-    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
-    {
-        OwnedFlowNegotiator::negotiate_outbound(self.as_ref(), inner, endpoint)
-            .map(|out| out.map(Box::new))
-    }
-
-    #[inline]
-    fn negotiate_inbound_nonblock(
-        &self,
-        inner: F
-    ) -> Result<NonblockResult<Self::Flow, F>, Self::NegotiateError> {
-        self.as_ref()
-            .negotiate_inbound_nonblock(inner)
-            .map(|out| match out {
-                NonblockResult::Success(out) => {
-                    NonblockResult::Success(Box::new(out))
-                }
-                NonblockResult::Fail(out) => NonblockResult::Fail(out)
-            })
-    }
-
-    #[inline]
-    fn negotiate_inbound(
-        &self,
-        inner: F
-    ) -> Result<RetryResult<Self::Flow, NegotiateRetry<F>>, Self::NegotiateError>
-    {
-        OwnedFlowNegotiator::negotiate_inbound(self.as_ref(), inner)
-            .map(|out| out.map(Box::new))
-    }
-}
-
-impl<F> Flow for CompoundFlow<F>
-where
-    F: Flow
-{
-    type LocalAddr = F::LocalAddr;
-    type PeerAddr = F::PeerAddr;
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type LocalAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
@@ -2756,12 +2837,12 @@ where
     }
 }
 
-impl<F> Flow for Box<CompoundFlow<F>>
+impl<Unix, UDP> Flow for Box<CompoundFlow<Unix, UDP>>
 where
-    F: Flow
-{
-    type LocalAddr = F::LocalAddr;
-    type PeerAddr = F::PeerAddr;
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type LocalAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
@@ -2774,10 +2855,10 @@ where
     }
 }
 
-impl<F> Read for CompoundFlow<F>
+impl<Unix, UDP> Read for CompoundFlow<Unix, UDP>
 where
-    F: Flow
-{
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     #[inline]
     fn read(
         &mut self,
@@ -2834,10 +2915,10 @@ where
     }
 }
 
-impl<F> Write for CompoundFlow<F>
+impl<Unix, UDP> Write for CompoundFlow<Unix, UDP>
 where
-    F: Flow
-{
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     #[inline]
     fn write(
         &mut self,
@@ -2905,10 +2986,24 @@ impl Display for CompoundFarChannelParam {
             CompoundFarChannelParam::Unix { unix } => {
                 write!(f, "unix://{}", unix)
             }
-            CompoundFarChannelParam::IP { ip } => ip.fmt(f)
+            CompoundFarChannelParam::IP { ip } => write!(f, "{}", ip)
         }
     }
 }
+
+impl Display for CompoundFarIPChannelAcquireError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarIPChannelAcquireError::SOCKS5 { socks5 } => {
+                write!(f, "{}", socks5)
+            }
+        }
+    }
+}
+
 
 impl Display for CompoundFarChannelAcquireError {
     fn fmt(
@@ -2916,8 +3011,8 @@ impl Display for CompoundFarChannelAcquireError {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundFarChannelAcquireError::SOCKS5 { socks5 } => {
-                write!(f, "{}", socks5)
+            CompoundFarChannelAcquireError::IP { ip } => {
+                write!(f, "{}", ip)
             }
         }
     }
@@ -2932,6 +3027,35 @@ impl Display for CompoundFarChannelCreateError {
             CompoundFarChannelCreateError::SOCKS5 { socks5 } => {
                 write!(f, "{}", socks5)
             }
+        }
+    }
+}
+
+impl Display for CompoundFarChannelAcquireNegoError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarChannelAcquireNegoError::IP { err } =>
+                write!(f, "{}", err),
+            CompoundFarChannelAcquireNegoError::Mismatch =>
+                write!(f, "type mismatch")
+        }
+    }
+}
+
+impl Display for CompoundFarIPChannelAcquireNegoError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarIPChannelAcquireNegoError::SOCKS5 { socks5 } => {
+                write!(f, "{}", socks5)
+            }
+            CompoundFarIPChannelAcquireNegoError::Mismatch =>
+                write!(f, "type mismatch")
         }
     }
 }
@@ -3023,7 +3147,7 @@ where
         match self {
             CompoundFarIPChannelSizeError::UDP { udp } => udp.fmt(f),
             CompoundFarIPChannelSizeError::Mismatch => {
-                write!(f, "type mismatch with channel and address")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3040,7 +3164,7 @@ where
         match self {
             CompoundFarIPChannelSizeError::UDP { udp } => udp.fmt(f),
             CompoundFarIPChannelSizeError::Mismatch => {
-                write!(f, "type mismatch with channel and address")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3059,7 +3183,7 @@ impl Debug for CompoundFarIPChannelSocketError {
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelSocketError::Mismatch => {
-                write!(f, "type mismatch with channel and parameter")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3078,7 +3202,7 @@ impl Display for CompoundFarIPChannelSocketError {
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelSocketError::Mismatch => {
-                write!(f, "type mismatch with channel and parameter")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3168,7 +3292,7 @@ impl Debug for CompoundFarChannelXfrmError {
                 write!(f, "{}", socks5)
             }
             CompoundFarChannelXfrmError::Mismatch => {
-                write!(f, "type mismatch with context and parameter")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3184,7 +3308,7 @@ impl Display for CompoundFarChannelXfrmError {
                 write!(f, "{}", socks5)
             }
             CompoundFarChannelXfrmError::Mismatch => {
-                write!(f, "type mismatch with context and parameter")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3236,7 +3360,7 @@ where
                 write!(f, "{:?}", socks5)
             }
             CompoundFarIPChannelXfrmWrapError::Mismatch => {
-                write!(f, "type mismatch with context and parameter")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3256,7 +3380,7 @@ where
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelXfrmWrapError::Mismatch => {
-                write!(f, "type mismatch with context and parameter")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3425,7 +3549,7 @@ where
             CompoundFarChannelParamError::Unix { err } => err.fmt(f),
             CompoundFarChannelParamError::IP { err } => err.fmt(f),
             CompoundFarChannelParamError::Mismatch => {
-                write!(f, "mismatched socket and transform")
+                write!(f, "type mismatch")
             }
         }
     }
@@ -3475,9 +3599,9 @@ impl From<UDPFarSocket> for CompoundFarIPChannelSocket {
     }
 }
 
-impl From<UnixSocketAddr> for CompoundFarChannelAddr {
+impl From<UnixSocketPath> for CompoundFarChannelAddr {
     #[inline]
-    fn from(val: UnixSocketAddr) -> CompoundFarChannelAddr {
+    fn from(val: UnixSocketPath) -> CompoundFarChannelAddr {
         CompoundFarChannelAddr::Unix { unix: val }
     }
 }
@@ -3581,7 +3705,7 @@ impl From<CompoundFarIPChannelXfrmPeerAddr> for IPEndpoint {
 impl<Unix, UDP> From<SOCKS5UDPXfrm<CompoundFarIPChannelXfrm<UDP>>>
     for CompoundFarChannelXfrm<Unix, UDP>
 where
-    Unix: DatagramXfrm<LocalAddr = UnixSocketAddr, PeerAddr = UnixSocketAddr>,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     #[inline]
@@ -3717,7 +3841,7 @@ fn test_compound_dtls_unix() {
     let barrier = Arc::new(Barrier::new(2));
 
     let client_addr = CompoundFarChannelXfrmPeerAddr::unix(
-        UnixSocketAddr::try_from(CLIENT_PATH).unwrap()
+        UnixSocketPath::try_from(CLIENT_PATH).unwrap()
     );
     let client_barrier = barrier.clone();
     let mut client_nscaches = nscaches.clone();
@@ -3735,7 +3859,7 @@ fn test_compound_dtls_unix() {
         let create_param = CompoundXfrmCreateParam::default();
         let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
         let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketAddr>,
+            PassthruDatagramXfrm<UnixSocketPath>,
             PassthruDatagramXfrm<SocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
@@ -3763,7 +3887,7 @@ fn test_compound_dtls_unix() {
     });
 
     let channel_addr = CompoundFarChannelXfrmPeerAddr::unix(
-        UnixSocketAddr::try_from(CHANNEL_PATH).unwrap()
+        UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
     let mut channel_nscaches = nscaches.clone();
     let channel_barrier = barrier;
@@ -3784,7 +3908,7 @@ fn test_compound_dtls_unix() {
         channel_barrier.wait();
 
         let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketAddr>,
+            PassthruDatagramXfrm<UnixSocketPath>,
             PassthruDatagramXfrm<SocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())
@@ -3898,7 +4022,7 @@ fn test_compound_dtls_udp() {
         let create_param = CompoundXfrmCreateParam::default();
         let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
         let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketAddr>,
+            PassthruDatagramXfrm<UnixSocketPath>,
             PassthruDatagramXfrm<SocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
@@ -3948,7 +4072,7 @@ fn test_compound_dtls_udp() {
         channel_barrier.wait();
 
         let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketAddr>,
+            PassthruDatagramXfrm<UnixSocketPath>,
             PassthruDatagramXfrm<SocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())
@@ -4071,7 +4195,7 @@ fn test_compound_dtls_double() {
     let barrier = Arc::new(Barrier::new(2));
 
     let client_addr = CompoundFarChannelXfrmPeerAddr::unix(
-        UnixSocketAddr::try_from(CLIENT_PATH).unwrap()
+        UnixSocketPath::try_from(CLIENT_PATH).unwrap()
     );
     let mut client_nscaches = nscaches.clone();
     let client_barrier = barrier.clone();
@@ -4089,7 +4213,7 @@ fn test_compound_dtls_double() {
         let create_param = CompoundXfrmCreateParam::default();
         let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
         let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketAddr>,
+            PassthruDatagramXfrm<UnixSocketPath>,
             PassthruDatagramXfrm<SocketAddr>
         > = listener.borrowed_flows(param, xfrm, ()).unwrap();
 
@@ -4117,7 +4241,7 @@ fn test_compound_dtls_double() {
     });
 
     let channel_addr = CompoundFarChannelXfrmPeerAddr::unix(
-        UnixSocketAddr::try_from(CHANNEL_PATH).unwrap()
+        UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
     let mut channel_nscaches = nscaches.clone();
     let channel_barrier = barrier;
@@ -4138,7 +4262,7 @@ fn test_compound_dtls_double() {
         channel_barrier.wait();
 
         let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketAddr>,
+            PassthruDatagramXfrm<UnixSocketPath>,
             PassthruDatagramXfrm<SocketAddr>
         > = conn
             .borrowed_flows(param, xfrm, channel_addr.clone())

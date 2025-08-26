@@ -152,6 +152,7 @@ use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Param;
 use constellation_socks5::comm::SOCKS5UDPXfrm;
+use constellation_socks5::error::SOCKS5Error;
 use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_socks5::state::SOCKS5UDPInfo;
@@ -367,7 +368,7 @@ pub enum SOCKS5AcquiredResolveError<Wrap> {
 }
 
 #[derive(Debug)]
-pub enum SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5> {
+pub enum SOCKS5NegotiateError<Datagram, Proxy> {
     Proxy {
         err: Proxy
     },
@@ -375,10 +376,10 @@ pub enum SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5> {
         err: Datagram,
     },
     SOCKS5 {
-        err: SOCKS5
+        err: SOCKS5Error
     },
     IO {
-        err: IO
+        err: Error
     },
     BadSplit
 }
@@ -405,12 +406,10 @@ pub enum SOCKS5NegotiatePending<Datagram, DatagramState, DatagramPending,
     }
 }
 
-impl<Datagram, Proxy, IO, SOCKS5> ScopedError
-    for SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5>
+impl<Datagram, Proxy> ScopedError
+    for SOCKS5NegotiateError<Datagram, Proxy>
 where Datagram: ScopedError,
       Proxy: ScopedError,
-      SOCKS5: ScopedError,
-      IO: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -585,8 +584,6 @@ where
         SOCKS5NegotiateError<
             Datagram::NegotiateError,
             Proxy::NegotiateError,
-            Error,
-            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
     > {
         let params = match &self.auth {
@@ -663,8 +660,6 @@ where
         SOCKS5NegotiateError<
             Datagram::NegotiateError,
             Proxy::NegotiateError,
-            Error,
-            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
     > {
         match self.datagram.socks5_target(&datagram) {
@@ -693,8 +688,6 @@ where
         SOCKS5NegotiateError<
             Datagram::NegotiateError,
             Proxy::NegotiateError,
-            Error,
-            <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
         >
     > {
         match self.datagram.negotiate(datagram)
@@ -722,8 +715,6 @@ where
     type NegotiateError = SOCKS5NegotiateError<
         Datagram::NegotiateError,
         Proxy::NegotiateError,
-        Error,
-        <RawStateMachineError<SOCKS5State> as RecoverableError>::Permanent
     >;
     type NegotiatePending = SOCKS5NegotiatePending<
         Datagram::Acquired,
@@ -1008,12 +999,10 @@ where
     }
 }
 
-impl<Datagram, Proxy, IO, SOCKS5> Display
-    for SOCKS5NegotiateError<Datagram, Proxy, IO, SOCKS5>
+impl<Datagram, Proxy> Display
+    for SOCKS5NegotiateError<Datagram, Proxy>
 where Datagram: Display,
       Proxy: Display,
-      SOCKS5: Display,
-      IO: Display
 {
     fn fmt(
         &self,
@@ -1022,7 +1011,7 @@ where Datagram: Display,
         match self {
             SOCKS5NegotiateError::Proxy { err } => err.fmt(f),
             SOCKS5NegotiateError::Datagram { err } => err.fmt(f),
-            SOCKS5NegotiateError::SOCKS5 { err } => err.fmt(f),
+            SOCKS5NegotiateError::SOCKS5 { err } => write!(f, "{}", err),
             SOCKS5NegotiateError::IO { err } => write!(f, "{}", err),
             SOCKS5NegotiateError::BadSplit =>
                 write!(f, "invalid result from split()")

@@ -43,7 +43,6 @@ use constellation_auth::cred::CredentialsMut;
 use constellation_auth::cred::SSLCred;
 use constellation_auth::cred::UnixSocketCred;
 use constellation_common::error::ErrorScope;
-use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
@@ -53,9 +52,7 @@ use constellation_common::retry::RetryResult;
 #[cfg(feature = "socks5")]
 use constellation_socks5::comm::SOCKS5Stream;
 #[cfg(feature = "socks5")]
-use constellation_socks5::state::SOCKS5State;
 use constellation_streams::channels::ChannelParam;
-use constellation_streams::state_machine::RawStateMachineError;
 use mio::event::Source;
 use mio::net::UnixStream;
 use mio::Interest;
@@ -209,14 +206,14 @@ pub enum CompoundNearConnectorCreateError {
 /// Multiplexer for [NegotiateError](NearChannel::NegotiateError)s for
 /// [CompoundNearAcceptor].
 #[derive(Debug)]
-pub enum CompoundNearAcceptorNegotiateError<TLS> {
+pub enum CompoundNearAcceptorNegotiateError {
     #[cfg(feature = "tls")]
     TLS {
         tls: Box<
             TLSNegotiateError<
-                CompoundNearAcceptorNegotiateError<TLS>,
+                CompoundNearAcceptorNegotiateError,
                 CompoundNearAcceptorEndpoint,
-                TLS
+                CompoundNearServerConn
             >
         >
     },
@@ -239,14 +236,14 @@ pub enum CompoundNearAcceptorNegotiatePending {
 /// Multiplexer for [NegotiateError](NearChannel::NegotiateError)s for
 /// [CompoundNearConnector].
 #[derive(Debug)]
-pub enum CompoundNearConnectorNegotiateError<TLS, Conn> {
+pub enum CompoundNearConnectorNegotiateError {
     #[cfg(feature = "tls")]
     TLS {
         tls: Box<
             TLSNegotiateError<
-                CompoundNearConnectorNegotiateError<TLS, Conn>,
+                CompoundNearConnectorNegotiateError,
                 CompoundNearConnectorEndpoint,
-                TLS
+                CompoundNearClientConn
             >
         >
     },
@@ -254,8 +251,8 @@ pub enum CompoundNearConnectorNegotiateError<TLS, Conn> {
     SOCKS5 {
         socks5: Box<
             SOCKS5NegotiateError<
-                CompoundNearConnectorNegotiateError<TLS, Conn>,
-                Conn,
+                CompoundNearConnectorNegotiateError,
+                CompoundNearClientConn,
                 CompoundNearConnectorEndpoint,
             >
         >
@@ -560,8 +557,7 @@ impl ScopedError for CompoundNearConnectorCreateError {
     }
 }
 
-impl<TLS> ScopedError for CompoundNearAcceptorNegotiateError<TLS>
-where TLS: ScopedError {
+impl ScopedError for CompoundNearAcceptorNegotiateError {
     fn scope(&self) -> ErrorScope {
         match self {
             #[cfg(feature = "tls")]
@@ -572,8 +568,7 @@ where TLS: ScopedError {
     }
 }
 
-impl<TLS, Conn> ScopedError for CompoundNearConnectorNegotiateError<TLS, Conn>
-where TLS: ScopedError {
+impl ScopedError for CompoundNearConnectorNegotiateError {
     fn scope(&self) -> ErrorScope {
         match self {
             #[cfg(feature = "tls")]
@@ -709,7 +704,7 @@ impl Display for CompoundNearConnectorCreateError {
     }
 }
 
-impl<TLS> Display for CompoundNearAcceptorNegotiateError<TLS> {
+impl Display for CompoundNearAcceptorNegotiateError {
     fn fmt(
         &self,
         f: &mut Formatter
@@ -725,7 +720,7 @@ impl<TLS> Display for CompoundNearAcceptorNegotiateError<TLS> {
     }
 }
 
-impl<TLS, Conn> Display for CompoundNearConnectorNegotiateError<TLS, Conn> {
+impl Display for CompoundNearConnectorNegotiateError {
     fn fmt(
         &self,
         f: &mut Formatter
@@ -1370,9 +1365,7 @@ where
 {
     type State = CompoundNearAcceptorState;
     type Pending = CompoundNearAcceptorNegotiatePending;
-    type NegotiateError = CompoundNearAcceptorNegotiateError<
-        CompoundNearServerConn
-    >;
+    type NegotiateError = CompoundNearAcceptorNegotiateError;
 
     fn negotiate(
         &self,
@@ -1492,7 +1485,7 @@ where
     fn cleanup(
         &mut self,
         registry: &Registry,
-        pending: CompoundNearAcceptorNegotiateError<CompoundNearServerConn>
+        pending: CompoundNearAcceptorNegotiateError
     ) -> Result<(), Error> {
         match (self, pending) {
             (CompoundNearAcceptor::TLS { tls },
@@ -1550,9 +1543,7 @@ where
 {
     type State = CompoundNearAcceptorState;
     type Pending = CompoundNearAcceptorNegotiatePending;
-    type NegotiateError = CompoundNearAcceptorNegotiateError<
-        CompoundNearServerConn
-    >;
+    type NegotiateError = CompoundNearAcceptorNegotiateError;
 
     #[inline]
     fn negotiate(
@@ -1603,7 +1594,7 @@ where
     fn cleanup(
         &mut self,
         registry: &Registry,
-        err: CompoundNearAcceptorNegotiateError<CompoundNearServerConn>
+        err: CompoundNearAcceptorNegotiateError
     ) -> Result<(), Error> {
         self.as_mut().cleanup(registry, err)
     }
@@ -1633,10 +1624,7 @@ where
 {
     type State = CompoundNearConnectorState;
     type Pending = CompoundNearConnectorNegotiatePending;
-    type NegotiateError = CompoundNearConnectorNegotiateError<
-        CompoundNearClientConn,
-        CompoundNearClientConn
-    >;
+    type NegotiateError = CompoundNearConnectorNegotiateError;
 
     fn negotiate(
         &self,
@@ -1796,10 +1784,7 @@ where
     fn cleanup(
         &mut self,
         registry: &Registry,
-        pending: CompoundNearConnectorNegotiateError<
-            CompoundNearClientConn,
-            CompoundNearClientConn
-        >
+        pending: CompoundNearConnectorNegotiateError
     ) -> Result<(), Error> {
         match (self, pending) {
             (CompoundNearConnector::TLS { tls },
@@ -1866,10 +1851,7 @@ where
 {
     type State = CompoundNearConnectorState;
     type Pending = CompoundNearConnectorNegotiatePending;
-    type NegotiateError = CompoundNearConnectorNegotiateError<
-        CompoundNearClientConn,
-        CompoundNearClientConn,
-    >;
+    type NegotiateError = CompoundNearConnectorNegotiateError;
 
     #[inline]
     fn negotiate(
@@ -1920,10 +1902,7 @@ where
     fn cleanup(
         &mut self,
         registry: &Registry,
-        err: CompoundNearConnectorNegotiateError<
-            CompoundNearClientConn,
-            CompoundNearClientConn,
-        >
+        err: CompoundNearConnectorNegotiateError
     ) -> Result<(), Error> {
         self.as_mut().cleanup(registry, err)
     }

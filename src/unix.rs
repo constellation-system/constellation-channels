@@ -48,7 +48,7 @@ pub struct UnixSocketAddr(SocketAddr);
 ///
 /// This is primarily to deal with the fact that `PathBuf` does not
 /// have a [Display] instance.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct UnixSocketPath(PathBuf);
 
 impl Display for UnixSocketAddr {
@@ -63,8 +63,6 @@ impl Display for UnixSocketAddr {
         }
     }
 }
-
-impl Eq for UnixSocketAddr {}
 
 impl ChannelParam<UnixSocketAddr> for UnixSocketAddr {
     #[inline]
@@ -265,20 +263,7 @@ impl Hash for UnixSocketAddr {
     }
 }
 
-impl Ord for UnixSocketAddr {
-    #[inline]
-    fn cmp(
-        &self,
-        other: &Self
-    ) -> Ordering {
-        match (self.0.as_pathname(), other.0.as_pathname()) {
-            (Some(a), Some(b)) => a.cmp(b),
-            (Some(_), None) => Ordering::Greater,
-            (None, Some(_)) => Ordering::Less,
-            (None, None) => Ordering::Equal
-        }
-    }
-}
+impl Eq for UnixSocketAddr {}
 
 impl PartialEq for UnixSocketAddr {
     #[inline]
@@ -290,6 +275,21 @@ impl PartialEq for UnixSocketAddr {
             (Some(a), Some(b)) => a.eq(b),
             (None, None) => true,
             _ => false
+        }
+    }
+}
+
+impl Ord for UnixSocketAddr {
+    #[inline]
+    fn cmp(
+        &self,
+        other: &Self
+    ) -> Ordering {
+        match (self.0.as_pathname(), other.0.as_pathname()) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal
         }
     }
 }
