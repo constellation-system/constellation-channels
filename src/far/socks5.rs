@@ -959,7 +959,6 @@ where
     }
 }
 
-
 impl<Proxy, Datagram, InnerXfrm> FarChannelFlows<InnerXfrm>
     for SOCKS5FarChannel<Proxy, InnerXfrm::PeerAddr, Datagram>
 where

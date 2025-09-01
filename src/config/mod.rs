@@ -353,16 +353,16 @@ pub enum CompoundFarIPChannelConfig {
     #[serde(rename_all = "kebab-case")]
     DTLS {
         /// DTLS session negotiation configuration.
-        dtls: DTLSFarChannelConfig<Box<Self>>
+        dtls: Box<DTLSFarChannelConfig<Self>>
     },
     /// SOCKS5 proxy channel.
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_udp: SOCKS5AssocConfig<
-            Box<CompoundNearConnectorConfig<TLSPeerConfig>>,
-            Box<CompoundFarIPChannelConfig>
-        >
+        socks5_udp: Box<SOCKS5AssocConfig<
+            CompoundNearConnectorConfig<TLSPeerConfig>,
+            CompoundFarIPChannelConfig
+        >>
     }
 }
 
@@ -566,16 +566,16 @@ pub enum CompoundFarChannelConfig {
     #[serde(rename_all = "kebab-case")]
     DTLS {
         /// DTLS session negotiation configuration.
-        dtls: DTLSFarChannelConfig<Box<Self>>
+        dtls: Box<DTLSFarChannelConfig<Self>>
     },
     /// SOCKS5 proxy channel.
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_udp: SOCKS5AssocConfig<
-            Box<CompoundNearConnectorConfig<TLSPeerConfig>>,
-            Box<CompoundFarIPChannelConfig>
-        >
+        socks5_udp: Box<SOCKS5AssocConfig<
+            CompoundNearConnectorConfig<TLSPeerConfig>,
+            CompoundFarIPChannelConfig
+        >>
     }
 }
 

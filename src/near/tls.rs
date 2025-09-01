@@ -283,10 +283,9 @@ pub enum TLSNegotiatePending<Inner, Endpoint, Conn> {
     }
 }
 
-impl<Inner, Endpoint, TLS> ScopedError
-    for TLSNegotiateError<Inner, Endpoint, TLS>
-where Inner: ScopedError,
-      TLS: ScopedError {
+impl<Inner, Endpoint, Conn> ScopedError
+    for TLSNegotiateError<Inner, Endpoint, Conn>
+where Inner: ScopedError {
     fn scope(&self) -> ErrorScope {
         match self {
             TLSNegotiateError::Inner { err } => err.scope(),
@@ -297,10 +296,9 @@ where Inner: ScopedError,
     }
 }
 
-impl<Inner, Endpoint, TLS> ScopedError
-    for Box<TLSNegotiateError<Inner, Endpoint, TLS>>
-where Inner: ScopedError,
-      TLS: ScopedError {
+impl<Inner, Endpoint, Conn> ScopedError
+    for Box<TLSNegotiateError<Inner, Endpoint, Conn>>
+where Inner: ScopedError {
     fn scope(&self) -> ErrorScope {
         match self.as_ref() {
             TLSNegotiateError::Inner { err } => err.scope(),

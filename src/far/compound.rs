@@ -51,6 +51,8 @@ use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::PassthruNegotiator;
+use constellation_common::net::PassthruSessionNegotiation;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
@@ -72,6 +74,7 @@ use mio::Registry;
 use mio::Token;
 
 use crate::addrs::SocketAddrPolicy;
+use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSPeerConfig;
 use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundFarEndpoint;
@@ -81,8 +84,16 @@ use crate::config::ResolverConfig;
 use crate::far::dtls::DTLSFarChannel;
 use crate::far::dtls::DTLSFlow;
 use crate::far::dtls::DTLSNegotiateError;
+use crate::far::dtls::DTLSInboundNegoError;
+use crate::far::dtls::DTLSInboundNegoPending;
 use crate::far::dtls::DTLSInboundNegotiator;
+use crate::far::dtls::DTLSInboundNegotiatorState;
+use crate::far::dtls::DTLSOutboundNegoError;
+use crate::far::dtls::DTLSOutboundNegoPending;
 use crate::far::dtls::DTLSOutboundNegotiator;
+use crate::far::dtls::DTLSOutboundNegotiatorState;
+use crate::far::dtls::DTLSOutboundParam;
+use crate::far::dtls::DTLSStartError;
 use crate::far::flows::BufferedFlow;
 use crate::far::flows::Flow;
 #[cfg(feature = "socks5")]
@@ -148,17 +159,17 @@ pub enum CompoundFarIPChannel {
     /// Wrapper around a [DTLSFarChannel].
     DTLS {
         /// The inner [DTLSFarChannel].
-        dtls: DTLSFarChannel<Box<CompoundFarIPChannel>>
+        dtls: Box<DTLSFarChannel<CompoundFarIPChannel>>
     },
     #[cfg(feature = "socks5")]
     /// Wrapper around a [SOCKS5FarChannel].
     SOCKS5 {
         /// The inner [SOCKS5FarChannel].
-        socks5: SOCKS5FarChannel<
-            Box<ProxyNearConnector>,
+        socks5: Box<SOCKS5FarChannel<
+            ProxyNearConnector,
             CompoundFarIPChannelXfrmPeerAddr,
-            Box<CompoundFarIPChannel>
-        >
+            CompoundFarIPChannel
+        >>
     }
 }
 
@@ -220,7 +231,7 @@ pub enum CompoundFarChannel {
     },
     #[cfg(feature = "dtls")]
     DTLS {
-        dtls: DTLSFarChannel<Box<CompoundFarChannel>>
+        dtls: Box<DTLSFarChannel<CompoundFarChannel>>
     },
     IP {
         ip: CompoundFarIPChannel
@@ -300,6 +311,13 @@ pub enum CompoundFarChannelParam {
     },
     IP {
         ip: CompoundFarIPChannelParam
+    }
+}
+
+pub enum CompoundOutboundNegotiatorParam {
+    Basic,
+    DTLS {
+        dtls: Box<DTLSOutboundParam<CompoundOutboundNegotiatorParam>>
     }
 }
 
@@ -556,9 +574,9 @@ pub enum CompoundFarChannelXfrmWrapError<Unix, UDP> {
 pub enum CompoundInboundNegotiator {
     Basic,
     DTLS {
-        dtls: DTLSInboundNegotiator<
-            Box<CompoundInboundNegotiator>,
-        >
+        dtls: Box<DTLSInboundNegotiator<
+            CompoundInboundNegotiator,
+        >>
     }
 }
 
@@ -567,10 +585,153 @@ pub enum CompoundInboundNegotiator {
 pub enum CompoundOutboundNegotiator {
     Basic,
     DTLS {
-        dtls: DTLSOutboundNegotiator<
-            Box<CompoundOutboundNegotiator>,
-        >
+        dtls: Box<DTLSOutboundNegotiator<
+            CompoundOutboundNegotiator,
+        >>
     }
+}
+
+pub enum CompoundInboundNegotiatorState<Unix, UDP>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    Unix {
+        unix: PassthruSessionNegotiation<CompoundFlow<Unix, UDP>>
+    },
+    DTLS {
+        dtls: Box<DTLSInboundNegotiatorState<
+            CompoundInboundNegotiatorState<Unix, UDP>,
+        >>
+    },
+    IP {
+        ip: CompoundIPInboundNegotiatorState<UDP>
+    }
+}
+
+pub enum CompoundOutboundNegotiatorState<Unix, UDP>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    Unix {
+        unix: PassthruSessionNegotiation<CompoundFlow<Unix, UDP>>
+    },
+    DTLS {
+        dtls: Box<DTLSOutboundNegotiatorState<
+            CompoundOutboundNegotiatorState<Unix, UDP>,
+        >>
+    },
+    IP {
+        ip: CompoundIPOutboundNegotiatorState<UDP>
+    }
+}
+
+pub enum CompoundIPInboundNegotiatorState<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    UDP {
+        udp: PassthruSessionNegotiation<CompoundIPFlow<UDP>>
+    },
+    DTLS {
+        dtls: Box<DTLSInboundNegotiatorState<
+            CompoundIPInboundNegotiatorState<UDP>,
+        >>
+    }
+}
+
+pub enum CompoundIPOutboundNegotiatorState<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    UDP {
+        udp: PassthruSessionNegotiation<CompoundIPFlow<UDP>>
+    },
+    DTLS {
+        dtls: Box<DTLSOutboundNegotiatorState<
+            CompoundIPOutboundNegotiatorState<UDP>,
+        >>
+    }
+}
+
+pub enum CompoundInboundNegotiatorPending<Unix, UDP>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    DTLS {
+        dtls: Box<DTLSInboundNegoPending<
+            CompoundInboundNegotiatorPending<Unix, UDP>,
+            CompoundFlow<Unix, UDP>
+        >>
+    },
+    IP {
+        ip: CompoundIPInboundNegotiatorPending<UDP>
+    }
+}
+
+pub enum CompoundOutboundNegotiatorPending<Unix, UDP>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    DTLS {
+        dtls: Box<DTLSOutboundNegoPending<
+            CompoundOutboundNegotiatorPending<Unix, UDP>,
+            CompoundFlow<Unix, UDP>
+        >>
+    },
+    IP {
+        ip: CompoundIPOutboundNegotiatorPending<UDP>
+    }
+}
+
+pub enum CompoundIPInboundNegotiatorPending<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    DTLS {
+        dtls: Box<DTLSInboundNegoPending<
+            CompoundIPInboundNegotiatorPending<UDP>,
+            CompoundIPFlow<UDP>
+        >>
+    }
+}
+
+pub enum CompoundIPOutboundNegotiatorPending<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    DTLS {
+        dtls: Box<DTLSOutboundNegoPending<
+            CompoundIPOutboundNegotiatorPending<UDP>,
+            CompoundIPFlow<UDP>
+        >>
+    }
+}
+
+#[derive(Debug)]
+pub enum CompoundInboundNegoError {
+    DTLS {
+        dtls: Box<DTLSInboundNegoError<CompoundInboundNegoError>>
+    },
+}
+
+#[derive(Debug)]
+pub enum CompoundOutboundNegoError {
+    DTLS {
+        dtls: Box<DTLSOutboundNegoError<CompoundOutboundNegoError>>
+    },
+}
+
+#[derive(Debug)]
+pub enum CompoundNegotiateError {
+    DTLS {
+        dtls: Box<DTLSNegotiateError<CompoundNegotiateError>>
+    },
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum CompoundNegotiatorStartError {
+    DTLS {
+        dtls: Box<DTLSStartError<CompoundNegotiatorStartError,
+                                 TLSLoadConfigError>>
+    },
+    Mismatch
 }
 
 /// Message credentials that can be harvested from
@@ -608,17 +769,34 @@ pub enum CompoundFarIPChannelMsgCred {
 
 /// Session credentials that can be harvested from
 /// [CompoundFarChannel]s.
-pub enum CompoundFarChannelSessionCred<Basic> {
+pub enum CompoundFarChannelSessionCred {
     /// Credential harvested from DTLS sessions.
     #[cfg(feature = "dtls")]
     DTLS {
         /// DTLS credentials.
-        dtls: Box<SSLCred<CompoundFarChannelSessionCred<Basic>>>
+        dtls: Box<SSLCred<CompoundFarChannelSessionCred>>
     },
     /// Credentials harvested from basic channels.
     Basic {
         /// Credentials from basic channels.
-        basic: Basic
+        basic: CompoundFarChannelXfrmPeerAddr
+    },
+    IP {
+        ip: CompoundFarIPChannelSessionCred
+    }
+}
+
+pub enum CompoundFarIPChannelSessionCred {
+    /// Credential harvested from DTLS sessions.
+    #[cfg(feature = "dtls")]
+    DTLS {
+        /// DTLS credentials.
+        dtls: Box<SSLCred<CompoundFarIPChannelSessionCred>>
+    },
+    /// Credentials harvested from basic channels.
+    Basic {
+        /// Credentials from basic channels.
+        basic: CompoundFarIPChannelXfrmPeerAddr
     }
 }
 
@@ -633,7 +811,7 @@ where
         >
     },
     DTLS {
-        flow: DTLSFlow<Box<CompoundIPFlow<UDP>>>
+        flow: Box<DTLSFlow<CompoundIPFlow<UDP>>>
     }
 }
 
@@ -648,19 +826,16 @@ where
         >
     },
     DTLS {
-        flow: DTLSFlow<Box<CompoundFlow<Unix, UDP>>>
+        flow: Box<DTLSFlow<CompoundFlow<Unix, UDP>>>
+    },
+    IP {
+        flow: CompoundIPFlow<UDP>
     }
 }
 
 /// Errors that can occur harvesting credentials.
 pub enum CompoundFarChannelSessionCredError<Cred> {
     Basic { error: Cred }
-}
-
-pub enum CompoundNegotiateError {
-    DTLS {
-        error: Box<DTLSNegotiateError<CompoundNegotiateError>>
-    }
 }
 
 pub enum CompoundOwnedIPFlowsNegotiateError {
@@ -714,7 +889,7 @@ where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Cred = CompoundFarChannelSessionCred<CompoundFarChannelMsgCred>;
+    type Cred = CompoundFarChannelSessionCred;
     type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
 
     #[inline]
@@ -741,6 +916,13 @@ where
                     basic: cred
                 }))
             }
+            CompoundFlow::IP { flow } => {
+                let cred = flow.creds()?;
+
+                Ok(cred.map(|cred| CompoundFarChannelSessionCred::IP {
+                    ip: cred
+                }))
+            }
         }
     }
 }
@@ -750,7 +932,7 @@ where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Cred = CompoundFarChannelSessionCred<CompoundFarChannelMsgCred>;
+    type Cred = CompoundFarChannelSessionCred;
     type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
 
     #[inline]
@@ -768,7 +950,7 @@ impl<UDP> Credentials for CompoundIPFlow<UDP>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Cred = CompoundFarChannelSessionCred<CompoundFarIPChannelMsgCred>;
+    type Cred = CompoundFarIPChannelSessionCred;
     type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
 
     #[inline]
@@ -782,7 +964,7 @@ where
             CompoundIPFlow::DTLS { flow } => {
                 let cred = flow.creds()?;
 
-                Ok(cred.map(|cred| CompoundFarChannelSessionCred::DTLS {
+                Ok(cred.map(|cred| CompoundFarIPChannelSessionCred::DTLS {
                     dtls: Box::new(cred)
                 }))
             }
@@ -791,7 +973,7 @@ where
                     CompoundFarChannelSessionCredError::Basic { error: err }
                 })?;
 
-                Ok(cred.map(|cred| CompoundFarChannelSessionCred::Basic {
+                Ok(cred.map(|cred| CompoundFarIPChannelSessionCred::Basic {
                     basic: cred
                 }))
             }
@@ -803,7 +985,7 @@ impl<UDP> Credentials for Box<CompoundIPFlow<UDP>>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Cred = CompoundFarChannelSessionCred<CompoundFarIPChannelMsgCred>;
+    type Cred = CompoundFarIPChannelSessionCred;
     type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
 
     #[inline]
@@ -852,12 +1034,11 @@ impl FarChannelAcquiredResolve for CompoundFarChannelAcquired {
         match self {
             CompoundFarChannelAcquired::Unix { unix } => match unix
                 .resolver(caches, addr_policy, resolver)
-                .unwrap()
             {
-                AcquiredResolver::Resolve { .. } => {
+                Ok(AcquiredResolver::Resolve { .. }) => {
                     Err(CompoundFarChannelAcquiredResolverError::UnixResolve)
                 }
-                AcquiredResolver::StaticMulti { mut params } => {
+                Ok(AcquiredResolver::StaticMulti { mut params }) => {
                     Ok(AcquiredResolver::StaticMulti {
                         params: params
                             .drain(..)
@@ -867,7 +1048,7 @@ impl FarChannelAcquiredResolve for CompoundFarChannelAcquired {
                             .collect()
                     })
                 }
-                AcquiredResolver::StaticSingle { param } => {
+                Ok(AcquiredResolver::StaticSingle { param }) => {
                     Ok(AcquiredResolver::StaticSingle {
                         param: CompoundFarChannelParam::Unix { unix: param }
                     })
@@ -1232,6 +1413,7 @@ where
                 let (out, addr) = ip.wrap(msg, addr).map_err(|e| {
                     CompoundFarChannelXfrmWrapError::IP { ip: e }
                 })?;
+                let addr = CompoundFarChannelAddr::IP { ip: addr };
 
                 Ok((out, addr))
             }
@@ -1258,7 +1440,8 @@ where
 
                 Ok((out, addr))
             }
-            (CompoundFarChannelXfrm::IP { ip }, addr) => {
+            (CompoundFarChannelXfrm::IP { ip },
+             CompoundFarChannelAddr::IP { ip: addr }) => {
                 let (size, addr) = ip.unwrap(buf, addr).map_err(|e| {
                     CompoundFarChannelXfrmWrapError::IP { ip: e }
                 })?;
@@ -1277,7 +1460,7 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Error = CompoundFarIPChannelXfrmWrapError<UDP::Error>;
-    type LocalAddr = CompoundFarChannelAddr;
+    type LocalAddr = SocketAddr;
     type PeerAddr = CompoundFarIPChannelXfrmPeerAddr;
     type SizeError = CompoundFarIPChannelSizeError<UDP::SizeError>;
 
@@ -1321,7 +1504,6 @@ where
                 let (out, addr) = udp.wrap(msg, addr).map_err(|e| {
                     CompoundFarIPChannelXfrmWrapError::UDP { udp: e }
                 })?;
-                let addr = CompoundFarChannelAddr::IP { ip: addr };
 
                 Ok((out, addr))
             }
@@ -1344,13 +1526,10 @@ where
     fn unwrap(
         &mut self,
         buf: &mut [u8],
-        addr: CompoundFarChannelAddr
+        addr: SocketAddr
     ) -> Result<(usize, Self::PeerAddr), Self::Error> {
         match (self, addr) {
-            (
-                CompoundFarIPChannelXfrm::UDP { udp },
-                CompoundFarChannelAddr::IP { ip: addr }
-            ) => {
+            (CompoundFarIPChannelXfrm::UDP { udp }, addr) => {
                 let (out, addr) = udp.unwrap(buf, addr).map_err(|e| {
                     CompoundFarIPChannelXfrmWrapError::UDP { udp: e }
                 })?;
@@ -1370,7 +1549,6 @@ where
                     CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5: addr }
                 ))
             }
-            _ => Err(CompoundFarIPChannelXfrmWrapError::Mismatch)
         }
     }
 }
@@ -2113,22 +2291,22 @@ impl FarChannelCreate for CompoundFarIPChannel {
         I: Iterator<Item = Token> {
         match config {
             CompoundFarIPChannelConfig::UDP { udp } => {
-                let udp = UDPFarChannel::new(caches, tokens, udp).unwrap();
+                let Ok(udp) = UDPFarChannel::new(caches, tokens, udp);
 
                 Ok(CompoundFarIPChannel::UDP { udp: udp })
             }
             CompoundFarIPChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::new(caches, tokens, dtls)?;
+                let dtls = DTLSFarChannel::new(caches, tokens, *dtls)?;
 
-                Ok(CompoundFarIPChannel::DTLS { dtls: dtls })
+                Ok(CompoundFarIPChannel::DTLS { dtls: Box::new(dtls) })
             }
             CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 = SOCKS5FarChannel::new(caches, tokens, socks5_udp)
+                let socks5 = SOCKS5FarChannel::new(caches, tokens, *socks5_udp)
                     .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
                         socks5: Box::new(err)
                     })?;
 
-                Ok(CompoundFarIPChannel::SOCKS5 { socks5: socks5 })
+                Ok(CompoundFarIPChannel::SOCKS5 { socks5: Box::new(socks5) })
             }
         }
     }
@@ -2345,22 +2523,22 @@ impl FarChannelCreate for CompoundFarChannel {
         I: Iterator<Item = Token> {
         match config {
             CompoundFarChannelConfig::Unix { unix_datagram } => {
-                let unix = UnixFarChannel::new(caches, tokens,
-                                               unix_datagram).unwrap();
+                let Ok(unix) = UnixFarChannel::new(caches, tokens,
+                                                   unix_datagram);
 
                 Ok(CompoundFarChannel::Unix { unix: unix })
             }
             CompoundFarChannelConfig::UDP { udp } => {
-                let udp = UDPFarChannel::new(caches, tokens, udp).unwrap();
+                let Ok(udp) = UDPFarChannel::new(caches, tokens, udp);
 
                 Ok(CompoundFarChannel::IP {
                     ip: CompoundFarIPChannel::UDP { udp: udp }
                 })
             }
             CompoundFarChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::new(caches, tokens, dtls)?;
+                let dtls = DTLSFarChannel::new(caches, tokens, *dtls)?;
 
-                Ok(CompoundFarChannel::DTLS { dtls: dtls })
+                Ok(CompoundFarChannel::DTLS { dtls: Box::new(dtls) })
             }
             CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
                 let socks5 = SOCKS5FarChannel::new(caches, tokens, socks5_udp)
@@ -2369,7 +2547,9 @@ impl FarChannelCreate for CompoundFarChannel {
                     })?;
 
                 Ok(CompoundFarChannel::IP {
-                    ip: CompoundFarIPChannel::SOCKS5 { socks5: socks5 }
+                    ip: CompoundFarIPChannel::SOCKS5 {
+                        socks5: Box::new(socks5)
+                    }
                 })
             }
         }
@@ -2545,15 +2725,14 @@ where
                 CompoundFarChannelParam::Unix { unix: param },
                 xfrm
             ) => {
-                let xfrm = <UnixFarChannel as FarChannelXfrm<
+                let Ok(xfrm) = <UnixFarChannel as FarChannelXfrm<
                     CompoundFarChannelXfrm<Unix, UDP>
-                >>::wrap_xfrm(unix, param, xfrm)
-                .unwrap();
+                >>::wrap_xfrm(unix, param, xfrm);
 
                 Ok(xfrm)
             }
             (CompoundFarChannel::DTLS { dtls }, param, xfrm) => {
-                <DTLSFarChannel<Box<CompoundFarChannel>> as FarChannelXfrm<
+                <DTLSFarChannel<CompoundFarChannel> as FarChannelXfrm<
                     CompoundFarChannelXfrm<Unix, UDP>
                 >>::wrap_xfrm(dtls, param, xfrm)
             }
@@ -2614,10 +2793,9 @@ where
                 CompoundFarIPChannel::UDP { udp },
                 CompoundFarIPChannelParam::UDP { udp: param }
             ) => {
-                let xfrm = <UDPFarChannel as FarChannelXfrm<
+                let Ok(xfrm) = <UDPFarChannel as FarChannelXfrm<
                     CompoundFarIPChannelXfrm<UDP>
-                >>::wrap_xfrm(udp, param, xfrm)
-                .unwrap();
+                >>::wrap_xfrm(udp, param, xfrm);
 
                 Ok(xfrm)
             }
@@ -2625,9 +2803,9 @@ where
                 CompoundFarIPChannel::SOCKS5 { socks5 },
                 CompoundFarIPChannelParam::SOCKS5 { socks5: param }
             ) => <SOCKS5FarChannel<
-                Box<CompoundNearConnector<TLSPeerConfig>>,
+                CompoundNearConnector<TLSPeerConfig>,
                 CompoundFarIPChannelXfrmPeerAddr,
-                Box<CompoundFarIPChannel>
+                CompoundFarIPChannel
             > as FarChannelXfrm<CompoundFarIPChannelXfrm<UDP>>>::wrap_xfrm(
                 socks5, *param, xfrm
             )
@@ -2638,7 +2816,7 @@ where
                 socks5: Box::new(e)
             }),
             (CompoundFarIPChannel::DTLS { dtls }, param) => {
-                <DTLSFarChannel<Box<CompoundFarIPChannel>> as FarChannelXfrm<
+                <DTLSFarChannel<CompoundFarIPChannel> as FarChannelXfrm<
                     CompoundFarIPChannelXfrm<UDP>
                 >>::wrap_xfrm(dtls, param, xfrm)
             }
@@ -2669,6 +2847,620 @@ where
     }
 }
 
+impl<Unix, UDP> Negotiator<CompoundFlow<Unix, UDP>>
+    for CompoundInboundNegotiator
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundInboundNegotiatorState<Unix, UDP>;
+    type Pending = CompoundInboundNegotiatorPending<Unix, UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    fn negotiate(
+        &self,
+        state: CompoundInboundNegotiatorState<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, state) {
+            (CompoundInboundNegotiator::Basic,
+             CompoundInboundNegotiatorState::Unix { unix }) => {
+                let Ok(NegotiatorResult::Complete(out)) =
+                    PassthruNegotiator.negotiate(unix);
+
+                Ok(NegotiatorResult::Complete(out))
+            },
+            (nego, CompoundInboundNegotiatorState::IP { ip: state }) => {
+                Ok(nego.negotiate(state)?
+                   .map_pending(|pending|
+                                CompoundInboundNegotiatorPending::IP {
+                                    ip: pending
+                                })
+                   .map(|ip| CompoundFlow::IP { flow: ip }))
+            }
+            (CompoundInboundNegotiator::DTLS { dtls },
+             CompoundInboundNegotiatorState::DTLS { dtls: state }) => {
+                Ok(dtls.negotiate(*state)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundInboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: CompoundInboundNegotiatorPending<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, pending) {
+            (nego, CompoundInboundNegotiatorPending::IP { ip: state }) => {
+                Ok(nego.complete_negotiate(pending)?
+                   .map_pending(|pending|
+                                CompoundInboundNegotiatorPending::IP {
+                                    ip: pending
+                                })
+                   .map(|ip| CompoundFlow::IP { flow: ip }))
+            }
+            (CompoundInboundNegotiator::DTLS { dtls },
+             CompoundInboundNegotiatorPending::DTLS { dtls: pending }) => {
+                Ok(dtls.complete_negotiate(*pending)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundInboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+}
+
+impl<Unix, UDP> NegotiatorStart<CompoundFlow<Unix, UDP>,
+                                BufferedFlow<CompoundFarChannelSocket,
+                                             CompoundFarChannelXfrm<Unix, UDP>>>
+    for CompoundInboundNegotiator
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = ();
+    type StartError = CompoundNegotiatorStartError;
+
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarChannelSocket,
+                             CompoundFarChannelXfrm<Unix, UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        match self {
+            CompoundInboundNegotiator::Basic => {
+                let flow = CompoundFlow::Basic { flow: stream };
+                let Ok(state) = PassthruNegotiator.start(param, flow);
+
+                Ok(CompoundInboundNegotiatorState::Unix { unix: state })
+            },
+            CompoundInboundNegotiator::DTLS { dtls } => {
+                let state = dtls.start(param, stream)
+                    .map_err(|err| CompoundNegotiatorStartError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundInboundNegotiatorState::DTLS {
+                    dtls: Box::new(state)
+                })
+            }
+        }
+    }
+}
+
+impl<Unix, UDP> Negotiator<CompoundFlow<Unix, UDP>>
+    for Box<CompoundInboundNegotiator>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundInboundNegotiatorState<Unix, UDP>;
+    type Pending = CompoundInboundNegotiatorPending<Unix, UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: CompoundInboundNegotiatorState<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: CompoundInboundNegotiatorPending<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
+    }
+}
+
+impl<Unix, UDP> NegotiatorStart<CompoundFlow<Unix, UDP>,
+                                BufferedFlow<CompoundFarChannelSocket,
+                                             CompoundFarChannelXfrm<Unix, UDP>>>
+    for Box<CompoundInboundNegotiator>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = ();
+    type StartError = CompoundNegotiatorStartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarChannelSocket,
+                             CompoundFarChannelXfrm<Unix, UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        self.as_ref().start(param, stream)
+    }
+}
+
+impl<Unix, UDP> Negotiator<CompoundFlow<Unix, UDP>>
+    for CompoundOutboundNegotiator
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundOutboundNegotiatorState<Unix, UDP>;
+    type Pending = CompoundOutboundNegotiatorPending<Unix, UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    fn negotiate(
+        &self,
+        state: CompoundOutboundNegotiatorState<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, state) {
+            (CompoundOutboundNegotiator::Basic,
+             CompoundOutboundNegotiatorState::Unix { unix }) => {
+                let Ok(NegotiatorResult::Complete(out)) =
+                    PassthruNegotiator.negotiate(unix);
+
+                Ok(NegotiatorResult::Complete(out))
+            },
+            (nego, CompoundOutboundNegotiatorState::IP { ip: state }) => {
+                Ok(nego.negotiate(state)?
+                   .map_pending(|pending|
+                                CompoundOutboundNegotiatorPending::IP {
+                                    ip: pending
+                                })
+                   .map(|ip| CompoundFlow::IP { flow: ip }))
+            }
+            (CompoundOutboundNegotiator::DTLS { dtls },
+             CompoundOutboundNegotiatorState::DTLS { dtls: state }) => {
+                Ok(dtls.negotiate(*state)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundOutboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: CompoundOutboundNegotiatorPending<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, pending) {
+            (nego, CompoundOutboundNegotiatorPending::IP { ip: state }) => {
+                Ok(nego.complete_negotiate(pending)?
+                   .map_pending(|pending|
+                                CompoundOutboundNegotiatorPending::IP {
+                                    ip: pending
+                                })
+                   .map(|ip| CompoundFlow::IP { flow: ip }))
+            }
+            (CompoundOutboundNegotiator::DTLS { dtls },
+             CompoundOutboundNegotiatorPending::DTLS { dtls: pending }) => {
+                Ok(dtls.complete_negotiate(*pending)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundOutboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+}
+
+impl<Unix, UDP> NegotiatorStart<CompoundFlow<Unix, UDP>,
+                                BufferedFlow<CompoundFarChannelSocket,
+                                             CompoundFarChannelXfrm<Unix, UDP>>>
+    for CompoundOutboundNegotiator
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = CompoundOutboundNegotiatorParam;
+    type StartError = CompoundNegotiatorStartError;
+
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarChannelSocket,
+                             CompoundFarChannelXfrm<Unix, UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        match (self, param) {
+            (CompoundOutboundNegotiator::Basic,
+             CompoundOutboundNegotiatorParam::Basic)=> {
+                let flow = CompoundFlow::Basic { flow: stream };
+                let Ok(state) = PassthruNegotiator.start(&(), flow);
+
+                Ok(CompoundOutboundNegotiatorState::Unix { unix: state })
+            },
+            (CompoundOutboundNegotiator::DTLS { dtls },
+             CompoundOutboundNegotiatorParam::DTLS { dtls: param })=> {
+                let state = dtls.start(param, stream)
+                    .map_err(|err| CompoundNegotiatorStartError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundOutboundNegotiatorState::DTLS {
+                    dtls: Box::new(state)
+                })
+            }
+            _ => Err(CompoundNegotiatorStartError::Mismatch)
+        }
+    }
+}
+
+impl<Unix, UDP> Negotiator<CompoundFlow<Unix, UDP>>
+    for Box<CompoundOutboundNegotiator>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundOutboundNegotiatorState<Unix, UDP>;
+    type Pending = CompoundOutboundNegotiatorPending<Unix, UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: CompoundOutboundNegotiatorState<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: CompoundOutboundNegotiatorPending<Unix, UDP>
+    ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
+    }
+}
+
+impl<Unix, UDP> NegotiatorStart<CompoundFlow<Unix, UDP>,
+                                BufferedFlow<CompoundFarChannelSocket,
+                                             CompoundFarChannelXfrm<Unix, UDP>>>
+    for Box<CompoundOutboundNegotiator>
+where
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = CompoundOutboundNegotiatorParam;
+    type StartError = CompoundNegotiatorStartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarChannelSocket,
+                             CompoundFarChannelXfrm<Unix, UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        self.as_ref().start(param, stream)
+    }
+}
+
+impl<UDP> Negotiator<CompoundIPFlow<UDP>> for CompoundInboundNegotiator
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundIPInboundNegotiatorState<UDP>;
+    type Pending = CompoundIPInboundNegotiatorPending<UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    fn negotiate(
+        &self,
+        state: CompoundIPInboundNegotiatorState<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, state) {
+            (CompoundInboundNegotiator::Basic,
+             CompoundIPInboundNegotiatorState::UDP { udp }) => {
+                let Ok(NegotiatorResult::Complete(out)) =
+                    PassthruNegotiator.negotiate(udp);
+
+                Ok(NegotiatorResult::Complete(out))
+            },
+            (CompoundInboundNegotiator::DTLS { dtls },
+             CompoundIPInboundNegotiatorState::DTLS { dtls: state }) => {
+                Ok(dtls.negotiate(*state)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundIPInboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundIPFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: CompoundIPInboundNegotiatorPending<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, pending) {
+            (CompoundInboundNegotiator::DTLS { dtls },
+             CompoundIPInboundNegotiatorPending::DTLS { dtls: pending }) => {
+                Ok(dtls.complete_negotiate(*pending)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundIPInboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundIPFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+}
+
+impl<UDP> NegotiatorStart<CompoundIPFlow<UDP>,
+                          BufferedFlow<CompoundFarIPChannelSocket,
+                                       CompoundFarIPChannelXfrm<UDP>>>
+    for CompoundInboundNegotiator
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = ();
+    type StartError = CompoundNegotiatorStartError;
+
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarIPChannelSocket,
+                             CompoundFarIPChannelXfrm<UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        match self {
+            CompoundInboundNegotiator::Basic => {
+                let flow = CompoundIPFlow::Basic { flow: stream };
+                let Ok(state) = PassthruNegotiator.start(param, flow);
+
+                Ok(CompoundIPInboundNegotiatorState::UDP { udp: state })
+            },
+            CompoundInboundNegotiator::DTLS { dtls } => {
+                let state = dtls.start(param, stream)
+                    .map_err(|err| CompoundNegotiatorStartError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundIPInboundNegotiatorState::DTLS {
+                    dtls: Box::new(state)
+                })
+            }
+        }
+    }
+}
+
+impl<UDP> Negotiator<CompoundIPFlow<UDP>> for Box<CompoundInboundNegotiator>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundIPInboundNegotiatorState<UDP>;
+    type Pending = CompoundIPInboundNegotiatorPending<UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: CompoundIPInboundNegotiatorState<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: CompoundIPInboundNegotiatorPending<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
+    }
+}
+
+impl<UDP> NegotiatorStart<CompoundIPFlow<UDP>,
+                          BufferedFlow<CompoundFarIPChannelSocket,
+                                       CompoundFarIPChannelXfrm<UDP>>>
+    for Box<CompoundInboundNegotiator>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = ();
+    type StartError = CompoundNegotiatorStartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarIPChannelSocket,
+                             CompoundFarIPChannelXfrm<UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        self.as_ref().start(param, stream)
+    }
+}
+
+impl<UDP> Negotiator<CompoundIPFlow<UDP>> for CompoundOutboundNegotiator
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundIPOutboundNegotiatorState<UDP>;
+    type Pending = CompoundIPOutboundNegotiatorPending<UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    fn negotiate(
+        &self,
+        state: CompoundIPOutboundNegotiatorState<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, state) {
+            (CompoundOutboundNegotiator::Basic,
+             CompoundIPOutboundNegotiatorState::UDP { udp }) => {
+                let Ok(NegotiatorResult::Complete(out)) =
+                    PassthruNegotiator.negotiate(udp);
+
+                Ok(NegotiatorResult::Complete(out))
+            },
+            (CompoundOutboundNegotiator::DTLS { dtls },
+             CompoundIPOutboundNegotiatorState::DTLS { dtls: state }) => {
+                Ok(dtls.negotiate(*state)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundIPOutboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundIPFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: CompoundIPOutboundNegotiatorPending<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        match (self, pending) {
+            (CompoundOutboundNegotiator::DTLS { dtls },
+             CompoundIPOutboundNegotiatorPending::DTLS { dtls: pending }) => {
+                Ok(dtls.complete_negotiate(*pending)
+                   .map_err(|err| CompoundNegotiateError::DTLS {
+                       dtls: Box::new(err)
+                   })?
+                   .map_pending(|pending|
+                                CompoundIPOutboundNegotiatorPending::DTLS {
+                                    dtls: Box::new(pending)
+                                })
+                   .map(|dtls| CompoundIPFlow::DTLS { flow: Box::new(dtls) }))
+            }
+            _ => Err(CompoundNegotiateError::Mismatch)
+        }
+    }
+}
+
+impl<UDP> NegotiatorStart<CompoundIPFlow<UDP>,
+                          BufferedFlow<CompoundFarIPChannelSocket,
+                                       CompoundFarIPChannelXfrm<UDP>>>
+    for CompoundOutboundNegotiator
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = CompoundOutboundNegotiatorParam;
+    type StartError = CompoundNegotiatorStartError;
+
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarIPChannelSocket,
+                             CompoundFarIPChannelXfrm<UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        match (self, param) {
+            (CompoundOutboundNegotiator::Basic,
+             CompoundOutboundNegotiatorParam::Basic)=> {
+                let flow = CompoundIPFlow::Basic { flow: stream };
+                let Ok(state) = PassthruNegotiator.start(&(), flow);
+
+                Ok(CompoundIPOutboundNegotiatorState::UDP { udp: state })
+            },
+            (CompoundOutboundNegotiator::DTLS { dtls },
+             CompoundOutboundNegotiatorParam::DTLS { dtls: param })=> {
+                let state = dtls.start(param, stream)
+                    .map_err(|err| CompoundNegotiatorStartError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundIPOutboundNegotiatorState::DTLS {
+                    dtls: Box::new(state)
+                })
+            }
+            _ => Err(CompoundNegotiatorStartError::Mismatch)
+        }
+    }
+}
+
+impl<UDP> Negotiator<CompoundIPFlow<UDP>> for Box<CompoundOutboundNegotiator>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type State = CompoundIPOutboundNegotiatorState<UDP>;
+    type Pending = CompoundIPOutboundNegotiatorPending<UDP>;
+    type NegotiateError = CompoundNegotiateError;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: CompoundIPOutboundNegotiatorState<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: CompoundIPOutboundNegotiatorPending<UDP>
+    ) -> Result<NegotiatorResult<CompoundIPFlow<UDP>, Self::Pending>,
+                Self::NegotiateError> {
+        self.as_ref().complete_negotiate(pending)
+    }
+}
+
+impl<UDP> NegotiatorStart<CompoundIPFlow<UDP>,
+                          BufferedFlow<CompoundFarIPChannelSocket,
+                                       CompoundFarIPChannelXfrm<UDP>>>
+    for Box<CompoundOutboundNegotiator>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type Param = CompoundOutboundNegotiatorParam;
+    type StartError = CompoundNegotiatorStartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: BufferedFlow<CompoundFarIPChannelSocket,
+                             CompoundFarIPChannelXfrm<UDP>>
+    ) -> Result<Self::State, Self::StartError> {
+        self.as_ref().start(param, stream)
+    }
+}
+
 impl<Unix, UDP> FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>>
     for CompoundFarChannel
 where
@@ -2678,28 +3470,52 @@ where
     type Flow = CompoundFlow<Unix, UDP>;
     type OutboundNego = CompoundOutboundNegotiator;
     type InboundNego = CompoundInboundNegotiator;
+    type OutboundNegoError = CompoundOutboundNegoError;
+    type InboundNegoError = CompoundInboundNegoError;
 
-
-    fn inbound_negotiator(&self) -> CompoundInboundNegotiator {
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
         match self {
-            CompoundFarChannel::Unix { .. } => CompoundInboundNegotiator::Basic,
-            CompoundFarChannel::IP { ip } => ip.inbound_negotiator(),
-            CompoundFarChannel::DTLS { dtls } =>
-                CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.inbound_negotiator()
-                }
+            CompoundFarChannel::Unix { .. } => {
+                Ok(CompoundInboundNegotiator::Basic)
+            }
+            CompoundFarChannel::IP { ip } =>
+                <CompoundFarIPChannel as FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>>
+                ::inbound_negotiator(ip),
+            CompoundFarChannel::DTLS { dtls } => {
+                let dtls = dtls.inbound_negotiator()
+                    .map_err(|err| CompoundInboundNegoError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundInboundNegotiator::DTLS {
+                    dtls: Box::new(dtls)
+                })
+            }
         }
     }
 
-    fn outbound_negotiator(&self) -> CompoundInboundNegotiator {
+    fn outbound_negotiator(
+        &self,
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
         match self {
-            CompoundFarChannel::Unix { .. } =>
-                CompoundOutboundNegotiator::Basic,
-            CompoundFarChannel::IP { ip } => ip.outbound_negotiator(),
-            CompoundFarChannel::DTLS { dtls } =>
-                CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.outbound_negotiator()
-                }
+            CompoundFarChannel::Unix { .. } => {
+                Ok(CompoundOutboundNegotiator::Basic)
+            }
+            CompoundFarChannel::IP { ip } =>
+                <CompoundFarIPChannel as FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>>
+                ::outbound_negotiator(ip),
+            CompoundFarChannel::DTLS { dtls } => {
+                let dtls = dtls.outbound_negotiator()
+                    .map_err(|err| CompoundOutboundNegoError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundOutboundNegotiator::DTLS {
+                    dtls: Box::new(dtls)
+                })
+            }
         }
     }
 }
@@ -2710,36 +3526,26 @@ where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
-    type Flow = Box<CompoundFlow<Unix, UDP>>;
+    type Flow = CompoundFlow<Unix, UDP>;
     type OutboundNego = CompoundOutboundNegotiator;
     type InboundNego = CompoundInboundNegotiator;
+    type OutboundNegoError = CompoundOutboundNegoError;
+    type InboundNegoError = CompoundInboundNegoError;
 
-    fn inbound_negotiator(&self) -> Box<CompoundInboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarChannel::Unix { .. } => {
-                Box::new(CompoundInboundNegotiator::Basic)
-            }
-            CompoundFarChannel::IP { ip } => Box::new(ip.inbound_negotiator()),
-            CompoundFarChannel::DTLS { dtls } => {
-                Box::new(CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.inbound_negotiator()
-                })
-            }
-        }
+    #[inline]
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
+        <CompoundFarChannel as FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>>>
+            ::inbound_negotiator(self.as_ref())
     }
 
-    fn outbound_negotiator(&self) -> Box<CompoundOutboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarChannel::Unix { .. } => {
-                Box::new(CompoundOutboundNegotiator::Basic)
-            }
-            CompoundFarChannel::IP { ip } => Box::new(ip.outbound_negotiator()),
-            CompoundFarChannel::DTLS { dtls } => {
-                Box::new(CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.outbound_negotiator()
-                })
-            }
-        }
+    #[inline]
+    fn outbound_negotiator(
+        &self,
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
+        <CompoundFarChannel as FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>>>
+            ::outbound_negotiator(self.as_ref())
     }
 }
 
@@ -2748,30 +3554,55 @@ impl<UDP> FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
+    type Flow = CompoundIPFlow<UDP>;
     type OutboundNego = CompoundOutboundNegotiator;
     type InboundNego = CompoundInboundNegotiator;
+    type OutboundNegoError = CompoundOutboundNegoError;
+    type InboundNegoError = CompoundInboundNegoError;
 
-    fn inbound_negotiator(&self) -> CompoundInboundNegotiator {
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
         match self {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } =>
-                CompoundInboundNegotiator::Basic,
-            CompoundFarIPChannel::DTLS { dtls } =>
-                CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.inbound_negotiator()
-                }
+            CompoundFarIPChannel::UDP { .. } => {
+                Ok(CompoundInboundNegotiator::Basic)
+            }
+            CompoundFarIPChannel::SOCKS5 { socks5, .. } => {
+                socks5.inbound_negotiator()
+            }
+            CompoundFarIPChannel::DTLS { dtls } => {
+                let dtls = dtls.inbound_negotiator()
+                    .map_err(|err| CompoundInboundNegoError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundInboundNegotiator::DTLS {
+                    dtls: Box::new(dtls)
+                })
+            }
         }
     }
 
-    fn outbound_negotiator(&self) -> CompoundOutboundNegotiator {
+    fn outbound_negotiator(
+        &self,
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
         match self {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } =>
-                CompoundOutboundNegotiator::Basic,
-            CompoundFarIPChannel::DTLS { dtls } =>
-                CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.outbound_negotiator()
-                }
+            CompoundFarIPChannel::UDP { .. } => {
+                Ok(CompoundOutboundNegotiator::Basic)
+            }
+            CompoundFarIPChannel::SOCKS5 { socks5, .. } => {
+                socks5.outbound_negotiator()
+            }
+            CompoundFarIPChannel::DTLS { dtls } => {
+                let dtls = dtls.outbound_negotiator()
+                    .map_err(|err| CompoundOutboundNegoError::DTLS {
+                        dtls: Box::new(err)
+                    })?;
+
+                Ok(CompoundOutboundNegotiator::DTLS {
+                    dtls: Box::new(dtls)
+                })
+            }
         }
     }
 }
@@ -2781,35 +3612,26 @@ impl<UDP> FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
+    type Flow = CompoundIPFlow<UDP>;
     type OutboundNego = CompoundOutboundNegotiator;
     type InboundNego = CompoundInboundNegotiator;
+    type OutboundNegoError = CompoundOutboundNegoError;
+    type InboundNegoError = CompoundInboundNegoError;
 
-    fn inbound_negotiator(&self) -> Box<CompoundInboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } => {
-                Box::new(CompoundInboundNegotiator::Basic)
-            }
-            CompoundFarIPChannel::DTLS { dtls } => {
-                Box::new(CompoundInboundNegotiator::DTLS {
-                    dtls: dtls.inbound_negotiator()
-                })
-            }
-        }
+    #[inline]
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
+        <CompoundFarIPChannel as FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>>
+            ::inbound_negotiator(self.as_ref())
     }
 
-    fn outbound_negotiator(&self) -> Box<CompoundOutboundNegotiator> {
-        match self.as_ref() {
-            CompoundFarIPChannel::UDP { .. } |
-            CompoundFarIPChannel::SOCKS5 { .. } => {
-                Box::new(CompoundOutboundNegotiator::Basic)
-            }
-            CompoundFarIPChannel::DTLS { dtls } => {
-                Box::new(CompoundOutboundNegotiator::DTLS {
-                    dtls: dtls.outbound_negotiator()
-                })
-            }
-        }
+    #[inline]
+    fn outbound_negotiator(
+        &self,
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
+        <CompoundFarIPChannel as FarChannelFlows<CompoundFarIPChannelXfrm<UDP>>>
+            ::outbound_negotiator(self.as_ref())
     }
 }
 
@@ -2824,7 +3646,8 @@ where
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.local_addr(),
-            CompoundFlow::DTLS { flow } => flow.local_addr()
+            CompoundFlow::DTLS { flow } => flow.local_addr(),
+            CompoundFlow::IP { flow } => flow.local_addr()
         }
     }
 
@@ -2832,7 +3655,9 @@ where
     fn peer_addr(&self) -> Self::PeerAddr {
         match self {
             CompoundFlow::Basic { flow } => flow.peer_addr(),
-            CompoundFlow::DTLS { flow } => flow.peer_addr()
+            CompoundFlow::DTLS { flow } => flow.peer_addr(),
+            CompoundFlow::IP { flow } => flow.peer_addr()
+
         }
     }
 }
@@ -2866,7 +3691,8 @@ where
     ) -> Result<usize, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.read(buf),
-            CompoundFlow::DTLS { flow } => flow.read(buf)
+            CompoundFlow::DTLS { flow } => flow.read(buf),
+            CompoundFlow::IP { flow } => flow.read(buf)
         }
     }
 
@@ -2877,7 +3703,8 @@ where
     ) -> Result<usize, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.read_vectored(buf),
-            CompoundFlow::DTLS { flow } => flow.read_vectored(buf)
+            CompoundFlow::DTLS { flow } => flow.read_vectored(buf),
+            CompoundFlow::IP { flow } => flow.read_vectored(buf)
         }
     }
 
@@ -2888,7 +3715,8 @@ where
     ) -> Result<usize, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.read_to_end(buf),
-            CompoundFlow::DTLS { flow } => flow.read_to_end(buf)
+            CompoundFlow::DTLS { flow } => flow.read_to_end(buf),
+            CompoundFlow::IP { flow } => flow.read_to_end(buf)
         }
     }
 
@@ -2899,7 +3727,8 @@ where
     ) -> Result<usize, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.read_to_string(buf),
-            CompoundFlow::DTLS { flow } => flow.read_to_string(buf)
+            CompoundFlow::DTLS { flow } => flow.read_to_string(buf),
+            CompoundFlow::IP { flow } => flow.read_to_string(buf)
         }
     }
 
@@ -2910,7 +3739,8 @@ where
     ) -> Result<(), Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.read_exact(buf),
-            CompoundFlow::DTLS { flow } => flow.read_exact(buf)
+            CompoundFlow::DTLS { flow } => flow.read_exact(buf),
+            CompoundFlow::IP { flow } => flow.read_exact(buf)
         }
     }
 }
@@ -2926,7 +3756,8 @@ where
     ) -> Result<usize, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.write(buf),
-            CompoundFlow::DTLS { flow } => flow.write(buf)
+            CompoundFlow::DTLS { flow } => flow.write(buf),
+            CompoundFlow::IP { flow } => flow.write(buf)
         }
     }
 
@@ -2937,7 +3768,9 @@ where
     ) -> Result<usize, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.write_vectored(buf),
-            CompoundFlow::DTLS { flow } => flow.write_vectored(buf)
+            CompoundFlow::DTLS { flow } => flow.write_vectored(buf),
+            CompoundFlow::IP { flow } => flow.write_vectored(buf)
+
         }
     }
 
@@ -2948,7 +3781,9 @@ where
     ) -> Result<(), Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.write_all(buf),
-            CompoundFlow::DTLS { flow } => flow.write_all(buf)
+            CompoundFlow::DTLS { flow } => flow.write_all(buf),
+            CompoundFlow::IP { flow } => flow.write_all(buf)
+
         }
     }
 
@@ -2956,10 +3791,162 @@ where
     fn flush(&mut self) -> Result<(), Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.flush(),
-            CompoundFlow::DTLS { flow } => flow.flush()
+            CompoundFlow::DTLS { flow } => flow.flush(),
+            CompoundFlow::IP { flow } => flow.flush()
+
         }
     }
 }
+
+impl<UDP> Flow for CompoundIPFlow<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type LocalAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => {
+                let addr = flow.local_addr()?;
+                let addr = CompoundFarChannelAddr::IP { ip: addr };
+
+                Ok(addr)
+            },
+            CompoundIPFlow::DTLS { flow } => flow.local_addr()
+        }
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Self::PeerAddr {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.peer_addr(),
+            CompoundIPFlow::DTLS { flow } => flow.peer_addr()
+        }
+    }
+}
+
+impl<UDP> Flow for Box<CompoundIPFlow<UDP>>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    type LocalAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.as_ref().local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Self::PeerAddr {
+        self.as_ref().peer_addr()
+    }
+}
+
+impl<UDP> Read for CompoundIPFlow<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    #[inline]
+    fn read(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.read(buf),
+            CompoundIPFlow::DTLS { flow } => flow.read(buf)
+        }
+    }
+
+    #[inline]
+    fn read_vectored(
+        &mut self,
+        buf: &mut [IoSliceMut<'_>]
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.read_vectored(buf),
+            CompoundIPFlow::DTLS { flow } => flow.read_vectored(buf)
+        }
+    }
+
+    #[inline]
+    fn read_to_end(
+        &mut self,
+        buf: &mut Vec<u8>
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.read_to_end(buf),
+            CompoundIPFlow::DTLS { flow } => flow.read_to_end(buf)
+        }
+    }
+
+    #[inline]
+    fn read_to_string(
+        &mut self,
+        buf: &mut String
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.read_to_string(buf),
+            CompoundIPFlow::DTLS { flow } => flow.read_to_string(buf)
+        }
+    }
+
+    #[inline]
+    fn read_exact(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<(), Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.read_exact(buf),
+            CompoundIPFlow::DTLS { flow } => flow.read_exact(buf)
+        }
+    }
+}
+
+impl<UDP> Write for CompoundIPFlow<UDP>
+where
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
+    #[inline]
+    fn write(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.write(buf),
+            CompoundIPFlow::DTLS { flow } => flow.write(buf)
+        }
+    }
+
+    #[inline]
+    fn write_vectored(
+        &mut self,
+        buf: &[IoSlice<'_>]
+    ) -> Result<usize, Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.write_vectored(buf),
+            CompoundIPFlow::DTLS { flow } => flow.write_vectored(buf)
+        }
+    }
+
+    #[inline]
+    fn write_all(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<(), Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.write_all(buf),
+            CompoundIPFlow::DTLS { flow } => flow.write_all(buf)
+        }
+    }
+
+    #[inline]
+    fn flush(&mut self) -> Result<(), Error> {
+        match self {
+            CompoundIPFlow::Basic { flow } => flow.flush(),
+            CompoundIPFlow::DTLS { flow } => flow.flush()
+        }
+    }
+}
+
 
 impl Display for CompoundFarIPChannelParam {
     fn fmt(
@@ -3386,15 +4373,24 @@ where
     }
 }
 
-impl Debug for CompoundNegotiateError {
+impl Display for CompoundInboundNegoError {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundNegotiateError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
+            CompoundInboundNegoError::DTLS { dtls } => write!(f, "{}", dtls),
+        }
+    }
+}
+
+impl Display for CompoundOutboundNegoError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundOutboundNegoError::DTLS { dtls } => write!(f, "{}", dtls),
         }
     }
 }
@@ -3405,9 +4401,21 @@ impl Display for CompoundNegotiateError {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundNegotiateError::DTLS { error } => {
-                write!(f, "{}", error)
-            }
+            CompoundNegotiateError::DTLS { dtls } => write!(f, "{}", dtls),
+            CompoundNegotiateError::Mismatch => write!(f, "type mismatch")
+        }
+    }
+}
+
+impl Display for CompoundNegotiatorStartError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundNegotiatorStartError::DTLS { dtls } =>
+                write!(f, "{}", dtls),
+            CompoundNegotiatorStartError::Mismatch => write!(f, "type mismatch")
         }
     }
 }
@@ -3431,11 +4439,52 @@ impl Display for CompoundFarIPChannelAcquiredResolverError {
     }
 }
 
+impl ScopedError for CompoundInboundNegoError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundInboundNegoError::DTLS { dtls } => dtls.scope(),
+        }
+    }
+}
+
+impl ScopedError for CompoundOutboundNegoError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundOutboundNegoError::DTLS { dtls } => dtls.scope(),
+        }
+    }
+}
+
 impl ScopedError for CompoundNegotiateError {
     fn scope(&self) -> ErrorScope {
         match self {
-            CompoundNegotiateError::DTLS { error } => error.scope()
+            CompoundNegotiateError::DTLS { dtls } => dtls.scope(),
+            CompoundNegotiateError::Mismatch => ErrorScope::Unrecoverable
         }
+    }
+}
+
+impl ScopedError for Box<CompoundNegotiateError> {
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        self.as_ref().scope()
+    }
+}
+
+impl ScopedError for CompoundNegotiatorStartError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundNegotiatorStartError::DTLS { dtls } => dtls.scope(),
+            CompoundNegotiatorStartError::Mismatch => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+
+impl ScopedError for Box<CompoundNegotiatorStartError> {
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        self.as_ref().scope()
     }
 }
 
