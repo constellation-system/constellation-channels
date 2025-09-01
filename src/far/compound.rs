@@ -2912,7 +2912,7 @@ where
     ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
                 Self::NegotiateError> {
         match (self, pending) {
-            (nego, CompoundInboundNegotiatorPending::IP { ip: state }) => {
+            (nego, CompoundInboundNegotiatorPending::IP { ip: pending }) => {
                 Ok(nego.complete_negotiate(pending)?
                    .map_pending(|pending|
                                 CompoundInboundNegotiatorPending::IP {
@@ -3075,7 +3075,7 @@ where
     ) -> Result<NegotiatorResult<CompoundFlow<Unix, UDP>, Self::Pending>,
                 Self::NegotiateError> {
         match (self, pending) {
-            (nego, CompoundOutboundNegotiatorPending::IP { ip: state }) => {
+            (nego, CompoundOutboundNegotiatorPending::IP { ip: pending }) => {
                 Ok(nego.complete_negotiate(pending)?
                    .map_pending(|pending|
                                 CompoundOutboundNegotiatorPending::IP {
@@ -3689,7 +3689,7 @@ where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     type LocalAddr = CompoundFarChannelAddr;
-    type PeerAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelXfrmPeerAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
@@ -3705,7 +3705,9 @@ where
         match self {
             CompoundFlow::Basic { flow } => flow.peer_addr(),
             CompoundFlow::DTLS { flow } => flow.peer_addr(),
-            CompoundFlow::IP { flow } => flow.peer_addr()
+            CompoundFlow::IP { flow } => CompoundFarChannelXfrmPeerAddr::IP {
+                ip: flow.peer_addr()
+            }
 
         }
     }
@@ -3716,7 +3718,7 @@ where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     type LocalAddr = CompoundFarChannelAddr;
-    type PeerAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelXfrmPeerAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
@@ -3851,7 +3853,7 @@ impl<UDP> Flow for CompoundIPFlow<UDP>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     type LocalAddr = CompoundFarChannelAddr;
-    type PeerAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarIPChannelXfrmPeerAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
@@ -3879,7 +3881,7 @@ impl<UDP> Flow for Box<CompoundIPFlow<UDP>>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     type LocalAddr = CompoundFarChannelAddr;
-    type PeerAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarIPChannelXfrmPeerAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
