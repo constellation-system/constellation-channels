@@ -16,15 +16,26 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use std::convert::TryFrom;
 use std::iter::empty;
 use std::net::SocketAddr;
 
+use constellation_channels::config::CompoundXfrmCreateParam;
+use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::FlowsConfig;
 use constellation_channels::config::DTLSFarChannelConfig;
 use constellation_channels::config::UDPFarChannelConfig;
 use constellation_channels::far::FarChannel;
 use constellation_channels::far::FarChannelCreate;
 use constellation_channels::far::FarChannelFlows;
+use constellation_channels::far::compound::CompoundFarChannel;
+use constellation_channels::far::compound::CompoundFarChannelAcquireState;
+use constellation_channels::far::compound::CompoundFarChannelParam;
+use constellation_channels::far::compound::CompoundFarChannelXfrm;
+use constellation_channels::far::compound::CompoundFarChannelXfrmPeerAddr;
+use constellation_channels::far::compound::CompoundOutboundNegotiatorParam;
+use constellation_channels::far::udp::UDPDatagramXfrm;
+use constellation_channels::far::unix::UnixDatagramXfrm;
 use constellation_channels::far::flows::accept_one;
 use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
@@ -33,6 +44,8 @@ use constellation_channels::far::dtls::DTLSFarChannel;
 use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::udp::UDPFarChannel;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
+use constellation_channels::unix::UnixSocketPath;
+use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::retry::RetryResult;
@@ -41,66 +54,104 @@ use mio::Interest;
 use mio::Poll;
 use mio::Token;
 
-const SERVER_CONFIG: &'static str = concat!(
-    "addr: ::1\n",
-    "port: 8281\n",
-    "cipher-suites:\n",
-    "  - TLS_AES_256_GCM_SHA384\n",
-    "  - TLS_CHACHA20_POLY1305_SHA256\n",
-    "key-exchange-groups:\n",
-    "  - P-384\n",
-    "  - X25519\n",
-    "  - P-256\n",
-    "trust-root:\n",
-    "  root-certs:\n",
-    "    - test/data/certs/client/ca_cert.pem\n",
-    "  crls: []\n",
-    "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-    "key: test/data/certs/server/private/test_server_key.pem\n",
-);
+    const CHANNEL_PATH: &'static str = "test_compound_dtls_double_server.sock";
+    const CLIENT_PATH: &'static str = "test_compound_dtls_double_client.sock";
 
-const CLIENT_CONFIG: &'static str = concat!(
-    "addr: ::1\n",
-    "port: 8282\n",
-    "cipher-suites:\n",
-    "  - TLS_AES_256_GCM_SHA384\n",
-    "  - TLS_CHACHA20_POLY1305_SHA256\n",
-    "key-exchange-groups:\n",
-    "  - P-384\n",
-    "  - X25519\n",
-    "  - P-256\n",
-    "trust-root:\n",
-    "  root-certs:\n",
-    "    - test/data/certs/server/ca_cert.pem\n",
-    "  crls: []\n",
-    "cert: test/data/certs/client/certs/test_client_cert.pem\n",
-    "key: test/data/certs/client/private/test_client_key.pem\n",
-);
+    const SERVER_CONFIG: &'static str = concat!(
+        "dtls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - P-384\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/client/ca_cert.pem\n",
+        "    crls: []\n",
+        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  dtls:\n",
+        "    cipher-suites:\n",
+        "      - TLS_AES_256_GCM_SHA384\n",
+        "      - TLS_CHACHA20_POLY1305_SHA256\n",
+        "    key-exchange-groups:\n",
+        "      - P-384\n",
+        "      - X25519\n",
+        "      - P-256\n",
+        "    trust-root:\n",
+        "      root-certs:\n",
+        "        - test/data/certs/client/ca_cert.pem\n",
+        "      crls: []\n",
+        "    cert: test/data/certs/server/certs/test_server_cert.pem\n",
+        "    key: test/data/certs/server/private/test_server_key.pem\n",
+        "    unix-datagram:\n",
+        "      path: test_compound_dtls_double_server.sock\n",
+    );
 
-//const SERVER_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7007\n");
-//const CLIENT_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7008\n");
-//const SERVER_CONFIG: &'static str =
-//    concat!("path: test_far_send_recv_channel.sock\n",);
-//const CLIENT_CONFIG: &'static str =
-//    concat!("path: test_far_send_recv_client.sock\n");
+    const CLIENT_CONFIG: &'static str = concat!(
+        "dtls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - P-384\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/server/ca_cert.pem\n",
+        "    crls: []\n",
+        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  dtls:\n",
+        "    cipher-suites:\n",
+        "      - TLS_AES_256_GCM_SHA384\n",
+        "      - TLS_CHACHA20_POLY1305_SHA256\n",
+        "    key-exchange-groups:\n",
+        "      - P-384\n",
+        "      - X25519\n",
+        "      - P-256\n",
+        "    trust-root:\n",
+        "      root-certs:\n",
+        "        - test/data/certs/server/ca_cert.pem\n",
+        "      crls: []\n",
+        "    cert: test/data/certs/client/certs/test_client_cert.pem\n",
+        "    key: test/data/certs/client/private/test_client_key.pem\n",
+        "    unix-datagram:\n",
+        "      path: test_compound_dtls_double_client.sock\n",
+    );
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
 fn server() {
     let mut poll = Poll::new().expect("Expected success");
-    let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
+    let server_config: CompoundFarChannelConfig =
         serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
-    let mut listener = DTLSFarChannel::<UDPFarChannel>
-        ::new(&mut nscaches, &mut empty(), server_config)
-        .expect("Expected success");
+    let mut listener =
+        CompoundFarChannel::new(&mut nscaches, &mut empty(),
+                                server_config)
+            .expect("Expected success");
     let config = FlowsConfig::default();
-    let param = match listener.acquire(poll.registry())
+    let acquire = match listener.acquire(poll.registry())
         .expect("Expected success") {
-            RetryResult::Success(val) => val,
-            RetryResult::Retry(_) => panic!("should not see retry")
-        };
-    let xfrm = PassthruDatagramXfrm::new();
+        RetryResult::Success(val) => val,
+        RetryResult::Retry(_) => panic!("should not see retry")
+    };
+    let param = match acquire {
+        CompoundFarChannelAcquireState::Unix { unix } =>
+            CompoundFarChannelParam::Unix {
+                unix: unix
+            },
+        _ => panic!("Expected Unix acquired")
+    };
+    let create_param: CompoundXfrmCreateParam<(), ()> =
+        CompoundXfrmCreateParam::default();
+    let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                     UDPDatagramXfrm<SocketAddr>> =
+        CompoundFarChannelXfrm::create(&param, &create_param);
     let mut flows = listener.flows(config, param, xfrm)
         .expect("Expected success");
     let token = Token(0);
@@ -109,7 +160,8 @@ fn server() {
                              Interest::READABLE | Interest::WRITABLE)
         .expect("Expected success");
 
-    let (mut flow, peer_addr) = accept_one(&mut flows, &mut poll, &(), token)
+    let (mut flow, peer_addr) =
+        accept_one(&mut flows, &mut poll, &(), token)
         .expect("Expected success");
 
     let mut buf = [0; FIRST_BYTES.len()];
@@ -127,26 +179,41 @@ fn server() {
 fn client() {
     let servername = "test-server.nowhere.com";
     let endpoint = IPEndpointAddr::name(String::from(servername));
-    let dtlsparam = DTLSOutboundParam::new(endpoint, ());
+    let negoparam = CompoundOutboundNegotiatorParam::DTLS {
+        dtls: Box::new(DTLSOutboundParam::new(endpoint.clone(),
+                                              CompoundOutboundNegotiatorParam::Basic))
+    };
+    let negoparam = CompoundOutboundNegotiatorParam::DTLS {
+        dtls: Box::new(DTLSOutboundParam::new(endpoint, negoparam))
+    };
     let mut poll = Poll::new().expect("Expected success");
-    let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
-        serde_yaml::from_str(SERVER_CONFIG).unwrap();
-    let server_addr = SocketAddr::new(
-        server_config.tls().underlying().addr().clone(),
-        server_config.tls().underlying().port()
+    let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
+        UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
     let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
-    let mut conn = DTLSFarChannel::<UDPFarChannel>
-        ::new(&mut nscaches, &mut empty(), client_config)
-        .expect("expected success");
+    let mut conn =
+        CompoundFarChannel::new(&mut nscaches, &mut empty(),
+                                client_config)
+            .expect("expected success");
     let config = FlowsConfig::default();
-    let param = match conn.acquire(poll.registry())
+    let acquire = match conn.acquire(poll.registry())
         .expect("Expected success") {
-            RetryResult::Success(val) => val,
-            RetryResult::Retry(_) => panic!("should not see retry")
-        };
-    let xfrm = PassthruDatagramXfrm::new();
+        RetryResult::Success(val) => val,
+        RetryResult::Retry(_) => panic!("should not see retry")
+    };
+    let param = match acquire {
+        CompoundFarChannelAcquireState::Unix { unix } =>
+            CompoundFarChannelParam::Unix {
+                unix: unix
+            },
+        _ => panic!("Expected Unix acquired")
+    };
+    let create_param: CompoundXfrmCreateParam<(), ()> =
+        CompoundXfrmCreateParam::default();
+    let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                     UDPDatagramXfrm<SocketAddr>> =
+        CompoundFarChannelXfrm::create(&param, &create_param);
     let mut flows = conn.flows(config, param, xfrm)
         .expect("Expected success");
     let token = Token(0);
@@ -155,7 +222,7 @@ fn client() {
                              Interest::READABLE | Interest::WRITABLE)
         .expect("Expected success");
 
-    let mut flow = connect_one(&mut flows, &mut poll, &dtlsparam, &(),
+    let mut flow = connect_one(&mut flows, &mut poll, &negoparam, &(),
                                server_addr.clone(), token)
         .expect("Expected success");
 

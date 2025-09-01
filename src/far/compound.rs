@@ -39,7 +39,6 @@ use std::io::Write;
 use std::net::SocketAddr;
 #[cfg(feature = "unix")]
 use std::os::unix::net::UCred;
-use std::sync::Arc;
 
 use constellation_auth::cred::Credentials;
 #[cfg(feature = "tls")]
@@ -201,6 +200,7 @@ pub enum CompoundFarIPChannel {
 /// The following example shows how to create a `CompoundFarChannel`:
 ///
 /// ```
+/// # use std::iter::empty;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::compound::CompoundFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -219,7 +219,7 @@ pub enum CompoundFarIPChannel {
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector = CompoundFarChannel::new(&mut nscaches,
+/// let connector = CompoundFarChannel::new(&mut nscaches, &mut empty(),
 ///                                         accept_config).unwrap();
 /// ```
 pub enum CompoundFarChannel {
@@ -540,6 +540,7 @@ pub enum CompoundFarChannelSocketError {
 
 /// Multiplexer for [XfrmError](FarChannelXfrm::XfrmError)s for
 /// [CompoundFarChannel].
+#[derive(Debug)]
 pub enum CompoundFarChannelXfrmError {
     #[cfg(feature = "socks5")]
     SOCKS5 {
@@ -4081,7 +4082,7 @@ impl Display for CompoundFarChannelAcquireNegoError {
             CompoundFarChannelAcquireNegoError::IP { err } =>
                 write!(f, "{}", err),
             CompoundFarChannelAcquireNegoError::Mismatch =>
-                write!(f, "type mismatch")
+                write!(f, "channel and acquire state type mismatch")
         }
     }
 }
@@ -4096,7 +4097,7 @@ impl Display for CompoundFarIPChannelAcquireNegoError {
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelAcquireNegoError::Mismatch =>
-                write!(f, "type mismatch")
+                write!(f, "channel and acquire state type mismatch")
         }
     }
 }
@@ -4188,7 +4189,7 @@ where
         match self {
             CompoundFarIPChannelSizeError::UDP { udp } => udp.fmt(f),
             CompoundFarIPChannelSizeError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "transform and address type mismatch")
             }
         }
     }
@@ -4205,7 +4206,7 @@ where
         match self {
             CompoundFarIPChannelSizeError::UDP { udp } => udp.fmt(f),
             CompoundFarIPChannelSizeError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "transform and address type mismatch")
             }
         }
     }
@@ -4224,7 +4225,7 @@ impl Debug for CompoundFarIPChannelSocketError {
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelSocketError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "socket and param type mismatch")
             }
         }
     }
@@ -4243,7 +4244,7 @@ impl Display for CompoundFarIPChannelSocketError {
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelSocketError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "socket and param type mismatch")
             }
         }
     }
@@ -4323,22 +4324,6 @@ impl ScopedError for CompoundFarChannelXfrmError {
     }
 }
 
-impl Debug for CompoundFarChannelXfrmError {
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundFarChannelXfrmError::SOCKS5 { socks5 } => {
-                write!(f, "{}", socks5)
-            }
-            CompoundFarChannelXfrmError::Mismatch => {
-                write!(f, "type mismatch")
-            }
-        }
-    }
-}
-
 impl Display for CompoundFarChannelXfrmError {
     fn fmt(
         &self,
@@ -4349,7 +4334,7 @@ impl Display for CompoundFarChannelXfrmError {
                 write!(f, "{}", socks5)
             }
             CompoundFarChannelXfrmError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "channel, param, transform type mismatch")
             }
         }
     }
@@ -4401,7 +4386,7 @@ where
                 write!(f, "{:?}", socks5)
             }
             CompoundFarIPChannelXfrmWrapError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "transform and address type mismatch")
             }
         }
     }
@@ -4421,7 +4406,7 @@ where
                 write!(f, "{}", socks5)
             }
             CompoundFarIPChannelXfrmWrapError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "transform and address type mismatch")
             }
         }
     }
@@ -4456,7 +4441,8 @@ impl Display for CompoundNegotiateError {
     ) -> Result<(), std::fmt::Error> {
         match self {
             CompoundNegotiateError::DTLS { dtls } => write!(f, "{}", dtls),
-            CompoundNegotiateError::Mismatch => write!(f, "type mismatch")
+            CompoundNegotiateError::Mismatch =>
+                write!(f, "negotiator and state type mismatch")
         }
     }
 }
@@ -4469,7 +4455,8 @@ impl Display for CompoundNegotiatorStartError {
         match self {
             CompoundNegotiatorStartError::DTLS { dtls } =>
                 write!(f, "{}", dtls),
-            CompoundNegotiatorStartError::Mismatch => write!(f, "type mismatch")
+            CompoundNegotiatorStartError::Mismatch =>
+                write!(f, "negotiator and param type mismatch")
         }
     }
 }
@@ -4652,7 +4639,7 @@ where
             CompoundFarChannelParamError::Unix { err } => err.fmt(f),
             CompoundFarChannelParamError::IP { err } => err.fmt(f),
             CompoundFarChannelParamError::Mismatch => {
-                write!(f, "type mismatch")
+                write!(f, "socket and transform type mismatch")
             }
         }
     }
@@ -4881,23 +4868,39 @@ impl From<CompoundFarChannelAddr> for CompoundFarChannelXfrmPeerAddr {
 }
 
 #[cfg(test)]
+use std::iter::empty;
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
 use std::sync::Barrier;
 #[cfg(test)]
 use std::thread::spawn;
 
-#[cfg(test)]
-use constellation_auth::authn::AuthNed;
 #[cfg(test)]
 use constellation_auth::authn::PassthruSessionAuthN;
 #[cfg(test)]
 use constellation_auth::cred::NullCred;
 #[cfg(test)]
 use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use mio::Poll;
 
 #[cfg(test)]
-use crate::far::flows::BorrowedFlows;
+use crate::config::FlowsConfig;
 #[cfg(test)]
 use crate::init;
+#[cfg(test)]
+use crate::far::flows::accept_one;
+#[cfg(test)]
+use crate::far::flows::connect_one;
+#[cfg(test)]
+use crate::far::flows::read_one;
+#[cfg(test)]
+use crate::far::flows::write_one;
+#[cfg(test)]
+use crate::far::udp::UDPDatagramXfrm;
+#[cfg(test)]
+use crate::far::unix::UnixDatagramXfrm;
 #[cfg(test)]
 use crate::resolve::cache::SharedNSNameCaches;
 
@@ -4908,7 +4911,7 @@ fn test_compound_dtls_unix() {
     const CHANNEL_PATH: &'static str = "test_compound_dtls_unix_server.sock";
     const CLIENT_PATH: &'static str = "test_compound_dtls_unix_client.sock";
 
-    const CHANNEL_CONFIG: &'static str = concat!(
+    const SERVER_CONFIG: &'static str = concat!(
         "dtls:\n",
         "  cipher-suites:\n",
         "    - TLS_AES_256_GCM_SHA384\n",
@@ -4950,8 +4953,8 @@ fn test_compound_dtls_unix() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let channel_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
+    let server_config: CompoundFarChannelConfig =
+        serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let client_config: CompoundFarChannelConfig =
         serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
@@ -4960,103 +4963,124 @@ fn test_compound_dtls_unix() {
     let client_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CLIENT_PATH).unwrap()
     );
-    let client_barrier = barrier.clone();
-    let mut client_nscaches = nscaches.clone();
+    let mut server_nscaches = nscaches.clone();
+    let server_barrier = barrier.clone();
     let listen = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            CompoundFarChannel::new(&mut client_nscaches, channel_config)
+            CompoundFarChannel::new(&mut server_nscaches, &mut empty(),
+                                    server_config)
                 .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = match listener.acquire().unwrap() {
-            CompoundFarChannelAcquired::Unix { unix } => {
-                CompoundFarChannelParam::Unix { unix: unix }
-            }
-            _ => panic!("Expected unix acquired")
+        let config = FlowsConfig::default();
+        let acquire = match listener.acquire(poll.registry())
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
         };
-        let create_param = CompoundXfrmCreateParam::default();
-        let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-        let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketPath>,
-            PassthruDatagramXfrm<SocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
+        let param = match acquire {
+            CompoundFarChannelAcquireState::Unix { unix } =>
+                CompoundFarChannelParam::Unix {
+                    unix: unix
+                },
+            _ => panic!("Expected Unix acquired")
+        };
+        let create_param: CompoundXfrmCreateParam<(), ()> =
+            CompoundXfrmCreateParam::default();
+        let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                         UDPDatagramXfrm<SocketAddr>> =
+            CompoundFarChannelXfrm::create(&param, &create_param);
+        let mut flows = listener.flows(config, param, xfrm)
+            .expect("Expected success");
+        let token = Token(0);
 
-        client_barrier.wait();
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
+        let (mut flow, peer_addr) =
+            accept_one(&mut flows, &mut poll, &(), token)
+            .expect("Expected success");
+
+        server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (session, peer_addr) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-        let (NullCred, mut flow) = session.take();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &peer_addr, &(), token)
+            .expect("Expected success");
 
-        client_barrier.wait();
+        write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
+            .expect("Expected success");
 
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
+        server_barrier.wait();
 
         assert_eq!(peer_addr, client_addr);
         assert_eq!(FIRST_BYTES.len(), nbytes);
         assert_eq!(FIRST_BYTES, buf);
     });
 
-    let channel_addr = CompoundFarChannelXfrmPeerAddr::unix(
+    let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
-    let mut channel_nscaches = nscaches.clone();
-    let channel_barrier = barrier;
+    let mut client_nscaches = nscaches.clone();
+    let client_barrier = barrier;
     let send = spawn(move || {
-        let mut conn =
-            CompoundFarChannel::new(&mut channel_nscaches, client_config)
-                .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = match conn.acquire().unwrap() {
-            CompoundFarChannelAcquired::Unix { unix } => {
-                CompoundFarChannelParam::Unix { unix: unix }
-            }
-            _ => panic!("Expected unix acquired")
-        };
-        let create_param = CompoundXfrmCreateParam::default();
-        let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-
-        channel_barrier.wait();
-
-        let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketPath>,
-            PassthruDatagramXfrm<SocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
-        let session = match flows
-            .flow(
-                &nego,
-                &PassthruSessionAuthN,
-                channel_addr.clone(),
-                Some(&endpoint)
-            )
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
+        let mut poll = Poll::new().expect("Expected success");
+        let negoparam = CompoundOutboundNegotiatorParam::DTLS {
+            dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
         };
-        let (NullCred, mut flow) = session.take();
+        let mut conn =
+            CompoundFarChannel::new(&mut client_nscaches, &mut empty(),
+                                    client_config)
+                .expect("expected success");
+        let config = FlowsConfig::default();
+        let acquire = match conn.acquire(poll.registry())
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
+        let param = match acquire {
+            CompoundFarChannelAcquireState::Unix { unix } =>
+                CompoundFarChannelParam::Unix {
+                    unix: unix
+                },
+            _ => panic!("Expected Unix acquired")
+        };
+        let create_param: CompoundXfrmCreateParam<(), ()> =
+            CompoundXfrmCreateParam::default();
+        let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                         UDPDatagramXfrm<SocketAddr>> =
+            CompoundFarChannelXfrm::create(&param, &create_param);
+        let mut flows = conn.flows(config, param, xfrm)
+            .expect("Expected success");
+        let token = Token(0);
 
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
 
-        channel_barrier.wait();
+        client_barrier.wait();
+
+        let mut flow = connect_one(&mut flows, &mut poll, &negoparam, &(),
+                                   server_addr.clone(), token)
+            .expect("Expected success");
+
+        write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
+            .expect("Expected success");
+
+        client_barrier.wait();
+        client_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        channel_barrier.wait();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &server_addr, &(), token)
+            .expect("Expected success");
 
-        flow.read_exact(&mut buf).unwrap();
-
-        // assert_eq!(peer_addr, channel_addr);
+        assert_eq!(SECOND_BYTES.len(), nbytes);
         assert_eq!(SECOND_BYTES, buf);
     });
 
@@ -5068,7 +5092,7 @@ fn test_compound_dtls_unix() {
 fn test_compound_dtls_udp() {
     init();
 
-    const CHANNEL_CONFIG: &'static str = concat!(
+    const SERVER_CONFIG: &'static str = concat!(
         "dtls:\n",
         "  cipher-suites:\n",
         "    - TLS_AES_256_GCM_SHA384\n",
@@ -5112,8 +5136,8 @@ fn test_compound_dtls_udp() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let channel_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
+    let server_config: CompoundFarChannelConfig =
+        serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let client_config: CompoundFarChannelConfig =
         serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
@@ -5121,105 +5145,125 @@ fn test_compound_dtls_udp() {
 
     let client_addr =
         CompoundFarChannelXfrmPeerAddr::udp("[::1]:7004".parse().unwrap());
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier.clone();
+    let mut server_nscaches = nscaches.clone();
+    let server_barrier = barrier.clone();
     let listen = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            CompoundFarChannel::new(&mut client_nscaches, channel_config)
+            CompoundFarChannel::new(&mut server_nscaches, &mut empty(),
+                                    server_config)
                 .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = match listener.acquire().unwrap() {
-            CompoundFarChannelAcquired::IP {
-                ip: CompoundFarIPChannelAcquired::UDP { udp }
+        let config = FlowsConfig::default();
+        let acquire = match listener.acquire(poll.registry())
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
+        let param = match acquire {
+            CompoundFarChannelAcquireState::IP {
+                ip: CompoundFarIPChannelAcquireState::UDP { udp }
             } => CompoundFarChannelParam::IP {
                 ip: CompoundFarIPChannelParam::UDP { udp: udp }
             },
-            _ => panic!("Expected UDP acquired")
+            _ => panic!("Expected Unix acquired")
         };
-        let create_param = CompoundXfrmCreateParam::default();
-        let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-        let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketPath>,
-            PassthruDatagramXfrm<SocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
+        let create_param: CompoundXfrmCreateParam<(), ()> =
+            CompoundXfrmCreateParam::default();
+        let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                         UDPDatagramXfrm<SocketAddr>> =
+            CompoundFarChannelXfrm::create(&param, &create_param);
+        let mut flows = listener.flows(config, param, xfrm)
+            .expect("Expected success");
+        let token = Token(0);
 
-        client_barrier.wait();
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
+        let (mut flow, peer_addr) =
+            accept_one(&mut flows, &mut poll, &(), token)
+            .expect("Expected success");
+
+        server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (session, peer_addr) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-        let (NullCred, mut flow) = session.take();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &peer_addr, &(), token)
+            .expect("Expected success");
 
-        client_barrier.wait();
+        write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
+            .expect("Expected success");
 
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
+        server_barrier.wait();
 
         assert_eq!(peer_addr, client_addr);
         assert_eq!(FIRST_BYTES.len(), nbytes);
         assert_eq!(FIRST_BYTES, buf);
     });
 
-    let channel_addr =
+    let server_addr =
         CompoundFarChannelXfrmPeerAddr::udp("[::1]:7003".parse().unwrap());
-    let mut channel_nscaches = nscaches.clone();
-    let channel_barrier = barrier;
+    let mut client_nscaches = nscaches.clone();
+    let client_barrier = barrier;
     let send = spawn(move || {
+        let servername = "test-server.nowhere.com";
+        let endpoint = IPEndpointAddr::name(String::from(servername));
+        let mut poll = Poll::new().expect("Expected success");
+        let negoparam = CompoundOutboundNegotiatorParam::DTLS {
+            dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
+        };
         let mut conn =
-            CompoundFarChannel::new(&mut channel_nscaches, client_config)
+            CompoundFarChannel::new(&mut client_nscaches, &mut empty(),
+                                    client_config)
                 .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = match conn.acquire().unwrap() {
-            CompoundFarChannelAcquired::IP {
-                ip: CompoundFarIPChannelAcquired::UDP { udp }
+        let config = FlowsConfig::default();
+        let acquire = match conn.acquire(poll.registry())
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
+        let param = match acquire {
+            CompoundFarChannelAcquireState::IP {
+                ip: CompoundFarIPChannelAcquireState::UDP { udp }
             } => CompoundFarChannelParam::IP {
                 ip: CompoundFarIPChannelParam::UDP { udp: udp }
             },
-            _ => panic!("Expected UDP acquired")
+            _ => panic!("Expected Unix acquired")
         };
-        let create_param = CompoundXfrmCreateParam::default();
-        let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
+        let create_param: CompoundXfrmCreateParam<(), ()> =
+            CompoundXfrmCreateParam::default();
+        let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                         UDPDatagramXfrm<SocketAddr>> =
+            CompoundFarChannelXfrm::create(&param, &create_param);
+        let mut flows = conn.flows(config, param, xfrm)
+            .expect("Expected success");
+        let token = Token(0);
 
-        channel_barrier.wait();
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
 
-        let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketPath>,
-            PassthruDatagramXfrm<SocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
-        let servername = "test-server.nowhere.com";
-        let endpoint = IPEndpointAddr::name(String::from(servername));
-        let session = match flows
-            .flow(
-                &nego,
-                &PassthruSessionAuthN,
-                channel_addr.clone(),
-                Some(&endpoint)
-            )
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
-        };
-        let (NullCred, mut flow) = session.take();
+        client_barrier.wait();
 
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
+        let mut flow = connect_one(&mut flows, &mut poll, &negoparam, &(),
+                                   server_addr.clone(), token)
+            .expect("Expected success");
 
-        channel_barrier.wait();
+        write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
+            .expect("Expected success");
+
+        client_barrier.wait();
+        client_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        channel_barrier.wait();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &server_addr, &(), token)
+            .expect("Expected success");
 
-        flow.read_exact(&mut buf).unwrap();
-
+        assert_eq!(SECOND_BYTES.len(), nbytes);
         assert_eq!(SECOND_BYTES, buf);
     });
 
@@ -5234,7 +5278,7 @@ fn test_compound_dtls_double() {
     const CHANNEL_PATH: &'static str = "test_compound_dtls_double_server.sock";
     const CLIENT_PATH: &'static str = "test_compound_dtls_double_client.sock";
 
-    const CHANNEL_CONFIG: &'static str = concat!(
+    const SERVER_CONFIG: &'static str = concat!(
         "dtls:\n",
         "  cipher-suites:\n",
         "    - TLS_AES_256_GCM_SHA384\n",
@@ -5304,8 +5348,8 @@ fn test_compound_dtls_double() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let channel_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
+    let server_config: CompoundFarChannelConfig =
+        serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let client_config: CompoundFarChannelConfig =
         serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
@@ -5314,102 +5358,128 @@ fn test_compound_dtls_double() {
     let client_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CLIENT_PATH).unwrap()
     );
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier.clone();
+    let mut server_nscaches = nscaches.clone();
+    let server_barrier = barrier.clone();
     let listen = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            CompoundFarChannel::new(&mut client_nscaches, channel_config)
+            CompoundFarChannel::new(&mut server_nscaches, &mut empty(),
+                                    server_config)
                 .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = match listener.acquire().unwrap() {
-            CompoundFarChannelAcquired::Unix { unix } => {
-                CompoundFarChannelParam::Unix { unix: unix }
-            }
-            _ => panic!("Expected unix acquired")
+        let config = FlowsConfig::default();
+        let acquire = match listener.acquire(poll.registry())
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
         };
-        let create_param = CompoundXfrmCreateParam::default();
-        let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-        let mut flows: CompoundFarChannelMultiFlows<
-            PassthruDatagramXfrm<UnixSocketPath>,
-            PassthruDatagramXfrm<SocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
+        let param = match acquire {
+            CompoundFarChannelAcquireState::Unix { unix } =>
+                CompoundFarChannelParam::Unix {
+                    unix: unix
+                },
+            _ => panic!("Expected Unix acquired")
+        };
+        let create_param: CompoundXfrmCreateParam<(), ()> =
+            CompoundXfrmCreateParam::default();
+        let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                         UDPDatagramXfrm<SocketAddr>> =
+            CompoundFarChannelXfrm::create(&param, &create_param);
+        let mut flows = listener.flows(config, param, xfrm)
+            .expect("Expected success");
+        let token = Token(0);
 
-        client_barrier.wait();
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
+        let (mut flow, peer_addr) =
+            accept_one(&mut flows, &mut poll, &(), token)
+            .expect("Expected success");
+
+        server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let (session, peer_addr) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-        let (NullCred, mut flow) = session.take();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &peer_addr, &(), token)
+            .expect("Expected success");
 
-        client_barrier.wait();
+        write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
+            .expect("Expected success");
 
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
+        server_barrier.wait();
 
         assert_eq!(peer_addr, client_addr);
         assert_eq!(FIRST_BYTES.len(), nbytes);
         assert_eq!(FIRST_BYTES, buf);
     });
 
-    let channel_addr = CompoundFarChannelXfrmPeerAddr::unix(
+    let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
-    let mut channel_nscaches = nscaches.clone();
-    let channel_barrier = barrier;
+    let mut client_nscaches = nscaches.clone();
+    let client_barrier = barrier;
     let send = spawn(move || {
-        let mut conn =
-            CompoundFarChannel::new(&mut channel_nscaches, client_config)
-                .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = match conn.acquire().unwrap() {
-            CompoundFarChannelAcquired::Unix { unix } => {
-                CompoundFarChannelParam::Unix { unix: unix }
-            }
-            _ => panic!("Expected unix acquired")
-        };
-        let create_param = CompoundXfrmCreateParam::default();
-        let xfrm = CompoundFarChannelXfrm::create(&param, &create_param);
-
-        channel_barrier.wait();
-
-        let mut flows: CompoundFarChannelSingleFlow<
-            PassthruDatagramXfrm<UnixSocketPath>,
-            PassthruDatagramXfrm<SocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
         let servername = "test-server.nowhere.com";
         let endpoint = IPEndpointAddr::name(String::from(servername));
-        let session = match flows
-            .flow(
-                &nego,
-                &PassthruSessionAuthN,
-                channel_addr.clone(),
-                Some(&endpoint)
-            )
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
+        let mut poll = Poll::new().expect("Expected success");
+        let negoparam = CompoundOutboundNegotiatorParam::DTLS {
+            dtls: Box::new(DTLSOutboundParam::new(endpoint.clone(),
+                                                  CompoundOutboundNegotiatorParam::Basic))
         };
-        let (NullCred, mut flow) = session.take();
+        let negoparam = CompoundOutboundNegotiatorParam::DTLS {
+            dtls: Box::new(DTLSOutboundParam::new(endpoint, negoparam))
+        };
+        let mut conn =
+            CompoundFarChannel::new(&mut client_nscaches, &mut empty(),
+                                    client_config)
+                .expect("expected success");
+        let config = FlowsConfig::default();
+        let acquire = match conn.acquire(poll.registry())
+            .expect("Expected success") {
+            RetryResult::Success(val) => val,
+            RetryResult::Retry(_) => panic!("should not see retry")
+        };
+        let param = match acquire {
+            CompoundFarChannelAcquireState::Unix { unix } =>
+                CompoundFarChannelParam::Unix {
+                    unix: unix
+                },
+            _ => panic!("Expected Unix acquired")
+        };
+        let create_param: CompoundXfrmCreateParam<(), ()> =
+            CompoundXfrmCreateParam::default();
+        let xfrm: CompoundFarChannelXfrm<UnixDatagramXfrm<UnixSocketPath>,
+                                         UDPDatagramXfrm<SocketAddr>> =
+            CompoundFarChannelXfrm::create(&param, &create_param);
+        let mut flows = conn.flows(config, param, xfrm)
+            .expect("Expected success");
+        let token = Token(0);
 
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
+        poll.registry().register(&mut flows, token,
+                                 Interest::READABLE | Interest::WRITABLE)
+            .expect("Expected success");
 
-        channel_barrier.wait();
+        client_barrier.wait();
+
+        let mut flow = connect_one(&mut flows, &mut poll, &negoparam, &(),
+                                   server_addr.clone(), token)
+            .expect("Expected success");
+
+        write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
+            .expect("Expected success");
+
+        client_barrier.wait();
+        client_barrier.wait();
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        channel_barrier.wait();
+        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
+                              &mut buf, &server_addr, &(), token)
+            .expect("Expected success");
 
-        flow.read_exact(&mut buf).unwrap();
-
+        assert_eq!(SECOND_BYTES.len(), nbytes);
         assert_eq!(SECOND_BYTES, buf);
     });
 
