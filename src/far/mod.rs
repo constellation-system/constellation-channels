@@ -150,6 +150,7 @@
 //! supported for far-link channels for this reason.
 
 use std::convert::Infallible;
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -425,14 +426,11 @@ pub trait FarChannelCreate: FarChannel {
         I: Iterator<Item = Token>;
 }
 
-pub trait FarChannelXfrm<InnerXfrm>: FarChannelSocket
+pub trait FarChannelXfrm<Xfrm, InnerXfrm>: FarChannelSocket
 where
+    Xfrm: DatagramXfrm,
+    <Self::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     InnerXfrm: DatagramXfrm {
-    /// Type of [DatagramXfrm]s that will wrap `InnerXfrm`.
-    ///
-    /// This can be the same as `InnerXfrm`, or it can be its own
-    /// type derived from `InnerXfrme`
-    type Xfrm: DatagramXfrm<LocalAddr = <Self::Socket as Socket>::Addr>;
     /// Type of errors that can be returned from
     /// [wrap_xfrm](FarChannelXfrm::wrap_xfrm).
     type XfrmError: Display + ScopedError;
@@ -447,7 +445,7 @@ where
         &self,
         param: Self::Param,
         xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError>;
+    ) -> Result<Xfrm, Self::XfrmError>;
 }
 
 /// Trait for [FarChannel]s that can construct
@@ -480,17 +478,22 @@ where
 /// [Nego](FarChannelBorrowFlows::Nego) type definition; the default
 /// implementation of [owned_flows](FarChannelBorrowFlows::borrowed_flows)
 /// shoul be sufficient for all purposes.
-pub trait FarChannelFlows<InnerXfrm>: FarChannelXfrm<InnerXfrm>
+pub trait FarChannelFlows<Xfrm, InnerXfrm>: FarChannelXfrm<Xfrm, InnerXfrm>
 where
+    Xfrm: DatagramXfrm,
+    Xfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
+    <Self::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
+    <<Self::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
+        Display,
     InnerXfrm: DatagramXfrm {
     type Flow: Flow;
     type InboundNego: NegotiatorStart<
         Self::Flow,
-        BufferedFlow<Self::Socket, Self::Xfrm>
+        BufferedFlow<Self::Socket, Xfrm>
     >;
     type OutboundNego: NegotiatorStart<
         Self::Flow,
-        BufferedFlow<Self::Socket, Self::Xfrm>
+        BufferedFlow<Self::Socket, Xfrm>
     >;
     type InboundNegoError: Display + ScopedError;
     type OutboundNegoError: Display + ScopedError;
@@ -519,7 +522,7 @@ where
         xfrm: InnerXfrm,
     ) -> Result<
         Flows<Self::Flow, Self::Socket, Self::InboundNego,
-              Self::OutboundNego, Self::Xfrm>,
+              Self::OutboundNego, Xfrm>,
         FarChannelFlowsError<
             Self::SocketError,
             Self::XfrmError,

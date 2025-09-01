@@ -55,10 +55,14 @@
 use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::fs::remove_file;
+use std::hash::Hash;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::os::unix::net::UCred;
@@ -154,18 +158,31 @@ pub struct UnixDatagramFlows {
 }
 
 /// Base-level transformer for [UnixFarChannel]s.
-pub struct UnixDatagramXfrm;
+pub struct UnixDatagramXfrm<Addr>
+where UnixSocketPath: TryFrom<Addr>,
+      <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send {
+    addr: PhantomData<Addr>
+}
 
-impl Default for UnixDatagramXfrm {
+impl<Addr> Default for UnixDatagramXfrm<Addr>
+where UnixSocketPath: TryFrom<Addr>,
+      <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send {
     #[inline]
     fn default() -> Self {
-        UnixDatagramXfrm
+        UnixDatagramXfrm {
+            addr: PhantomData
+        }
     }
 }
 
-impl DatagramXfrm for UnixDatagramXfrm {
-    type Error = Infallible;
-    type LocalAddr = UnixSocketPath;
+impl<Addr> DatagramXfrm for UnixDatagramXfrm<Addr>
+where UnixSocketPath: TryFrom<Addr>,
+      <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send {
+    type Error = <UnixSocketPath as TryFrom<Addr>>::Error;
+    type LocalAddr = Addr;
     type PeerAddr = UnixSocketPath;
     type SizeError = Infallible;
 
@@ -192,21 +209,26 @@ impl DatagramXfrm for UnixDatagramXfrm {
         &mut self,
         _msg: &[u8],
         addr: Self::PeerAddr
-    ) -> Result<(Option<Vec<u8>>, Self::PeerAddr), Self::Error> {
-        Ok((None, addr))
+    ) -> Result<(Option<Vec<u8>>, Self::LocalAddr), Self::Error> {
+        Ok((None, addr.into()))
     }
 
     #[inline]
     fn unwrap(
         &mut self,
         buf: &mut [u8],
-        addr: Self::PeerAddr
+        addr: Addr
     ) -> Result<(usize, Self::PeerAddr), Self::Error> {
+        let addr = addr.try_into()?;
+
         Ok((buf.len(), addr))
     }
 }
 
-impl DatagramXfrmCreate for UnixDatagramXfrm {
+impl<Addr> DatagramXfrmCreate for UnixDatagramXfrm<Addr>
+where UnixSocketPath: TryFrom<Addr>,
+      <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send {
     type Addr = UnixSocketPath;
     type CreateParam = ();
 
@@ -215,7 +237,7 @@ impl DatagramXfrmCreate for UnixDatagramXfrm {
         _addr: &UnixSocketPath,
         _param: &()
     ) -> Self {
-        UnixDatagramXfrm
+        UnixDatagramXfrm::default()
     }
 }
 
@@ -298,11 +320,12 @@ impl FarChannelCreate for UnixFarChannel {
     }
 }
 
-impl<Xfrm> FarChannelXfrm<Xfrm> for UnixFarChannel
-where
-    Xfrm: DatagramXfrm<LocalAddr = UnixSocketPath>
+impl<Xfrm> FarChannelXfrm<Xfrm, Xfrm> for UnixFarChannel
+where UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
+      <UnixSocketPath as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+      Xfrm::LocalAddr: From<UnixSocketPath>,
+      Xfrm: DatagramXfrm
 {
-    type Xfrm = Xfrm;
     type XfrmError = Infallible;
 
     #[inline]
@@ -315,13 +338,15 @@ where
     }
 }
 
-impl<InnerXfrm> FarChannelFlows<InnerXfrm> for UnixFarChannel
-where
-    InnerXfrm: DatagramXfrm<LocalAddr = UnixSocketPath>
+impl<Xfrm> FarChannelFlows<Xfrm, Xfrm> for UnixFarChannel
+where UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
+      <UnixSocketPath as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+      Xfrm::LocalAddr: From<UnixSocketPath>,
+      Xfrm: DatagramXfrm
 {
     type OutboundNego = PassthruNegotiator;
     type InboundNego = PassthruNegotiator;
-    type Flow = BufferedFlow<Self::Socket, Self::Xfrm>;
+    type Flow = BufferedFlow<Self::Socket, Xfrm>;
     type InboundNegoError = Infallible;
     type OutboundNegoError = Infallible;
 

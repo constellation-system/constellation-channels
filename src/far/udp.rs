@@ -23,9 +23,14 @@
 //! authenticated nor secure inherently.
 
 use std::convert::Infallible;
+use std::convert::TryFrom;
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::hash::Hash;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -111,7 +116,12 @@ pub struct UDPFarSocket {
 }
 
 /// Base-level transformer for [UDPFarChannel]s.
-pub struct UDPDatagramXfrm;
+pub struct UDPDatagramXfrm<Addr>
+where SocketAddr: TryFrom<Addr>,
+      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+    addr: PhantomData<Addr>
+}
 
 impl Source for UDPFarSocket {
     #[inline]
@@ -143,15 +153,23 @@ impl Source for UDPFarSocket {
     }
 }
 
-impl Default for UDPDatagramXfrm {
+impl<Addr> Default for UDPDatagramXfrm<Addr>
+where SocketAddr: TryFrom<Addr>,
+      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
     #[inline]
     fn default() -> Self {
-        UDPDatagramXfrm
+        UDPDatagramXfrm {
+            addr: PhantomData
+        }
     }
 }
 
-impl DatagramXfrm for UDPDatagramXfrm {
-    type Error = Infallible;
+impl<Addr> DatagramXfrm for UDPDatagramXfrm<Addr>
+where SocketAddr: TryFrom<Addr>,
+      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+    type Error = <SocketAddr as TryFrom<Addr>>::Error;
     type LocalAddr = SocketAddr;
     type PeerAddr = SocketAddr;
     type SizeError = Infallible;
@@ -193,7 +211,10 @@ impl DatagramXfrm for UDPDatagramXfrm {
     }
 }
 
-impl DatagramXfrmCreate for UDPDatagramXfrm {
+impl<Addr> DatagramXfrmCreate for UDPDatagramXfrm<Addr>
+where SocketAddr: TryFrom<Addr>,
+      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
     type Addr = SocketAddr;
     type CreateParam = ();
 
@@ -202,7 +223,7 @@ impl DatagramXfrmCreate for UDPDatagramXfrm {
         _addr: &SocketAddr,
         _param: &()
     ) -> Self {
-        UDPDatagramXfrm
+        UDPDatagramXfrm::default()
     }
 }
 
@@ -305,11 +326,11 @@ impl FarChannelCreate for UDPFarChannel {
     }
 }
 
-impl<Xfrm> FarChannelXfrm<Xfrm> for UDPFarChannel
-where
-    Xfrm: DatagramXfrm<LocalAddr = SocketAddr>
-{
-    type Xfrm = Xfrm;
+impl<Xfrm> FarChannelXfrm<Xfrm, Xfrm> for UDPFarChannel
+where SocketAddr: TryFrom<Xfrm::LocalAddr>,
+      <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+      Xfrm::LocalAddr: From<SocketAddr>,
+      Xfrm: DatagramXfrm {
     type XfrmError = Infallible;
 
     #[inline]
@@ -322,13 +343,14 @@ where
     }
 }
 
-impl<InnerXfrm> FarChannelFlows<InnerXfrm> for UDPFarChannel
-where
-    InnerXfrm: DatagramXfrm<LocalAddr = SocketAddr>,
-{
+impl<Xfrm> FarChannelFlows<Xfrm, Xfrm> for UDPFarChannel
+where SocketAddr: TryFrom<Xfrm::LocalAddr>,
+      <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+      Xfrm::LocalAddr: From<SocketAddr>,
+      Xfrm: DatagramXfrm {
     type OutboundNego = PassthruNegotiator;
     type InboundNego = PassthruNegotiator;
-    type Flow = BufferedFlow<Self::Socket, Self::Xfrm>;
+    type Flow = BufferedFlow<Self::Socket, Xfrm>;
     type InboundNegoError = Infallible;
     type OutboundNegoError = Infallible;
 

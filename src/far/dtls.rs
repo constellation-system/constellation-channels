@@ -27,6 +27,7 @@
 //! Communications over the resulting channel will then be protected
 //! and authenticated.
 
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -439,12 +440,21 @@ where
     }
 }
 
-impl<Inner, InnerXfrm> FarChannelXfrm<InnerXfrm> for DTLSFarChannel<Inner>
+impl<Inner, Xfrm, InnerXfrm> FarChannelXfrm<Xfrm, InnerXfrm>
+    for DTLSFarChannel<Inner>
 where
-    Inner: FarChannelXfrm<InnerXfrm>,
+    Inner: FarChannelFlows<Xfrm, InnerXfrm>,
+    <Inner::Socket as Socket>::Addr: TryFrom<InnerXfrm::LocalAddr>,
+    <<Inner::Socket as Socket>::Addr as TryFrom<InnerXfrm::LocalAddr>>::Error:
+        Debug + Display,
+    InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
+    <Inner::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
+    <<Inner::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
+        Debug + Display,
+    Xfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
+    Xfrm: DatagramXfrm,
     InnerXfrm: DatagramXfrm
 {
-    type Xfrm = Inner::Xfrm;
     type XfrmError = Inner::XfrmError;
 
     #[inline]
@@ -452,17 +462,25 @@ where
         &self,
         param: Self::Param,
         xfrm: InnerXfrm
-    ) -> Result<Self::Xfrm, Self::XfrmError> {
+    ) -> Result<Xfrm, Self::XfrmError> {
         self.inner.wrap_xfrm(param, xfrm)
     }
 }
 
-impl<Inner, InnerXfrm> FarChannelFlows<InnerXfrm>
+impl<Inner, Xfrm, InnerXfrm> FarChannelFlows<Xfrm, InnerXfrm>
     for DTLSFarChannel<Inner>
 where
-    Inner: FarChannelFlows<InnerXfrm>,
-    InnerXfrm: DatagramXfrm,
+    Inner: FarChannelFlows<Xfrm, InnerXfrm>,
+    <Inner::Socket as Socket>::Addr: TryFrom<InnerXfrm::LocalAddr>,
+    <<Inner::Socket as Socket>::Addr as TryFrom<InnerXfrm::LocalAddr>>::Error:
+        Debug + Display,
     InnerXfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
+    <Inner::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
+    <<Inner::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
+        Debug + Display,
+    Xfrm::LocalAddr: From<<Inner::Socket as Socket>::Addr>,
+    Xfrm: DatagramXfrm,
+    InnerXfrm: DatagramXfrm
 {
     type Flow = DTLSFlow<Inner::Flow>;
     type InboundNego = DTLSInboundNegotiator<Inner::InboundNego>;
@@ -661,8 +679,11 @@ impl <F, Inner, Sock, Xfrm>
 where
     F: Credentials + Flow + Read + Write,
     Inner: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
-    Sock: Socket + Sender + Receiver
+    Sock: Socket + Sender + Receiver,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<Sock::Addr>,
+    Xfrm: DatagramXfrm,
 {
     type Param = Inner::Param;
     type StartError = DTLSStartError<Inner::StartError, TLSLoadConfigError>;
@@ -859,9 +880,12 @@ impl <F, Inner, Sock, Xfrm>
     NegotiatorStart<DTLSFlow<F>, BufferedFlow<Sock, Xfrm>>
     for DTLSOutboundNegotiator<Inner>
 where
-    F: Credentials + Flow + Read + Write,
     Inner: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    F: Credentials + Flow + Read + Write,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<Sock::Addr>,
+    Xfrm: DatagramXfrm,
     Sock: Socket + Sender + Receiver
 {
     type Param = DTLSOutboundParam<Inner::Param>;

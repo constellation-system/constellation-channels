@@ -112,6 +112,7 @@ use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -184,7 +185,10 @@ where
     Sock: Socket + Sender + Receiver + Source,
     OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
     InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm: DatagramXfrm,
+    Xfrm::LocalAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     /// Maximum message size.
     msgsize: usize,
@@ -214,7 +218,9 @@ where
 
 pub struct BufferedFlow<Sock, Xfrm>
 where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm: DatagramXfrm,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Sock: Socket + Sender + Receiver {
     addr: Xfrm::PeerAddr,
     /// Xfrm used to unwrap messages.
@@ -349,7 +355,10 @@ where
     Sock: Socket + Sender + Receiver + Source,
     OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
     InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm: DatagramXfrm,
+    Xfrm::LocalAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     pub(crate) fn create(
         config: FlowsConfig,
@@ -474,7 +483,8 @@ where
             // Unwrap it.
             let (msglen, addr) = self.xfrm.try_borrow_mut()
                 .map_err(|_| FlowsListenError::GetMut)
-                .and_then(|mut xfrm| xfrm.unwrap(&mut msg[..n], addr)
+                .and_then(|mut xfrm| xfrm.unwrap(&mut msg[..n],
+                                                 Xfrm::LocalAddr::from(addr))
                           .map_err(|err| FlowsListenError::Xfrm { err: err }))?;
 
             trace!(target: "flows",
@@ -774,9 +784,10 @@ where
 
 impl<Sock, Xfrm> Flow for BufferedFlow<Sock, Xfrm>
 where
-    Sock: Socket + Receiver + Sender,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
-    Xfrm::PeerAddr: Hash {
+    Xfrm: DatagramXfrm,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
+    Sock: Socket + Sender + Receiver {
     type LocalAddr = Sock::Addr;
     type PeerAddr = Xfrm::PeerAddr;
 
@@ -798,7 +809,9 @@ where
 
 impl<Sock, Xfrm> Read for BufferedFlow<Sock, Xfrm>
 where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm: DatagramXfrm,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Xfrm::PeerAddr: Hash,
     Sock: Socket + Sender + Receiver
 {
@@ -832,7 +845,9 @@ where
 
 impl<Sock, Xfrm> Write for BufferedFlow<Sock, Xfrm>
 where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm: DatagramXfrm,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Xfrm::PeerAddr: Hash,
     Sock: Socket + Sender + Receiver
 {
@@ -851,6 +866,10 @@ where
                 trace!(target: "flows",
                        "sending {} byte message to {}",
                        buf.len(), addr);
+
+                let addr = Sock::Addr::try_from(addr)
+                    .map_err(|err| Error::new(ErrorKind::Other,
+                                              err.to_string()))?;
 
                 self.socket.try_borrow_mut()
                     .map_err(|_| Error::new(ErrorKind::Other,
@@ -882,6 +901,10 @@ where
                 trace!(target: "flows",
                        "sending {} byte message to {}",
                        buf.len(), addr);
+
+                let addr = Sock::Addr::try_from(addr)
+                    .map_err(|err| Error::new(ErrorKind::Other,
+                                              err.to_string()))?;
 
                 self.socket.try_borrow_mut()
                     .map_err(|_| Error::new(ErrorKind::Other,
@@ -923,10 +946,10 @@ where
 
 impl<Sock, Xfrm> Credentials for BufferedFlow<Sock, Xfrm>
 where
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
-    Xfrm::PeerAddr: Hash,
-    Sock: Socket + Sender + Receiver
-{
+    Xfrm: DatagramXfrm,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
+    Sock: Socket + Sender + Receiver {
     type Cred = Xfrm::PeerAddr;
     type CredError = BorrowMutError;
 
