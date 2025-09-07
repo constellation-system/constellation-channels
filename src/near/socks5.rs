@@ -74,6 +74,7 @@ use std::io::Error;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
+use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
@@ -89,8 +90,10 @@ use mio::Token;
 
 use crate::config::SOCKS5AuthNConfig;
 use crate::config::SOCKS5ConnectConfig;
+use crate::config::SOCKS5ConnectPartialConfig;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -361,7 +364,6 @@ impl<Conn> NearChannel for SOCKS5NearConnector<Conn>
 where
     Conn: NearConnector + NearChannelCreate
 {
-    type Config = SOCKS5ConnectConfig<Conn::Config>;
     type Endpoint = Conn::Endpoint;
     type StartError = Conn::StartError;
     type Conn = SOCKS5Stream<Conn::Conn>;
@@ -414,11 +416,6 @@ where
     }
 
     #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Some(config.target().ip_endpoint())
-    }
-
-    #[inline]
     fn shutdown(&mut self) -> Result<(), Error> {
         self.proxy.shutdown()
     }
@@ -428,10 +425,11 @@ impl<Conn> NearChannelCreate for SOCKS5NearConnector<Conn>
 where
     Conn: NearConnector + NearChannelCreate
 {
+    type Config = SOCKS5ConnectConfig<Conn::Config>;
     type CreateError = Conn::CreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
@@ -448,12 +446,60 @@ where
                 SOCKS5Params::connect_gssapi_auth(target, gssapi, None)
             }
         };
-        let proxy = Conn::new(caches, proxy)?;
+        let proxy = Conn::create(caches, proxy)?;
 
         Ok(SOCKS5NearConnector {
             params: params,
             proxy: proxy
         })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Some(config.target().ip_addr())
+    }
+}
+
+impl<Conn> NearChannelCreateWithEndpoint for SOCKS5NearConnector<Conn>
+where
+    Conn: NearConnector + NearChannelCreate
+{
+    type Config = SOCKS5ConnectPartialConfig<Conn::Config>;
+    type EndpointConfig = IPEndpoint;
+    type CreateError = Conn::CreateError;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: Self::Config,
+        target: IPEndpoint
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let (auth, proxy) = config.take();
+        let params = match auth {
+            SOCKS5AuthNConfig::None => SOCKS5Params::connect_no_auth(target),
+            SOCKS5AuthNConfig::Password { username, password } => {
+                SOCKS5Params::connect_password_auth(target, username, password)
+            }
+            #[cfg(feature = "gssapi")]
+            SOCKS5AuthNConfig::GSSAPI { gssapi } => {
+                SOCKS5Params::connect_gssapi_auth(target, gssapi, None)
+            }
+        };
+        let proxy = Conn::create(caches, proxy)?;
+
+        Ok(SOCKS5NearConnector {
+            params: params,
+            proxy: proxy
+        })
+    }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        Some(endpoint.ip_addr())
     }
 }
 

@@ -65,6 +65,7 @@ use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadServer;
 use crate::config::CompoundNearAcceptorConfig;
 use crate::config::CompoundNearConnectorConfig;
+use crate::config::CompoundNearConnectorPartialConfig;
 #[cfg(feature = "socks5")]
 use crate::near::socks5::SOCKS5NearConnector;
 #[cfg(feature = "socks5")]
@@ -97,6 +98,7 @@ use crate::near::unix::UnixNearAcceptor;
 use crate::near::unix::UnixNearConnector;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 #[cfg(feature = "unix")]
@@ -136,6 +138,17 @@ pub enum CompoundNearConnectorEndpoint {
     SOCKS5 {
         socks5: Box<CompoundNearConnectorEndpoint>
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum CompoundNearConnectorEndpointConfig {
+    #[cfg(feature = "unix")]
+    Unix {
+        unix: UnixSocketPath
+    },
+    TCP {
+        tcp: IPEndpoint
+    },
 }
 
 /// Multiplexer for [EndpointRef](NearConnector::EndpointRef)s for
@@ -201,6 +214,27 @@ pub enum CompoundNearConnectorCreateError {
             >
         >
     }
+}
+
+#[derive(Debug)]
+pub enum CompoundNearConnectorCreateWithEndpointError {
+    TCP {
+        tcp: TCPNearConnectorError
+    },
+    #[cfg(feature = "tls")]
+    TLS {
+        tls: Box<
+            TLSSessionCreateError<
+                TLSCreateError,
+                CompoundNearConnectorCreateWithEndpointError
+            >
+        >
+    },
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: CompoundNearConnectorCreateError
+    },
+    Mismatch
 }
 
 /// Multiplexer for [NegotiateError](NearChannel::NegotiateError)s for
@@ -557,6 +591,22 @@ impl ScopedError for CompoundNearConnectorCreateError {
     }
 }
 
+impl ScopedError for CompoundNearConnectorCreateWithEndpointError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundNearConnectorCreateWithEndpointError::TCP { tcp } =>
+                tcp.scope(),
+            #[cfg(feature = "tls")]
+            CompoundNearConnectorCreateWithEndpointError::TLS { tls } =>
+                tls.scope(),
+            CompoundNearConnectorCreateWithEndpointError::SOCKS5 { socks5 } =>
+                socks5.scope(),
+            CompoundNearConnectorCreateWithEndpointError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
+
 impl ScopedError for CompoundNearAcceptorNegotiateError {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -700,6 +750,29 @@ impl Display for CompoundNearConnectorCreateError {
             CompoundNearConnectorCreateError::TLS { tls } => {
                 write!(f, "{}", tls)
             }
+        }
+    }
+}
+
+impl Display for CompoundNearConnectorCreateWithEndpointError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundNearConnectorCreateWithEndpointError::TCP { tcp } => {
+                write!(f, "{}", tcp)
+            }
+            #[cfg(feature = "tls")]
+            CompoundNearConnectorCreateWithEndpointError::TLS { tls } => {
+                write!(f, "{}", tls)
+            }
+            #[cfg(feature = "socks5")]
+            CompoundNearConnectorCreateWithEndpointError::SOCKS5 { socks5 } => {
+                write!(f, "{}", socks5)
+            }
+            CompoundNearConnectorCreateWithEndpointError::Mismatch =>
+                write!(f, "type mismatch")
         }
     }
 }
@@ -1449,7 +1522,6 @@ impl<TLS> NearChannel for CompoundNearAcceptor<TLS>
 where
     TLS: Clone + Debug + TLSLoadServer
 {
-    type Config = CompoundNearAcceptorConfig<TLS>;
     type Endpoint = CompoundNearAcceptorEndpoint;
     type Conn = CompoundNearServerConn;
     type StartError = CompoundNearAcceptorStartError;
@@ -1501,10 +1573,11 @@ impl<TLS> NearChannelCreate for CompoundNearAcceptor<TLS>
 where
     TLS: Clone + Debug + TLSLoadServer
 {
+    type Config = CompoundNearAcceptorConfig<TLS>;
     type CreateError = CompoundNearAcceptorCreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: CompoundNearAcceptorConfig<TLS>
     ) -> Result<Self, CompoundNearAcceptorCreateError>
@@ -1512,25 +1585,40 @@ where
         Ctx: NSNameCachesCtx {
         match config {
             CompoundNearAcceptorConfig::Unix { unix_stream } => {
-                let acc = UnixNearAcceptor::new(caches, unix_stream).map_err(
+                let acc = UnixNearAcceptor::create(caches, unix_stream).map_err(
                     |err| CompoundNearAcceptorCreateError::Unix { unix: err }
                 )?;
 
                 Ok(CompoundNearAcceptor::Unix { unix: acc })
             }
             CompoundNearAcceptorConfig::TCP { tcp } => {
-                let acc = TCPNearAcceptor::new(caches, tcp).map_err(|err| {
+                let acc = TCPNearAcceptor::create(caches, tcp).map_err(|err| {
                     CompoundNearAcceptorCreateError::TCP { tcp: err }
                 })?;
 
                 Ok(CompoundNearAcceptor::TCP { tcp: acc })
             }
             CompoundNearAcceptorConfig::TLS { tls } => {
-                let acc = TLSNearAcceptor::new(caches, tls).map_err(|err| {
+                let acc = TLSNearAcceptor::create(caches, tls).map_err(|err| {
                     CompoundNearAcceptorCreateError::TLS { tls: Box::new(err) }
                 })?;
 
                 Ok(CompoundNearAcceptor::TLS { tls: acc })
+            }
+        }
+    }
+
+    #[inline]
+    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
+        match conf {
+            CompoundNearAcceptorConfig::Unix { unix_stream } => {
+                UnixNearAcceptor::verify_endpoint(unix_stream)
+            }
+            CompoundNearAcceptorConfig::TCP { tcp } => {
+                TCPNearAcceptor::verify_endpoint(tcp)
+            }
+            CompoundNearAcceptorConfig::TLS { tls } => {
+                TLSNearAcceptor::<Box<Self>, TLS>::verify_endpoint(tls)
             }
         }
     }
@@ -1576,7 +1664,6 @@ impl<TLS> NearChannel for Box<CompoundNearAcceptor<TLS>>
 where
     TLS: Clone + Debug + TLSLoadServer
 {
-    type Config = Box<CompoundNearAcceptorConfig<TLS>>;
     type Endpoint = CompoundNearAcceptorEndpoint;
     type Conn = CompoundNearServerConn;
     type StartError = CompoundNearAcceptorStartError;
@@ -1604,16 +1691,23 @@ impl<TLS> NearChannelCreate for Box<CompoundNearAcceptor<TLS>>
 where
     TLS: Clone + Debug + TLSLoadServer
 {
+    type Config = Box<CompoundNearAcceptorConfig<TLS>>;
     type CreateError = CompoundNearAcceptorCreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: Box<CompoundNearAcceptorConfig<TLS>>
     ) -> Result<Self, CompoundNearAcceptorCreateError>
     where
         Ctx: NSNameCachesCtx {
-        CompoundNearAcceptor::new(caches, config.as_ref().clone()).map(Box::new)
+        CompoundNearAcceptor::create(caches, config.as_ref().clone())
+            .map(Box::new)
+    }
+
+    #[inline]
+    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
+        CompoundNearAcceptor::verify_endpoint(conf.as_ref())
     }
 }
 
@@ -1738,7 +1832,6 @@ impl<TLS> NearChannel for CompoundNearConnector<TLS>
 where
     TLS: Clone + Debug + TLSLoadClient
 {
-    type Config = CompoundNearConnectorConfig<TLS>;
     type Endpoint = CompoundNearConnectorEndpoint;
     type Conn = CompoundNearClientConn;
     type StartError = CompoundNearConnectorStartError;
@@ -1800,10 +1893,11 @@ impl<TLS> NearChannelCreate for CompoundNearConnector<TLS>
 where
     TLS: Clone + Debug + TLSLoadClient
 {
+    type Config = CompoundNearConnectorConfig<TLS>;
     type CreateError = CompoundNearConnectorCreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: CompoundNearConnectorConfig<TLS>
     ) -> Result<Self, CompoundNearConnectorCreateError>
@@ -1811,7 +1905,7 @@ where
         Ctx: NSNameCachesCtx {
         match config {
             CompoundNearConnectorConfig::Unix { unix_stream } => {
-                let acc = UnixNearConnector::new(caches, unix_stream)
+                let acc = UnixNearConnector::create(caches, unix_stream)
                     .map_err(|err| {
                         CompoundNearConnectorCreateError::Unix { unix: err }
                     })?;
@@ -1820,7 +1914,7 @@ where
             }
             CompoundNearConnectorConfig::TCP { tcp } => {
                 let acc =
-                    TCPNearConnector::new(caches, tcp).map_err(|err| {
+                    TCPNearConnector::create(caches, tcp).map_err(|err| {
                         CompoundNearConnectorCreateError::TCP { tcp: err }
                     })?;
 
@@ -1828,7 +1922,7 @@ where
             }
             CompoundNearConnectorConfig::TLS { tls } => {
                 let acc =
-                    TLSNearConnector::new(caches, tls).map_err(|err| {
+                    TLSNearConnector::create(caches, tls).map_err(|err| {
                         CompoundNearConnectorCreateError::TLS {
                             tls: Box::new(err)
                         }
@@ -1837,9 +1931,109 @@ where
                 Ok(CompoundNearConnector::TLS { tls: acc })
             }
             CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
-                SOCKS5NearConnector::new(caches, socks5_tcp)
+                SOCKS5NearConnector::create(caches, socks5_tcp)
                     .map(|acc| CompoundNearConnector::SOCKS5 { socks5: acc })
             }
+        }
+    }
+
+    #[inline]
+    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
+        match conf {
+            CompoundNearConnectorConfig::Unix { unix_stream } => {
+                <UnixNearConnector as NearChannelCreate>
+                    ::verify_endpoint(unix_stream)
+            }
+            CompoundNearConnectorConfig::TCP { tcp } => {
+                <TCPNearConnector as NearChannelCreate>::verify_endpoint(tcp)
+            }
+            CompoundNearConnectorConfig::TLS { tls } => {
+                <TLSNearConnector::<Box<Self>, TLS> as NearChannelCreate>
+                    ::verify_endpoint(tls)
+            }
+            CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
+                <SOCKS5NearConnector::<Box<Self>> as NearChannelCreate>
+                    ::verify_endpoint(socks5_tcp)
+            }
+        }
+    }
+}
+
+
+impl<TLS> NearChannelCreateWithEndpoint for CompoundNearConnector<TLS>
+where
+    TLS: Clone + Debug + TLSLoadClient
+{
+    type Config = CompoundNearConnectorPartialConfig<TLS>;
+    type EndpointConfig = CompoundNearConnectorEndpointConfig;
+    type CreateError = CompoundNearConnectorCreateWithEndpointError;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: CompoundNearConnectorPartialConfig<TLS>,
+        endpoint: CompoundNearConnectorEndpointConfig
+    ) -> Result<Self, CompoundNearConnectorCreateWithEndpointError>
+    where
+        Ctx: NSNameCachesCtx {
+        match (config, endpoint) {
+            (CompoundNearConnectorPartialConfig::Unix { unix_stream },
+             CompoundNearConnectorEndpointConfig::Unix { unix: endpoint }) => {
+                let Ok(unix) = UnixNearConnector
+                    ::create_with_endpoint(caches, unix_stream, endpoint);
+
+                Ok(CompoundNearConnector::Unix { unix: unix })
+            }
+            (CompoundNearConnectorPartialConfig::TCP { tcp },
+             CompoundNearConnectorEndpointConfig::TCP { tcp: endpoint }) => {
+                let acc =
+                    TCPNearConnector::create_with_endpoint(caches, tcp, endpoint)
+                    .map_err(|err| {
+                        CompoundNearConnectorCreateWithEndpointError::TCP {
+                            tcp: err
+                        }
+                    })?;
+
+                Ok(CompoundNearConnector::TCP { tcp: acc })
+            }
+            (CompoundNearConnectorPartialConfig::TLS { tls }, endpoint) => {
+                let acc =
+                    TLSNearConnector::create_with_endpoint(caches, tls, endpoint)
+                    .map_err(|err| {
+                        CompoundNearConnectorCreateWithEndpointError::TLS {
+                            tls: Box::new(err)
+                        }
+                    })?;
+
+                Ok(CompoundNearConnector::TLS { tls: acc })
+            }
+            (CompoundNearConnectorPartialConfig::SOCKS5 { socks5_tcp },
+             CompoundNearConnectorEndpointConfig::TCP { tcp: endpoint }) => {
+                SOCKS5NearConnector::create_with_endpoint(caches, socks5_tcp,
+                                                          endpoint)
+                    .map(|acc| CompoundNearConnector::SOCKS5 { socks5: acc })
+                    .map_err(|err| {
+                        CompoundNearConnectorCreateWithEndpointError::SOCKS5 {
+                            socks5: err
+                        }
+                    })
+            }
+            _ => Err(CompoundNearConnectorCreateWithEndpointError::Mismatch)
+        }
+    }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        match endpoint {
+            CompoundNearConnectorEndpointConfig::Unix { unix: endpoint } => {
+                <UnixNearConnector as NearChannelCreateWithEndpoint>
+                ::verify_endpoint(endpoint)
+            }
+            CompoundNearConnectorEndpointConfig::TCP { tcp: endpoint } =>
+                <TCPNearConnector as NearChannelCreateWithEndpoint>
+                ::verify_endpoint(endpoint)
         }
     }
 }
@@ -1884,7 +2078,6 @@ impl<TLS> NearChannel for Box<CompoundNearConnector<TLS>>
 where
     TLS: Clone + Debug + TLSLoadClient
 {
-    type Config = Box<CompoundNearConnectorConfig<TLS>>;
     type Endpoint = CompoundNearConnectorEndpoint;
     type Conn = CompoundNearClientConn;
     type StartError = CompoundNearConnectorStartError;
@@ -1912,17 +2105,52 @@ impl<TLS> NearChannelCreate for Box<CompoundNearConnector<TLS>>
 where
     TLS: Clone + Debug + TLSLoadClient
 {
+    type Config = Box<CompoundNearConnectorConfig<TLS>>;
     type CreateError = CompoundNearConnectorCreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: Box<CompoundNearConnectorConfig<TLS>>
     ) -> Result<Self, CompoundNearConnectorCreateError>
     where
         Ctx: NSNameCachesCtx {
-        CompoundNearConnector::new(caches, *config)
+        CompoundNearConnector::create(caches, *config).map(Box::new)
+    }
+
+    #[inline]
+    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
+        <CompoundNearConnector<TLS> as NearChannelCreate>
+            ::verify_endpoint(conf.as_ref())
+    }
+}
+
+impl<TLS> NearChannelCreateWithEndpoint for Box<CompoundNearConnector<TLS>>
+where
+    TLS: Clone + Debug + TLSLoadClient
+{
+    type Config = Box<CompoundNearConnectorPartialConfig<TLS>>;
+    type EndpointConfig = CompoundNearConnectorEndpointConfig;
+    type CreateError = CompoundNearConnectorCreateWithEndpointError;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: Box<CompoundNearConnectorPartialConfig<TLS>>,
+        endpoint: CompoundNearConnectorEndpointConfig
+    ) -> Result<Self, CompoundNearConnectorCreateWithEndpointError>
+    where
+        Ctx: NSNameCachesCtx {
+        CompoundNearConnector::create_with_endpoint(caches, *config, endpoint)
             .map(Box::new)
+    }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        <CompoundNearConnector<TLS> as NearChannelCreateWithEndpoint>
+            ::verify_endpoint(endpoint)
     }
 }
 
@@ -1960,24 +2188,6 @@ where
         }
     }
 
-    #[inline]
-    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
-        match conf {
-            CompoundNearConnectorConfig::Unix { unix_stream } => {
-                UnixNearConnector::verify_endpoint(unix_stream)
-            }
-            CompoundNearConnectorConfig::TCP { tcp } => {
-                TCPNearConnector::verify_endpoint(tcp)
-            }
-            CompoundNearConnectorConfig::TLS { tls } => {
-                TLSNearConnector::<Box<Self>, TLS>::verify_endpoint(tls)
-            }
-            CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
-                SOCKS5NearConnector::<Box<Self>>::verify_endpoint(socks5_tcp)
-            }
-        }
-    }
-
     fn shutdown(&mut self) -> Result<(), Error> {
         match self {
             CompoundNearConnector::Unix { unix } => unix.shutdown(),
@@ -1999,24 +2209,6 @@ where
 
     fn endpoint(&self) -> Self::EndpointRef<'_> {
         self.as_ref().endpoint()
-    }
-
-    #[inline]
-    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
-        match conf.as_ref() {
-            CompoundNearConnectorConfig::Unix { unix_stream } => {
-                UnixNearConnector::verify_endpoint(unix_stream)
-            }
-            CompoundNearConnectorConfig::TCP { tcp } => {
-                TCPNearConnector::verify_endpoint(tcp)
-            }
-            CompoundNearConnectorConfig::TLS { tls } => {
-                TLSNearConnector::<Self, TLS>::verify_endpoint(tls)
-            }
-            CompoundNearConnectorConfig::SOCKS5 { socks5_tcp } => {
-                SOCKS5NearConnector::<Self>::verify_endpoint(socks5_tcp)
-            }
-        }
     }
 
     #[inline]
@@ -2077,7 +2269,7 @@ fn test_compound(
         let session = Token(1);
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor =
-            CompoundNearAcceptor::new(&mut server_nscaches, server_conf)
+            CompoundNearAcceptor::create(&mut server_nscaches, server_conf)
                 .expect("Expected success");
 
         server_barrier.wait();
@@ -2109,7 +2301,7 @@ fn test_compound(
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
-            CompoundNearConnector::new(&mut client_nscaches, client_conf)
+            CompoundNearConnector::create(&mut client_nscaches, client_conf)
                 .expect("expected success");
 
         client_barrier.wait();

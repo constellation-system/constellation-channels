@@ -356,7 +356,7 @@ where
                 .map_err(AddrsError::NameCaches)?
                 .flat_map_ok(|(resolved, _)| {
                     let addrs = resolved.map(|(addr, endpoint, _)| {
-                        (addr, endpoint.ip_endpoint().clone())
+                        (addr, endpoint.ip_addr().clone())
                     });
 
                     match self.sched.refresh(Instant::now(), addrs) {
@@ -642,7 +642,7 @@ impl Display for AddrsError {
 impl Display for AddrsCreateError {
     fn fmt(
         &self,
-        f: &mut Formatter
+        f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
             AddrsCreateError::Refresh(err) => err.fmt(f),

@@ -63,8 +63,10 @@ use crate::addrs::AddrMultiplexer;
 use crate::addrs::AddrsCreateError;
 use crate::config::TCPNearAcceptorConfig;
 use crate::config::TCPNearConnectorConfig;
+use crate::config::TCPNearConnectorPartialConfig;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -384,7 +386,6 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
 }
 
 impl NearChannel for TCPNearAcceptor {
-    type Config = TCPNearAcceptorConfig;
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
     type StartError = Error;
@@ -418,10 +419,11 @@ impl NearChannel for TCPNearAcceptor {
 }
 
 impl NearChannelCreate for TCPNearAcceptor {
+    type Config = TCPNearAcceptorConfig;
     type CreateError = Error;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         _caches: &mut Ctx,
         config: TCPNearAcceptorConfig
     ) -> Result<Self, Error>
@@ -443,6 +445,11 @@ impl NearChannelCreate for TCPNearAcceptor {
                 .allow_ip_addr_creds(),
             listener: listener
         })
+    }
+
+    #[inline]
+    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr> {
+        None
     }
 }
 
@@ -471,7 +478,6 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
 }
 
 impl NearChannel for TCPNearConnector {
-    type Config = TCPNearConnectorConfig;
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
     type StartError = Error;
@@ -552,16 +558,44 @@ impl NearChannel for TCPNearConnector {
 }
 
 impl NearChannelCreate for TCPNearConnector {
+    type Config = TCPNearConnectorConfig;
     type CreateError = TCPNearConnectorError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: TCPNearConnectorConfig
     ) -> Result<Self, TCPNearConnectorError>
     where
         Ctx: NSNameCachesCtx {
         let (endpoint, resolve, retry, unsafe_opts) = config.take();
+        let partial =
+            TCPNearConnectorPartialConfig::new_with_unsafe(resolve, retry,
+                                                           unsafe_opts);
+
+        TCPNearConnector::create_with_endpoint(caches, partial, endpoint)
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Some(config.endpoint().ip_addr())
+    }
+}
+
+impl NearChannelCreateWithEndpoint for TCPNearConnector {
+    type Config = TCPNearConnectorPartialConfig;
+    type EndpointConfig = IPEndpoint;
+    type CreateError = TCPNearConnectorError;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: TCPNearConnectorPartialConfig,
+        endpoint: IPEndpoint
+    ) -> Result<Self, TCPNearConnectorError>
+    where
+        Ctx: NSNameCachesCtx {
+        let (resolve, retry, unsafe_opts) = config.take();
         let addrs = AddrMultiplexer::create(
             caches,
             vec![endpoint.clone()],
@@ -587,6 +621,13 @@ impl NearChannelCreate for TCPNearConnector {
             when: Instant::now(),
         })
     }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        Some(endpoint.ip_addr())
+    }
 }
 
 impl NearConnector for TCPNearConnector {
@@ -598,11 +639,6 @@ impl NearConnector for TCPNearConnector {
     #[inline]
     fn endpoint(&self) -> Self::EndpointRef<'_> {
         &self.endpoint
-    }
-
-    #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Some(config.endpoint().ip_endpoint())
     }
 
     #[inline]
@@ -677,7 +713,7 @@ fn test_send_recv() {
         let session = Token(1);
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor =
-            TCPNearAcceptor::new(&mut server_nscaches, accept_config)
+            TCPNearAcceptor::create(&mut server_nscaches, accept_config)
                 .expect("Expected success");
 
         server_barrier.wait();
@@ -711,7 +747,7 @@ fn test_send_recv() {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
-            TCPNearConnector::new(&mut client_nscaches, connect_config)
+            TCPNearConnector::create(&mut client_nscaches, connect_config)
                 .expect("expected success");
 
         client_barrier.wait();

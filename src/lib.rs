@@ -53,6 +53,7 @@
 //!    for a friendly network environment. See the [near] module for more
 //!    details.
 pub mod addrs;
+pub mod channels;
 pub mod config;
 pub mod far;
 pub mod near;

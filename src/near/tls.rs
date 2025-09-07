@@ -68,6 +68,7 @@ use crate::config::tls::TLSLoadServer;
 use crate::config::TLSChannelConfig;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -469,7 +470,6 @@ where
     TLS: TLSLoadServer,
     A: NearChannel + Source,
 {
-    type Config = TLSChannelConfig<TLS, A::Config>;
     type Endpoint = A::Endpoint;
     type Conn = TLSConn<A::Conn, A::Endpoint>;
     type StartError = A::StartError;
@@ -577,10 +577,11 @@ where
     TLS: TLSLoadServer,
     A: NearChannelCreate + Source,
 {
+    type Config = TLSChannelConfig<TLS, A::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, A::CreateError>;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, A::Config>
     ) -> Result<TLSNearAcceptor<A, TLS>, Self::CreateError>
@@ -592,7 +593,7 @@ where
                 error: TLSCreateError::TLS { error: err }
             }
         })?;
-        let inner = A::new(caches, endpoint)
+        let inner = A::create(caches, endpoint)
             .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
 
         Ok(TLSNearAcceptor {
@@ -600,6 +601,11 @@ where
             inner: inner,
             acceptor: acceptor
         })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        A::verify_endpoint(config.underlying())
     }
 }
 
@@ -754,7 +760,6 @@ where
     Conn: NearConnector,
     TLS: TLSLoadClient
 {
-    type Config = TLSChannelConfig<TLS, Conn::Config>;
     type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
     type StartError = Conn::StartError;
@@ -794,10 +799,11 @@ where
     TLS: TLSLoadClient,
     Conn: NearChannelCreate + NearConnector,
 {
+    type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>
     ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
@@ -831,7 +837,7 @@ where
             // XXX This should probably produce an error.
             IPEndpointAddr::Addr(_) => String::new()
         };
-        let inner = Conn::new(caches, endpoint)
+        let inner = Conn::create(caches, endpoint)
             .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
 
         Ok(TLSNearConnector {
@@ -840,6 +846,75 @@ where
             domain: domain,
             inner: inner
         })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Conn::verify_endpoint(config.underlying())
+    }
+}
+
+impl<Conn, TLS> NearChannelCreateWithEndpoint for TLSNearConnector<Conn, TLS>
+where
+    TLS: TLSLoadClient,
+    Conn: NearChannelCreateWithEndpoint + NearConnector,
+{
+    type Config = TLSChannelConfig<TLS, Conn::Config>;
+    type EndpointConfig = Conn::EndpointConfig;
+    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: TLSChannelConfig<TLS, Conn::Config>,
+        endpoint: Conn::EndpointConfig
+    ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let (tls, config) = config.take();
+        let verify_endpoint = match tls.verify_endpoint() {
+            Some(endpoint) => Ok(endpoint),
+            None => match Self::verify_endpoint(&endpoint) {
+                Some(endpoint) => Ok(endpoint),
+                None => Err(TLSSessionCreateError::Session {
+                    error: TLSCreateError::NoName
+                })
+            }
+        }?;
+        let connector = tls.load_client(None, verify_endpoint, false)
+            .map_err(|err| {
+                TLSSessionCreateError::Session {
+                    error: TLSCreateError::TLS { error: err }
+                }
+            })?;
+        let domain = match verify_endpoint {
+            IPEndpointAddr::Name(name) => match name.find('.') {
+                Some(idx) => {
+                    let (_, domain) = name.split_at(idx);
+
+                    String::from(domain)
+                }
+                None => String::new()
+            }
+            // XXX This should probably produce an error.
+            IPEndpointAddr::Addr(_) => String::new()
+        };
+        let inner = Conn::create_with_endpoint(caches, config, endpoint)
+            .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
+
+        Ok(TLSNearConnector {
+            tls: PhantomData,
+            connector: connector,
+            domain: domain,
+            inner: inner
+        })
+    }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        Conn::verify_endpoint(endpoint)
     }
 }
 
@@ -856,11 +931,6 @@ where
     #[inline]
     fn endpoint(&self) -> Self::EndpointRef<'_> {
         self.inner.endpoint()
-    }
-
-    #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(config.underlying())
     }
 
     #[inline]
@@ -913,7 +983,6 @@ where
     Conn: NearConnector,
     TLS: TLSLoadClient
 {
-    type Config = TLSChannelConfig<TLS, Conn::Config>;
     type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
     type StartError = Conn::StartError;
@@ -945,16 +1014,52 @@ where
     TLS: TLSLoadClient,
     Conn: NearChannelCreate + NearConnector,
 {
+    type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>
     ) -> Result<Box<TLSNearConnector<Conn, TLS>>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        Ok(Box::new(TLSNearConnector::new(caches, config)?))
+        Ok(Box::new(TLSNearConnector::create(caches, config)?))
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Conn::verify_endpoint(config.underlying())
+    }
+}
+
+impl<Conn, TLS> NearChannelCreateWithEndpoint
+    for Box<TLSNearConnector<Conn, TLS>>
+where
+    TLS: TLSLoadClient,
+    Conn: NearChannelCreateWithEndpoint + NearConnector,
+{
+    type Config = TLSChannelConfig<TLS, Conn::Config>;
+    type EndpointConfig = Conn::EndpointConfig;
+    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: TLSChannelConfig<TLS, Conn::Config>,
+        endpoint: Conn::EndpointConfig
+    ) -> Result<Box<TLSNearConnector<Conn, TLS>>, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        Ok(Box::new(TLSNearConnector::create_with_endpoint(caches, config,
+                                                           endpoint)?))
+    }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        Conn::verify_endpoint(endpoint)
     }
 }
 
@@ -974,17 +1079,10 @@ where
     }
 
     #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(config.underlying())
-    }
-
-    #[inline]
     fn shutdown(&mut self) -> Result<(), Error> {
         self.as_mut().shutdown()
     }
 }
-
-
 
 impl<S, Endpoint> Credentials for TLSConn<S, Endpoint>
 where
@@ -1322,7 +1420,7 @@ fn test_negotiate() {
         let session = Token(1);
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor: TLSNearAcceptor<UnixNearAcceptor, TLSServerConfig> =
-            TLSNearAcceptor::new(&mut server_nscaches, server_conf)
+            TLSNearAcceptor::create(&mut server_nscaches, server_conf)
                 .expect("Expected success");
 
         server_barrier.wait();
@@ -1343,7 +1441,7 @@ fn test_negotiate() {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
-            TLSNearConnector::new(&mut client_nscaches, client_conf)
+            TLSNearConnector::create(&mut client_nscaches, client_conf)
                 .expect("expected success");
 
         client_barrier.wait();
@@ -1381,7 +1479,7 @@ fn test_send() {
         let session = Token(1);
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor: TLSNearAcceptor<UnixNearAcceptor, TLSServerConfig> =
-            TLSNearAcceptor::new(&mut server_nscaches, server_conf)
+            TLSNearAcceptor::create(&mut server_nscaches, server_conf)
                 .expect("Expected success");
 
         server_barrier.wait();
@@ -1410,7 +1508,7 @@ fn test_send() {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
-            TLSNearConnector::new(&mut client_nscaches, client_conf)
+            TLSNearConnector::create(&mut client_nscaches, client_conf)
                 .expect("expected success");
 
         client_barrier.wait();
@@ -1455,8 +1553,8 @@ fn test_recv() {
         let session = Token(1);
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor: TLSNearAcceptor<UnixNearAcceptor, TLSServerConfig> =
-            TLSNearAcceptor::new(&mut server_nscaches, server_conf)
-                .expect("Expected success");
+            TLSNearAcceptor::create(&mut server_nscaches, server_conf)
+            .expect("Expected success");
 
         server_barrier.wait();
 
@@ -1480,7 +1578,7 @@ fn test_recv() {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
-            TLSNearConnector::new(&mut client_nscaches, client_conf)
+            TLSNearConnector::create(&mut client_nscaches, client_conf)
                 .expect("expected success");
 
         client_barrier.wait();
@@ -1527,7 +1625,7 @@ fn test_send_recv() {
         let session = Token(1);
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor: TLSNearAcceptor<UnixNearAcceptor, TLSServerConfig> =
-            TLSNearAcceptor::new(&mut server_nscaches, server_conf)
+            TLSNearAcceptor::create(&mut server_nscaches, server_conf)
                 .expect("Expected success");
 
         server_barrier.wait();
@@ -1559,7 +1657,7 @@ fn test_send_recv() {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn: TLSNearConnector<UnixNearConnector, TLSClientConfig> =
-            TLSNearConnector::new(&mut client_nscaches, client_conf)
+            TLSNearConnector::create(&mut client_nscaches, client_conf)
                 .expect("expected success");
 
         client_barrier.wait();

@@ -529,7 +529,7 @@ where
     ) -> Result<AcquiredResolver<Self::Resolved>, Self::ResolverError>
     where
         Ctx: NSNameCachesCtx {
-        match self.proxy.ip_endpoint() {
+        match self.proxy.ip_addr() {
             IPEndpointAddr::Name(name) => {
                 let resolver = Resolver::create(
                     caches,
@@ -950,7 +950,7 @@ where
         let (bind, auth, proxy) = config.take();
         let datagram = Datagram::new(caches, tokens, bind)
             .map_err(|e| SOCKS5CreateError::Datagram { datagram: e })?;
-        let proxy = Proxy::new(caches, proxy)
+        let proxy = Proxy::create(caches, proxy)
             .map_err(|e| SOCKS5CreateError::Proxy { proxy: e })?;
 
         Ok(SOCKS5FarChannel {

@@ -1238,7 +1238,7 @@ impl From<SocketAddr> for CompoundFarChannelXfrmPeerAddr {
 impl From<CompoundFarEndpoint> for Option<IPEndpointAddr> {
     fn from(val: CompoundFarEndpoint) -> Option<IPEndpointAddr> {
         match val {
-            CompoundFarEndpoint::UDP { udp } => Some(udp.ip_endpoint().clone()),
+            CompoundFarEndpoint::UDP { udp } => Some(udp.ip_addr().clone()),
             CompoundFarEndpoint::Unix { .. } => None
         }
     }
@@ -4876,12 +4876,6 @@ use std::sync::Barrier;
 #[cfg(test)]
 use std::thread::spawn;
 
-#[cfg(test)]
-use constellation_auth::authn::PassthruSessionAuthN;
-#[cfg(test)]
-use constellation_auth::cred::NullCred;
-#[cfg(test)]
-use constellation_common::net::PassthruDatagramXfrm;
 #[cfg(test)]
 use mio::Poll;
 

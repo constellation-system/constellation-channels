@@ -158,24 +158,17 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
 use std::io::ErrorKind;
-use std::io::IoSlice;
-use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Instant;
 
-use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
-use constellation_common::error::WithMutexPoison;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
-use log::error;
 use log::trace;
 use mio::event::Source;
 use mio::Events;
@@ -185,6 +178,7 @@ use mio::Token;
 
 use crate::resolve::cache::NSNameCachesCtx;
 
+//pub mod channels;
 pub mod compound;
 #[cfg(feature = "gssapi")]
 pub mod gssapi;
@@ -222,8 +216,6 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     /// See [take_connection](NearChannel::take-connection)
     /// [endpoint](NearConnector::endpoint).
     type Endpoint: Clone + Debug + Display + Sized;
-    /// Type of configurations.
-    type Config;
     /// Type of errors that can occur starting a negotiation.
     type StartError: Display + ScopedError;
 
@@ -247,6 +239,8 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
 
 /// Trait for creating instances of near-link channels.
 pub trait NearChannelCreate: NearChannel + Sized {
+    /// Type of configurations.
+    type Config;
     /// Type of errors that can be returned from [new](NearChannelCreate::new).
     type CreateError: Display + ScopedError + Sized;
 
@@ -260,12 +254,64 @@ pub trait NearChannelCreate: NearChannel + Sized {
     ///
     /// * `ctx`: Context to use to obtain name caches.
     /// * `config`: Configuration object to use to create the channel.
-    fn new<Ctx>(
+    fn create<Ctx>(
         ctx: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx;
+
+    /// Get the IP address to which this `NearConnector` connects, if
+    /// applicable.
+    ///
+    /// The default behavior is to return `None`.  This is used to
+    /// configure TLS connectors based on their underlying connectors.
+    ///
+    /// # Parameters
+    ///
+    /// * `config`: Configuration object used to create the channel.
+    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr>;
+}
+
+/// Trait for creating instances of near-link channels, with explicit
+/// endpoints.
+pub trait NearChannelCreateWithEndpoint: NearChannel + Sized {
+    /// Type of configurations.
+    type Config;
+    type EndpointConfig;
+    /// Type of errors that can be returned from [new](NearChannelCreate::new).
+    type CreateError: Display + ScopedError + Sized;
+
+    /// Create a new instance from `config`.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `Ctx`: Type of [NSNameCachesCtx] instance to use.
+    ///
+    /// # Parameters
+    ///
+    /// * `ctx`: Context to use to obtain name caches.
+    /// * `config`: Configuration object to use to create the channel.
+    fn create_with_endpoint<Ctx>(
+        ctx: &mut Ctx,
+        config: Self::Config,
+        endpoint: Self::EndpointConfig
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx;
+
+    /// Get the IP address to which this `NearConnector` connects, if
+    /// applicable.
+    ///
+    /// The default behavior is to return `None`.  This is used to
+    /// configure TLS connectors based on their underlying connectors.
+    ///
+    /// # Parameters
+    ///
+    /// * `endpoint`: Configuration object used to create the channel.
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr>;
 }
 
 /// Interface for client-side near-link channels.
@@ -283,20 +329,6 @@ pub trait NearConnector: NearChannel {
     /// The type of this will vary by instance, but it will always
     /// implement [Display].
     fn endpoint(&self) -> Self::EndpointRef<'_>;
-
-    /// Get the IP address to which this `NearConnector` connects, if
-    /// applicable.
-    ///
-    /// The default behavior is to return `None`.  This is used to
-    /// configure TLS connectors based on their underlying connectors.
-    ///
-    /// # Parameters
-    ///
-    /// * `config`: Configuration object used to create the channel.
-    #[inline]
-    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr> {
-        None
-    }
 
     /// Shut down this connector and all lower-level connectors.
     ///
@@ -336,14 +368,6 @@ pub enum NearSessionError<Conn, Auth> {
     AuthFail
 }
 
-/// Wrapper for near-channel connections.
-///
-/// An instance can be created using the [From] instance.
-#[derive(Clone, Debug)]
-pub struct NearConn<Conn> {
-    conn: Arc<Mutex<Option<Conn>>>
-}
-
 impl ScopedError for NearConnectError {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -363,415 +387,6 @@ where Conn: ScopedError,
             NearSessionError::Conn { err } => err.scope(),
             NearSessionError::Auth { err } => err.scope(),
             NearSessionError::AuthFail => ErrorScope::Session
-        }
-    }
-}
-
-impl<Conn> From<Conn> for NearConn<Conn>
-where
-    Conn: Read + Write
-{
-    #[inline]
-    fn from(conn: Conn) -> NearConn<Conn> {
-        NearConn::from(Some(conn))
-    }
-}
-
-impl<Conn> From<Option<Conn>> for NearConn<Conn>
-where
-    Conn: Read + Write
-{
-    #[inline]
-    fn from(conn: Option<Conn>) -> NearConn<Conn> {
-        NearConn::from(Arc::new(Mutex::new(conn)))
-    }
-}
-
-impl<Conn> From<Arc<Mutex<Option<Conn>>>> for NearConn<Conn>
-where
-    Conn: Read + Write
-{
-    #[inline]
-    fn from(conn: Arc<Mutex<Option<Conn>>>) -> NearConn<Conn> {
-        NearConn { conn: conn }
-    }
-}
-
-impl<Conn> Credentials for NearConn<Conn>
-where
-    Conn: Credentials
-{
-    type Cred = Conn::Cred;
-    type CredError = WithMutexPoison<Conn::CredError>;
-
-    #[inline]
-    fn creds(&self) -> Result<Option<Self::Cred>, Self::CredError> {
-        match self
-            .conn
-            .lock()
-            .map_err(|_| WithMutexPoison::MutexPoison)?
-            .as_ref()
-        {
-            Some(conn) => conn
-                .creds()
-                .map_err(|err| WithMutexPoison::Inner { err: err }),
-            None => Ok(None)
-        }
-    }
-}
-
-impl<Conn> CredentialsMut for NearConn<Conn>
-where
-    Conn: CredentialsMut
-{
-    type Cred = Conn::Cred;
-    type CredError = WithMutexPoison<Conn::CredError>;
-
-    #[inline]
-    fn creds(&mut self) -> Result<Option<Self::Cred>, Self::CredError> {
-        match self
-            .conn
-            .lock()
-            .map_err(|_| WithMutexPoison::MutexPoison)?
-            .as_mut()
-        {
-            Some(conn) => conn
-                .creds()
-                .map_err(|err| WithMutexPoison::Inner { err: err }),
-            None => Ok(None)
-        }
-    }
-}
-
-impl<Conn> Read for NearConn<Conn>
-where
-    Conn: Read + Write
-{
-    fn read(
-        &mut self,
-        buf: &mut [u8]
-    ) -> Result<usize, Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.read(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => Err(Error::new(
-                ErrorKind::Other,
-                "mutex poisoned, aborting read"
-            ))
-        }
-    }
-
-    fn read_vectored(
-        &mut self,
-        buf: &mut [IoSliceMut<'_>]
-    ) -> Result<usize, Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.read_vectored(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => Err(Error::new(
-                ErrorKind::Other,
-                "mutex poisoned, aborting read"
-            ))
-        }
-    }
-
-    fn read_to_end(
-        &mut self,
-        buf: &mut Vec<u8>
-    ) -> Result<usize, Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.read_to_end(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => Err(Error::new(
-                ErrorKind::Other,
-                "mutex poisoned, aborting read"
-            ))
-        }
-    }
-
-    fn read_to_string(
-        &mut self,
-        buf: &mut String
-    ) -> Result<usize, Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.read_to_string(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => Err(Error::new(
-                ErrorKind::Other,
-                "mutex poisoned, aborting read"
-            ))
-        }
-    }
-
-    fn read_exact(
-        &mut self,
-        buf: &mut [u8]
-    ) -> Result<(), Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.read_exact(buf) {
-                    Ok(()) => Ok(()),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => Err(Error::new(
-                ErrorKind::Other,
-                "mutex poisoned, aborting read"
-            ))
-        }
-    }
-}
-
-impl<Conn> Write for NearConn<Conn>
-where
-    Conn: Read + Write
-{
-    fn write(
-        &mut self,
-        buf: &[u8]
-    ) -> Result<usize, Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.write(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => {
-                error!(target: "near-write",
-                       "mutex poisoned, aborting write");
-
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting write"
-                ))
-            }
-        }
-    }
-
-    fn write_vectored(
-        &mut self,
-        buf: &[IoSlice<'_>]
-    ) -> Result<usize, Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.write_vectored(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => {
-                error!(target: "near-write",
-                       "mutex poisoned, aborting write");
-
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting write"
-                ))
-            }
-        }
-    }
-
-    fn write_all(
-        &mut self,
-        buf: &[u8]
-    ) -> Result<(), Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.write_all(buf) {
-                    Ok(out) => Ok(out),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => {
-                error!(target: "near-write",
-                       "mutex poisoned, aborting write");
-
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting write"
-                ))
-            }
-        }
-    }
-
-    fn flush(&mut self) -> Result<(), Error> {
-        match self.conn.lock() {
-            Ok(mut guard) => match &mut *guard {
-                Some(stream) => match stream.flush() {
-                    Ok(()) => Ok(()),
-                    Err(err) => {
-                        // Reset the stream dependending on the error kind.
-                        match err.kind() {
-                            // Don't reset for interrupted.
-                            ErrorKind::Interrupted => {}
-                            // Reset by default.
-                            _ => *guard = None
-                        }
-
-                        Err(err)
-                    }
-                },
-                // Connection was already terminated.
-                None => Err(Error::new(
-                    ErrorKind::NotConnected,
-                    "reader connection is already closed"
-                ))
-            },
-            // Mutex poisoned.
-            Err(_) => {
-                error!(target: "near-write",
-                       "mutex poisoned, aborting flush");
-
-                Err(Error::new(
-                    ErrorKind::Other,
-                    "mutex poisoned, aborting flush"
-                ))
-            }
         }
     }
 }

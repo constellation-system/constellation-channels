@@ -36,7 +36,6 @@
 //! [CompoundNearAcceptor](crate::near::compound::CompoundNearAcceptor),
 //! as it generally doesn't make sense to include them anywhere but at
 //! the top level of a configuration.
-use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
@@ -84,6 +83,7 @@ use mio::Token;
 
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -272,18 +272,18 @@ pub struct GSSAPINearConnector<Conn: NearConnector> {
 
 /// Configuration object for a [GSSAPINearAcceptor].
 #[derive(Clone)]
-pub struct GSSAPINearAcceptorConfig<A: NearChannel> {
+pub struct GSSAPINearAcceptorConfig<Inner> {
     config: ServerGSSAPIConfig,
     /// Optional GSSAPI bindings.
-    inner: A
+    inner: Inner
 }
 
 /// Configuration object for a [GSSAPINearConnector].
 #[derive(Clone)]
-pub struct GSSAPINearConnectorConfig<Conn: NearChannel> {
+pub struct GSSAPINearConnectorConfig<Inner> {
     gssapi: ClientGSSAPIParams,
     /// Configuration for the underlying channel.
-    inner: Conn::Config
+    inner: Inner
 }
 
 /// Credentials harvested from a [GSSAPIStream].
@@ -1007,7 +1007,6 @@ impl<A> NearChannel for GSSAPINearAcceptor<A>
 where
     A: Source + NearChannel,
 {
-    type Config = GSSAPINearAcceptorConfig<A>;
     type Endpoint = A::Endpoint;
     type Conn = GSSAPIStream<A::Conn, ServerCtx>;
     type StartError = A::StartError;
@@ -1045,19 +1044,27 @@ impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
 where
     A: Source + NearChannelCreate,
 {
-    type CreateError = Infallible;
+    type Config = GSSAPINearAcceptorConfig<A::Config>;
+    type CreateError = A::CreateError;
 
     #[inline]
-    fn new<Ctx>(
-        _caches: &mut Ctx,
+    fn create<Ctx>(
+        caches: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
+        let inner = A::create(caches, config.inner)?;
+
         Ok(GSSAPINearAcceptor {
-            inner: config.inner,
+            inner: inner,
             params: config.config
         })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        A::verify_endpoint(&config.inner)
     }
 }
 
@@ -1209,7 +1216,6 @@ impl<C> NearChannel for GSSAPINearConnector<C>
 where
     C: Source + NearConnector,
 {
-    type Config = GSSAPINearConnectorConfig<C>;
     type Endpoint = C::Endpoint;
     type Conn = GSSAPIStream<C::Conn, ClientCtx>;
     type StartError = C::StartError;
@@ -1247,21 +1253,59 @@ impl<C> NearChannelCreate for GSSAPINearConnector<C>
 where
     C: Source + NearConnector + NearChannelCreate,
 {
+    type Config = GSSAPINearConnectorConfig<C::Config>;
     type CreateError = C::CreateError;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         caches: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        let inner = C::new(caches, config.inner)?;
+        let inner = C::create(caches, config.inner)?;
 
         Ok(GSSAPINearConnector {
             inner: inner,
             params: config.gssapi
         })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        C::verify_endpoint(&config.inner)
+    }
+}
+
+impl<C> NearChannelCreateWithEndpoint for GSSAPINearConnector<C>
+where
+    C: Source + NearConnector + NearChannelCreateWithEndpoint,
+{
+    type Config = GSSAPINearConnectorConfig<C::Config>;
+    type EndpointConfig = C::EndpointConfig;
+    type CreateError = C::CreateError;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: Self::Config,
+        endpoint: C::EndpointConfig
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let inner = C::create_with_endpoint(caches, config.inner, endpoint)?;
+
+        Ok(GSSAPINearConnector {
+            inner: inner,
+            params: config.gssapi
+        })
+    }
+
+    #[inline]
+    fn verify_endpoint(
+        endpoint: &Self::EndpointConfig
+    ) -> Option<&IPEndpointAddr> {
+        C::verify_endpoint(endpoint)
     }
 }
 
@@ -1353,7 +1397,7 @@ where
         config: ClientGSSAPIConfig,
         service_default: String,
         bindings: Option<Vec<u8>>,
-        inner: Conn::Config
+        inner: Conn
     ) -> Self {
         let (name, service, time_req, security) = config.take();
         let params = ClientGSSAPIParams {
@@ -1583,11 +1627,6 @@ where
     #[inline]
     fn endpoint(&self) -> Self::EndpointRef<'_> {
         self.inner.endpoint()
-    }
-
-    #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(&config.inner)
     }
 
     #[inline]

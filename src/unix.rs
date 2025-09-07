@@ -165,6 +165,27 @@ impl TryFrom<UnixSocketPath> for UnixSocketAddr {
     }
 }
 
+impl TryFrom<&'_ UnixSocketAddr> for UnixSocketPath {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: &UnixSocketAddr) -> Result<UnixSocketPath, Error> {
+        let path = val.0.as_pathname()
+            .ok_or(Error::new(ErrorKind::Other, "anonymous socket"))?;
+
+        Ok(UnixSocketPath(path.to_owned()))
+    }
+}
+
+impl TryFrom<UnixSocketAddr> for UnixSocketPath {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(val: UnixSocketAddr) -> Result<UnixSocketPath, Error> {
+        UnixSocketPath::try_from(&val)
+    }
+}
+
 impl From<&'_ str> for UnixSocketPath {
     #[inline]
     fn from(val: &str) -> UnixSocketPath {
