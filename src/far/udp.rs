@@ -96,8 +96,8 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// let udp_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let mut channel = UDPFarChannel::new(&mut nscaches, &mut empty(),
-///                                      udp_config)
+/// let mut channel = UDPFarChannel::create(&mut nscaches, &mut empty(),
+///                                         udp_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UDPFarChannel {
@@ -301,7 +301,7 @@ impl FarChannelCreate for UDPFarChannel {
     type CreateError = Infallible;
 
     #[inline]
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         _caches: &mut Ctx,
         _tokens: &mut I,
         config: Self::Config
@@ -541,8 +541,8 @@ fn test_send_recv() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            UDPFarChannel::new(&mut server_nscaches, &mut empty(),
-                               server_config)
+            UDPFarChannel::create(&mut server_nscaches, &mut empty(),
+                                  server_config)
             .expect("Expected success");
         let config = FlowsConfig::default();
         let param = match listener.acquire(poll.registry())
@@ -587,8 +587,8 @@ fn test_send_recv() {
     let send = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
-            UDPFarChannel::new(&mut client_nscaches, &mut empty(),
-                               client_config)
+            UDPFarChannel::create(&mut client_nscaches, &mut empty(),
+                                  client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
         let param = match conn.acquire(poll.registry())

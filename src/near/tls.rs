@@ -156,7 +156,7 @@ pub enum TLSSessionCreateError<Session, Channel> {
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let acceptor: TLSNearAcceptor<TCPNearAcceptor, TLSServerConfig> =
-///     TLSNearAcceptor::new(&mut nscaches, accept_config).unwrap();
+///     TLSNearAcceptor::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
 /// ## Accepting Connections
@@ -230,7 +230,7 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector: TLSNearConnector<TCPNearConnector, TLSClientConfig> =
-///     TLSNearConnector::new(&mut nscaches, accept_config).unwrap();
+///     TLSNearConnector::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections

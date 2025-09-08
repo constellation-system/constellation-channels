@@ -139,7 +139,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let mut channel = DTLSFarChannel::<UDPFarChannel>
-///     ::new(&mut nscaches, &mut empty(), dtls_config)
+///     ::create(&mut nscaches, &mut empty(), dtls_config)
 ///     .expect("Expected success");
 /// ```
 pub struct DTLSFarChannel<Channel> {
@@ -421,7 +421,7 @@ where
     type Config = DTLSFarChannelConfig<Channel::Config>;
     type CreateError = Channel::CreateError;
 
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config
@@ -431,7 +431,7 @@ where
         I: Iterator<Item = Token> {
         let (tls, _) = config.take();
         let (tls, inner) = tls.take();
-        let inner = Channel::new(caches, tokens, inner)?;
+        let inner = Channel::create(caches, tokens, inner)?;
 
         Ok(DTLSFarChannel {
             inner: inner,
@@ -1254,7 +1254,7 @@ fn test_send_recv() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut listener = DTLSFarChannel::<UDPFarChannel>
-            ::new(&mut server_nscaches, &mut empty(), server_config)
+            ::create(&mut server_nscaches, &mut empty(), server_config)
             .expect("Expected success");
         let config = FlowsConfig::default();
         let param = match listener.acquire(poll.registry())
@@ -1305,8 +1305,8 @@ fn test_send_recv() {
             inner: ()
         };
         let mut conn = DTLSFarChannel::<UDPFarChannel>
-            ::new(&mut client_nscaches, &mut empty(), client_config)
-                .expect("expected success");
+            ::create(&mut client_nscaches, &mut empty(), client_config)
+            .expect("expected success");
         let config = FlowsConfig::default();
         let param = match conn.acquire(poll.registry())
             .expect("Expected success") {

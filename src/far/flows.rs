@@ -685,9 +685,11 @@ where
         &mut self,
         param: &OutboundNego::Param,
         addr: Xfrm::PeerAddr,
-    ) -> Result<Option<F>,
-                FlowsFlowError<OutboundNego::StartError,
-                               OutboundNego::NegotiateError>> {
+    ) -> Result<
+        Option<F>,
+        FlowsFlowError<OutboundNego::StartError,
+                       OutboundNego::NegotiateError>
+    > {
         let local_addr = self.local_addr()
             .map_err(|err| FlowsFlowError::IO { err: err })?;
 
@@ -701,7 +703,7 @@ where
                 // There's an existing buffer, use that.
                 Some(_) => Err(FlowsFlowError::Taken),
                 None => {
-                    // Weak reference expired set up a new negotiation.
+                    // Weak reference expired, set up a new negotiation.
                     trace!(target: "flows",
                            "expiring stale flow from {} on {}",
                            addr, local_addr);

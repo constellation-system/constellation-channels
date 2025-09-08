@@ -153,7 +153,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector: SOCKS5NearConnector<TCPNearConnector> =
-///     SOCKS5NearConnector::new(&mut nscaches, accept_config).unwrap();
+///     SOCKS5NearConnector::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections

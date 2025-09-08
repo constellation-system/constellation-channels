@@ -219,8 +219,8 @@ pub enum CompoundFarIPChannel {
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector = CompoundFarChannel::new(&mut nscaches, &mut empty(),
-///                                         accept_config).unwrap();
+/// let connector = CompoundFarChannel::create(&mut nscaches, &mut empty(),
+///                                            accept_config).unwrap();
 /// ```
 pub enum CompoundFarChannel {
     #[cfg(feature = "unix")]
@@ -2286,7 +2286,7 @@ impl FarChannelCreate for CompoundFarIPChannel {
     type Config = CompoundFarIPChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config
@@ -2296,17 +2296,18 @@ impl FarChannelCreate for CompoundFarIPChannel {
         I: Iterator<Item = Token> {
         match config {
             CompoundFarIPChannelConfig::UDP { udp } => {
-                let Ok(udp) = UDPFarChannel::new(caches, tokens, udp);
+                let Ok(udp) = UDPFarChannel::create(caches, tokens, udp);
 
                 Ok(CompoundFarIPChannel::UDP { udp: udp })
             }
             CompoundFarIPChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::new(caches, tokens, *dtls)?;
+                let dtls = DTLSFarChannel::create(caches, tokens, *dtls)?;
 
                 Ok(CompoundFarIPChannel::DTLS { dtls: Box::new(dtls) })
             }
             CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 = SOCKS5FarChannel::new(caches, tokens, *socks5_udp)
+                let socks5 =
+                    SOCKS5FarChannel::create(caches, tokens, *socks5_udp)
                     .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
                         socks5: Box::new(err)
                     })?;
@@ -2518,7 +2519,7 @@ impl FarChannelCreate for CompoundFarChannel {
     type Config = CompoundFarChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config
@@ -2528,7 +2529,7 @@ impl FarChannelCreate for CompoundFarChannel {
         I: Iterator<Item = Token> {
         match config {
             CompoundFarChannelConfig::Unix { unix_datagram } => {
-                let unix = UnixFarChannel::new(caches, tokens, unix_datagram)
+                let unix = UnixFarChannel::create(caches, tokens, unix_datagram)
                     .map_err(|err| CompoundFarChannelCreateError::IO {
                         err: err
                     })?;
@@ -2536,19 +2537,20 @@ impl FarChannelCreate for CompoundFarChannel {
                 Ok(CompoundFarChannel::Unix { unix: unix })
             }
             CompoundFarChannelConfig::UDP { udp } => {
-                let Ok(udp) = UDPFarChannel::new(caches, tokens, udp);
+                let Ok(udp) = UDPFarChannel::create(caches, tokens, udp);
 
                 Ok(CompoundFarChannel::IP {
                     ip: CompoundFarIPChannel::UDP { udp: udp }
                 })
             }
             CompoundFarChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::new(caches, tokens, *dtls)?;
+                let dtls = DTLSFarChannel::create(caches, tokens, *dtls)?;
 
                 Ok(CompoundFarChannel::DTLS { dtls: Box::new(dtls) })
             }
             CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 = SOCKS5FarChannel::new(caches, tokens, *socks5_udp)
+                let socks5 =
+                    SOCKS5FarChannel::create(caches, tokens, *socks5_udp)
                     .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
                         socks5: Box::new(err)
                     })?;
@@ -2625,7 +2627,7 @@ impl FarChannelCreate for Box<CompoundFarIPChannel> {
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config
@@ -2633,7 +2635,7 @@ impl FarChannelCreate for Box<CompoundFarIPChannel> {
     where
         Ctx: NSNameCachesCtx,
         I: Iterator<Item = Token> {
-        CompoundFarIPChannel::new(caches, tokens, config.as_ref().clone())
+        CompoundFarIPChannel::create(caches, tokens, config.as_ref().clone())
             .map(Box::new)
     }
 }
@@ -2700,7 +2702,7 @@ impl FarChannelCreate for Box<CompoundFarChannel> {
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config
@@ -2708,7 +2710,8 @@ impl FarChannelCreate for Box<CompoundFarChannel> {
     where
         Ctx: NSNameCachesCtx,
         I: Iterator<Item = Token> {
-        CompoundFarChannel::new(caches, tokens, config.as_ref().clone()).map(Box::new)
+        CompoundFarChannel::create(caches, tokens, config.as_ref().clone())
+            .map(Box::new)
     }
 }
 
@@ -4962,8 +4965,8 @@ fn test_compound_dtls_unix() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            CompoundFarChannel::new(&mut server_nscaches, &mut empty(),
-                                    server_config)
+            CompoundFarChannel::create(&mut server_nscaches, &mut empty(),
+                                       server_config)
                 .expect("Expected success");
         let config = FlowsConfig::default();
         let acquire = match listener.acquire(poll.registry())
@@ -5027,8 +5030,8 @@ fn test_compound_dtls_unix() {
             dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
         };
         let mut conn =
-            CompoundFarChannel::new(&mut client_nscaches, &mut empty(),
-                                    client_config)
+            CompoundFarChannel::create(&mut client_nscaches, &mut empty(),
+                                       client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
         let acquire = match conn.acquire(poll.registry())
@@ -5144,8 +5147,8 @@ fn test_compound_dtls_udp() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            CompoundFarChannel::new(&mut server_nscaches, &mut empty(),
-                                    server_config)
+            CompoundFarChannel::create(&mut server_nscaches, &mut empty(),
+                                       server_config)
                 .expect("Expected success");
         let config = FlowsConfig::default();
         let acquire = match listener.acquire(poll.registry())
@@ -5209,8 +5212,8 @@ fn test_compound_dtls_udp() {
             dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
         };
         let mut conn =
-            CompoundFarChannel::new(&mut client_nscaches, &mut empty(),
-                                    client_config)
+            CompoundFarChannel::create(&mut client_nscaches, &mut empty(),
+                                       client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
         let acquire = match conn.acquire(poll.registry())
@@ -5357,8 +5360,8 @@ fn test_compound_dtls_double() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            CompoundFarChannel::new(&mut server_nscaches, &mut empty(),
-                                    server_config)
+            CompoundFarChannel::create(&mut server_nscaches, &mut empty(),
+                                       server_config)
                 .expect("Expected success");
         let config = FlowsConfig::default();
         let acquire = match listener.acquire(poll.registry())
@@ -5426,8 +5429,8 @@ fn test_compound_dtls_double() {
             dtls: Box::new(DTLSOutboundParam::new(endpoint, negoparam))
         };
         let mut conn =
-            CompoundFarChannel::new(&mut client_nscaches, &mut empty(),
-                                    client_config)
+            CompoundFarChannel::create(&mut client_nscaches, &mut empty(),
+                                       client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
         let acquire = match conn.acquire(poll.registry())

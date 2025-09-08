@@ -2492,7 +2492,8 @@ impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
     #[inline]
     pub fn take(
         self
-    ) -> (In, Out, Option<AuthN>, Retry, Option<usize>, Option<usize>) {
+    ) ->
+        (In, Out, Option<AuthN>, Retry, Option<usize>, Option<usize>) {
         (self.listen, self.connect, self.authn, self.retry,
          self.num_sessions, self.backlog_size)
     }
@@ -3430,7 +3431,7 @@ impl TCPNearConnectorPartialConfig {
     ///                        Duration::from_millis(50));
     ///
     /// assert_eq!(
-    ///     TCPNearConnectorConfig::new(resolve, retry),
+    ///     TCPNearConnectorPartialConfig::new(resolve, retry),
     ///     serde_yaml::from_str(yaml).unwrap()
     /// );
     /// ```

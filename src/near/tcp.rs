@@ -103,8 +103,8 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let mut acceptor = TCPNearAcceptor::new(&mut nscaches,
-///                                         accept_config).unwrap();
+/// let mut acceptor = TCPNearAcceptor::create(&mut nscaches,
+///                                            accept_config).unwrap();
 /// ```
 ///
 /// ## Accepting Connections
@@ -151,8 +151,8 @@ pub struct TCPNearAcceptor {
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector = TCPNearConnector::new(&mut nscaches,
-///                                       accept_config).unwrap();
+/// let connector = TCPNearConnector::create(&mut nscaches,
+///                                          accept_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections

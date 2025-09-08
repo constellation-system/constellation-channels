@@ -244,8 +244,8 @@ use crate::resolve::Resolver;
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let channel: SOCKS5FarChannel<TCPNearConnector, SocketAddr, UDPFarChannel> =
-///     SOCKS5FarChannel::new(&mut nscaches, &mut once(Token(0)), socks5_config)
-///     .unwrap();
+///     SOCKS5FarChannel::create(&mut nscaches, &mut once(Token(0)),
+///                              socks5_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections
@@ -938,7 +938,7 @@ where
     type CreateError =
         SOCKS5CreateError<Proxy::CreateError, Datagram::CreateError>;
 
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config
@@ -948,7 +948,7 @@ where
         I: Iterator<Item = Token> {
         let token = tokens.next().ok_or(SOCKS5CreateError::NoTokens)?;
         let (bind, auth, proxy) = config.take();
-        let datagram = Datagram::new(caches, tokens, bind)
+        let datagram = Datagram::create(caches, tokens, bind)
             .map_err(|e| SOCKS5CreateError::Datagram { datagram: e })?;
         let proxy = Proxy::create(caches, proxy)
             .map_err(|e| SOCKS5CreateError::Proxy { proxy: e })?;

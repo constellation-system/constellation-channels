@@ -120,7 +120,7 @@ use crate::unix::UnixSocketPath;
 /// let config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let acceptor = UnixNearAcceptor::new(&mut nscaches, config).unwrap();
+/// let acceptor = UnixNearAcceptor::create(&mut nscaches, config).unwrap();
 /// ```
 ///
 /// ## Accepting Connections
@@ -175,7 +175,7 @@ pub struct UnixNearConnectorParams {
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector = UnixNearConnector::new(&mut nscaches, accept_config)
+/// let connector = UnixNearConnector::create(&mut nscaches, accept_config)
 ///     .unwrap();
 /// ```
 ///

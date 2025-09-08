@@ -50,7 +50,7 @@ fn server() {
 
     info!("creating channel");
 
-    let mut acceptor = TCPNearAcceptor::new(&mut nscaches, accept_config)
+    let mut acceptor = TCPNearAcceptor::create(&mut nscaches, accept_config)
         .expect("Expected success");
 
     poll.registry().register(&mut acceptor, listen, Interest::READABLE)
@@ -91,7 +91,7 @@ fn client() {
     let mut nscaches = SharedNSNameCaches::new();
     let session = Token(0);
     let mut poll = Poll::new().expect("Expected success");
-    let mut conn = TCPNearConnector::new(&mut nscaches, connect_config)
+    let mut conn = TCPNearConnector::create(&mut nscaches, connect_config)
         .expect("expected success");
 
     info!("created channel");

@@ -131,8 +131,8 @@ fn server() {
         serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
     let mut listener =
-        CompoundFarChannel::new(&mut nscaches, &mut empty(),
-                                server_config)
+        CompoundFarChannel::create(&mut nscaches, &mut empty(),
+                                   server_config)
             .expect("Expected success");
     let config = FlowsConfig::default();
     let acquire = match listener.acquire(poll.registry())
@@ -193,8 +193,8 @@ fn client() {
     let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
     let mut conn =
-        CompoundFarChannel::new(&mut nscaches, &mut empty(),
-                                client_config)
+        CompoundFarChannel::create(&mut nscaches, &mut empty(),
+                                   client_config)
             .expect("expected success");
     let config = FlowsConfig::default();
     let acquire = match conn.acquire(poll.registry())

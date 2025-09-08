@@ -464,7 +464,7 @@ pub enum CompoundNearCredential {
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let acceptor: CompoundNearAcceptor<TLSServerConfig> =
-///     CompoundNearAcceptor::new(&mut nscaches, accept_config).unwrap();
+///     CompoundNearAcceptor::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
 /// ## Accepting Connections
@@ -530,7 +530,7 @@ pub enum CompoundNearAcceptor<TLS: Clone + Debug + TLSLoadServer> {
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector: CompoundNearConnector<TLSClientConfig> =
-///     CompoundNearConnector::new(&mut nscaches, accept_config).unwrap();
+///     CompoundNearConnector::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections

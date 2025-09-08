@@ -134,8 +134,8 @@ use crate::unix::UnixSocketPath;
 /// let unix_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let mut channel = UnixFarChannel::new(&mut nscaches, &mut empty(),
-///                                       unix_config)
+/// let mut channel = UnixFarChannel::create(&mut nscaches, &mut empty(),
+///                                          unix_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UnixFarChannel {
@@ -306,7 +306,7 @@ impl FarChannelCreate for UnixFarChannel {
     type CreateError = Error;
 
     #[inline]
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         _caches: &mut Ctx,
         _tokens: &mut I,
         config: Self::Config
@@ -581,8 +581,8 @@ fn test_send_recv() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut listener =
-            UnixFarChannel::new(&mut server_nscaches, &mut empty(),
-                                server_config)
+            UnixFarChannel::create(&mut server_nscaches, &mut empty(),
+                                   server_config)
             .expect("Expected success");
         let config = FlowsConfig::default();
         let param = match listener.acquire(poll.registry())
@@ -628,8 +628,8 @@ fn test_send_recv() {
     let send = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
-            UnixFarChannel::new(&mut client_nscaches, &mut empty(),
-                                client_config)
+            UnixFarChannel::create(&mut client_nscaches, &mut empty(),
+                                   client_config)
                 .expect("expected success");
         let config = FlowsConfig::default();
         let param = match conn.acquire(poll.registry())

@@ -417,7 +417,7 @@ pub trait FarChannelCreate: FarChannel {
     /// This creates an instance of this `FarChannel` from the
     /// configuration given by `config`, which binds to the address
     /// given by `bind`.
-    fn new<Ctx, I>(
+    fn create<Ctx, I>(
         caches: &mut Ctx,
         tokens: &mut I,
         config: Self::Config

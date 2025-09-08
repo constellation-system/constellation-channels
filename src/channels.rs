@@ -93,13 +93,23 @@ pub(crate) enum SessionNegoStepError<Session, Start, AuthN> {
 
 impl Backlog {
     #[inline]
-    pub fn new() -> Backlog {
+    pub(crate) fn new() -> Backlog {
         Backlog(VecDeque::new())
     }
 
     #[inline]
-    pub fn with_capacity(size: usize) -> Backlog {
+    pub(crate) fn with_capacity(size: usize) -> Backlog {
         Backlog(VecDeque::with_capacity(size))
+    }
+
+    #[inline]
+    pub(crate) fn peek(&self) -> Option<&Vec<u8>> {
+        self.0.front()
+    }
+
+    #[inline]
+    pub(crate) fn pop(&mut self) -> Option<Vec<u8>> {
+        self.0.pop_front()
     }
 }
 
