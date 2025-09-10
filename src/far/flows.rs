@@ -311,7 +311,10 @@ where
     Sock: Socket + Sender + Receiver + Source,
     OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
     InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
+    Xfrm: DatagramXfrm,
+    Xfrm::LocalAddr: From<Sock::Addr>,
+    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
+    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     #[inline]
     fn register(
@@ -402,7 +405,7 @@ where
 
     /// Get the local address for the underlying socket.
     #[inline]
-    fn local_addr(&self) -> Result<Sock::Addr, Error> {
+    pub fn local_addr(&self) -> Result<Sock::Addr, Error> {
         self.socket.try_borrow()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get failed"))?
             .local_addr()
@@ -665,7 +668,7 @@ where
                                 .insert(addr.clone(),pending)
                                 .is_some() {
                                 error!(target: "flows",
-                                       "hash map should not contain an entry")
+                                       "hashmap shouldn't contain an entry")
                             }
 
                             Ok(None)
