@@ -178,7 +178,7 @@ use mio::Token;
 
 use crate::resolve::cache::NSNameCachesCtx;
 
-//pub mod channels;
+pub mod channels;
 pub mod compound;
 #[cfg(feature = "gssapi")]
 pub mod gssapi;
