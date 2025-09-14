@@ -360,7 +360,7 @@ pub enum CompoundFarIPChannelConfig {
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
         socks5_udp: Box<SOCKS5AssocConfig<
-            CompoundNearConnectorConfig<TLSPeerConfig>,
+            CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
             CompoundFarIPChannelConfig
         >>
     }
@@ -573,7 +573,7 @@ pub enum CompoundFarChannelConfig {
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
         socks5_udp: Box<SOCKS5AssocConfig<
-            CompoundNearConnectorConfig<TLSPeerConfig>,
+            CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
             CompoundFarIPChannelConfig
         >>
     }
@@ -701,8 +701,8 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 /// - `unix-stream`: Contains a [UnixNearConnectorConfig], and creates a
 ///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
 ///
-/// - `tcp`: Contains a [TCPNearConnectorConfig], and creates a
-///   [TCPNearConnector](crate::near::tcp::TCPNearConnector).
+/// - `tcp`: Contains a [TCPResolvingNearConnectorConfig], and creates a
+///   [TCPResolvingNearConnector](crate::near::tcp::TCPResolvingNearConnector).
 ///
 /// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
 ///   [TLSNearConnector](crate::near::tls::TLSNearConnector).  The underlying
@@ -827,7 +827,7 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
-pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
+pub enum CompoundResolvingNearConnectorConfig<TLS: TLSLoadClient> {
     /// UNIX socket channel.
     ///
     /// The service will run as a separate process, and will
@@ -843,7 +843,7 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     /// TCP connection.
     TCP {
         /// TCP socket configuration.
-        tcp: TCPNearConnectorConfig
+        tcp: TCPResolvingNearConnectorConfig
     },
     /// TLS channel.
     ///
@@ -887,8 +887,9 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
 ///   creates a
 ///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
 ///
-/// - `tcp`: Contains a [TCPNearConnectorPartialConfig], and creates a
-///   [TCPNearConnector](crate::near::tcp::TCPNearConnector).
+/// - `tcp`: Contains a [TCPResolvingNearConnectorPartialConfig], and
+///   creates a
+///   [TCPResolvingNearConnector](crate::near::tcp::TCPResolvingNearConnector).
 ///
 /// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
 ///   [TLSNearConnector](crate::near::tls::TLSNearConnector).  The underlying
@@ -1004,6 +1005,183 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
+pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
+    /// UNIX socket channel.
+    ///
+    /// The service will run as a separate process, and will
+    /// communicate via a UNIX domain socket.
+    #[serde(rename_all = "kebab-case")]
+    Unix {
+        /// Unix socket configuration.
+        unix_stream: UnixNearConnectorPartialConfig
+    },
+    /// TCP Channel.
+    ///
+    /// The service will run separately, and will communicate via a
+    /// TCP connection.
+    TCP {
+        /// TCP socket configuration.
+        tcp: TCPResolvingNearConnectorPartialConfig
+    },
+    /// TLS channel.
+    ///
+    /// The service will run separately, and will communicate via a
+    /// TLS connection.
+    #[serde(rename_all = "kebab-case")]
+    TLS {
+        /// TLS session negotiation configuration.
+        tls: TLSChannelConfig<TLS, Box<Self>>
+    },
+    /// SOCKS5 proxy channel.
+    #[serde(rename_all = "kebab-case")]
+    SOCKS5 {
+        /// SOCKS5 session negotiation configuration.
+        socks5_tcp: SOCKS5ConnectPartialConfig<Box<CompoundResolvingNearConnectorConfig<TLS>>>
+    }
+}
+
+/// Compound client-side near-link partial configuration.
+///
+/// This represents the configuration for
+/// [CompoundNearConnector](crate::near::compound::CompoundNearConnector)s.
+/// These allow any of the client-side near-link channel types
+/// provided by this package to be configured as a near-link
+/// connector.  This includes the following channel types:
+///
+/// - [UnixNearConnector](crate::near::unix::UnixNearConnector)
+/// - [TCPNearConnector](crate::near::tcp::TCPNearConnector)
+/// - [TLSNearConnector](crate::near::tls::TLSNearConnector)
+/// - [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector)
+///
+/// Compound near-links can also be configured recursively, allowing
+/// for arbitrarily-complex nested channel configurations.
+///
+/// # YAML Format
+///
+/// The YAML format has four options, each corresponding to the four
+/// different channel types:
+///
+/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and
+///   creates a
+///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
+///
+/// - `tcp`: Contains a [TCPNearConnectorPartialConfig], and creates a
+///   [TCPNearConnector](crate::near::tcp::TCPNearConnector).
+///
+/// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
+///   [TLSNearConnector](crate::near::tls::TLSNearConnector).  The underlying
+///   channel configuration of this structure is another instance of
+///   `CompoundNearConnectorPartialConfig`.
+///
+/// - `socks5-tcp`: Contains a [SOCKS5ConnectConfig], and creates a
+///   [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector). The
+///   channel configuration under the `proxy` of this structure is another
+///   instance of `CompoundNearConnectorPartialConfig`.
+///
+/// ## Examples
+///
+/// The following are examples of different possible configurations.
+/// Note that because of the recursive nature of compound near-link
+/// configurations, there are many more possibilities.
+///
+/// ### TLS Over Local SOCKS5
+///
+/// The following configuration shows a TLS connection going through a
+/// SOCKS5 proxy, which is reached via a Unix socket:
+///
+/// ```yaml
+/// tls:
+///   cipher-suites:
+///     - TLS_AES_256_GCM_SHA384
+///   key-exchange-groups:
+///     - P-521
+///     - P-384
+///   signature-algorithms:
+///     - ecdsa_secp521r1_sha512
+///     - ecdsa_secp384r1_sha384
+///   client-cert: /etc/ssl/certs/client-cert.pem
+///   client-cert-chain: /etc/ssl/certs/client-chain.pem
+///   client-key: /etc/ssl/private/client-key.pem
+///   trust-root:
+///     root-certs:
+///       - /etc/ssl/certs/server-ca-cert.pem
+///     crls:
+///       - /etc/ssl/crls/server-ca-crl.pem
+///   socks5-tcp:
+///     proxy:
+///       unix-stream:
+///         path: /var/run/proxy/proxy.sock
+/// ```
+///
+/// ### TLS Over Secured Remote SOCKS5
+///
+/// The following configuration shows a TLS connection going through a
+/// SOCKS5 proxy, which is reached via a second TLS connection over TCP:
+///
+/// ```yaml
+/// tls:
+///   cipher-suites:
+///     - TLS_AES_256_GCM_SHA384
+///   key-exchange-groups:
+///     - P-521
+///     - P-384
+///   signature-algorithms:
+///     - ecdsa_secp521r1_sha512
+///     - ecdsa_secp384r1_sha384
+///   client-cert: /etc/ssl/certs/client-cert.pem
+///   client-cert-chain: /etc/ssl/certs/client-chain.pem
+///   client-key: /etc/ssl/private/client-key.pem
+///   trust-root:
+///     dirs:
+///       - /etc/ssl/CA/
+///   socks5:
+///     proxy:
+///       tls:
+///         cipher-suites:
+///           - TLS_AES_256_GCM_SHA384
+///         key-exchange-groups:
+///           - P-521
+///           - P-384
+///         signature-algorithms:
+///           - ecdsa_secp521r1_sha512
+///           - ecdsa_secp384r1_sha384
+///         verify-endpoint: test.example.com
+///         trust-root:
+///           root-certs:
+///             - /etc/ssl/certs/proxy-ca-cert.pem
+///           crls:
+///             - /etc/ssl/crls/proxy-ca-crl.pem
+///         tcp:
+///           addr: 127.0.0.1
+///           port: 9050
+/// ```
+///
+/// ### Double SOCKS5 Proxies
+///
+/// The following configuration shows a connection going through *two*
+/// SOCKS5 proxies (no TLS configurations are included here), the
+/// first layer being a GSSAPI-authenticated proxy at
+/// `proxy.example.com`, and the second being a password-authenticated
+/// proxy at `tor.nowhere.com`:
+///
+/// ```yaml
+/// socks5:
+///   proxy:
+///     socks5:
+///       proxy:
+///         tcp:
+///           addr: proxy.example.com
+///           port: 8888
+///       target:
+///         addr: tor.nowhere.com
+///         port: 9050
+///       auth: gssapi
+///   auth:
+///     username: test
+///     password: abc123
+/// ```
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(untagged)]
 pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
     /// UNIX socket channel.
     ///
@@ -1035,7 +1213,7 @@ pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_tcp: SOCKS5ConnectPartialConfig<Box<CompoundNearConnectorConfig<TLS>>>
+        socks5_tcp: SOCKS5ConnectPartialConfig<Box<CompoundResolvingNearConnectorConfig<TLS>>>
     }
 }
 
@@ -1764,7 +1942,7 @@ pub struct TCPNearAcceptorConfig {
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct TCPNearConnectorConfig {
+pub struct TCPResolvingNearConnectorConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: TCPNearChannelConfigUnsafe,
@@ -1780,7 +1958,7 @@ pub struct TCPNearConnectorConfig {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct TCPNearConnectorPartialConfig {
+pub struct TCPResolvingNearConnectorPartialConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: TCPNearChannelConfigUnsafe,
@@ -1790,6 +1968,30 @@ pub struct TCPNearConnectorPartialConfig {
     /// DNS resolution configuration.
     #[serde(default)]
     resolve: AddrsConfig
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TCPNearConnectorConfig {
+    #[serde(rename = "unsafe")]
+    #[serde(default)]
+    unsafe_opts: TCPNearChannelConfigUnsafe,
+    #[serde(flatten)]
+    endpoint: IPEndpoint,
+    /// Retry spec.
+    #[serde(default)]
+    retry: Retry
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TCPNearConnectorPartialConfig {
+    #[serde(rename = "unsafe")]
+    #[serde(default)]
+    unsafe_opts: TCPNearChannelConfigUnsafe,
+    /// Retry spec.
+    #[serde(default)]
+    retry: Retry
 }
 
 /// TLS near-link channel configuration meta-type.
@@ -2903,7 +3105,7 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::SOCKS5AuthNConfig;
     /// # use constellation_channels::config::SOCKS5ConnectConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use std::path::PathBuf;
     /// #
     /// let yaml = concat!("proxy:\n",
@@ -2917,9 +3119,9 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
-    /// let proxy = TCPNearConnectorConfig::new(proxy,
-    ///                                         AddrsConfig::default(),
-    ///                                         Retry::default());
+    /// let proxy = TCPResolvingNearConnectorConfig::new(proxy,
+    ///                                                  AddrsConfig::default(),
+    ///                                                  Retry::default());
     /// let target = IPEndpointAddr::name(String::from("en.wikipedia.org"));
     /// let target = IPEndpoint::new(target, 443);
     /// let auth = SOCKS5AuthNConfig::Password {
@@ -2999,7 +3201,7 @@ impl<Proxy> SOCKS5ConnectPartialConfig<Proxy> {
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::SOCKS5AuthNConfig;
     /// # use constellation_channels::config::SOCKS5ConnectPartialConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use std::path::PathBuf;
     /// #
     /// let yaml = concat!("proxy:\n",
@@ -3010,9 +3212,9 @@ impl<Proxy> SOCKS5ConnectPartialConfig<Proxy> {
     ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
-    /// let proxy = TCPNearConnectorConfig::new(proxy,
-    ///                                         AddrsConfig::default(),
-    ///                                         Retry::default());
+    /// let proxy = TCPResolvingNearConnectorConfig::new(proxy,
+    ///                                                  AddrsConfig::default(),
+    ///                                                  Retry::default());
     /// let auth = SOCKS5AuthNConfig::Password {
     ///     username: String::from("user"),
     ///     password: String::from("pass")
@@ -3082,7 +3284,7 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::SOCKS5AuthNConfig;
     /// # use constellation_channels::config::SOCKS5AssocConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use constellation_channels::config::UDPFarChannelConfig;
     /// # use std::path::PathBuf;
     /// # use std::net::SocketAddr;
@@ -3097,9 +3299,9 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
-    /// let proxy = TCPNearConnectorConfig::new(proxy,
-    ///                                         AddrsConfig::default(),
-    ///                                         Retry::default());
+    /// let proxy = TCPResolvingNearConnectorConfig::new(proxy,
+    ///                                                  AddrsConfig::default(),
+    ///                                                  Retry::default());
     /// let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
     /// let bind = UDPFarChannelConfig::new(addr.ip(), addr.port());
     /// let auth = SOCKS5AuthNConfig::Password {
@@ -3246,7 +3448,7 @@ impl TCPNearAcceptorConfig {
     }
 }
 
-impl TCPNearConnectorConfig {
+impl TCPResolvingNearConnectorConfig {
     /// Create a new `TCPNearConnectorConfig` from its components.
     ///
     /// The arguments of this function correspond to similarly-named
@@ -3264,7 +3466,7 @@ impl TCPNearConnectorConfig {
     /// # use constellation_channels::config::AddrKind;
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::ResolverConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use std::path::PathBuf;
     /// # use std::time::Duration;
     /// #
@@ -3303,7 +3505,7 @@ impl TCPNearConnectorConfig {
     ///                        Duration::from_millis(50));
     ///
     /// assert_eq!(
-    ///     TCPNearConnectorConfig::new(endpoint, resolve, retry),
+    ///     TCPResolvingNearConnectorConfig::new(endpoint, resolve, retry),
     ///     serde_yaml::from_str(yaml).unwrap()
     /// );
     /// ```
@@ -3328,7 +3530,7 @@ impl TCPNearConnectorConfig {
         retry: Retry,
         unsafe_opts: TCPNearChannelConfigUnsafe
     ) -> Self {
-        TCPNearConnectorConfig {
+        TCPResolvingNearConnectorConfig {
             unsafe_opts: unsafe_opts,
             endpoint: endpoint,
             resolve: resolve,
@@ -3380,7 +3582,7 @@ impl TCPNearConnectorConfig {
     }
 }
 
-impl TCPNearConnectorPartialConfig {
+impl TCPResolvingNearConnectorPartialConfig {
     /// Create a new `TCPNearConnectorPartialConfig` from its components.
     ///
     /// The arguments of this function correspond to similarly-named
@@ -3396,7 +3598,7 @@ impl TCPNearConnectorPartialConfig {
     /// # use constellation_channels::config::AddrKind;
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::ResolverConfig;
-    /// # use constellation_channels::config::TCPNearConnectorPartialConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorPartialConfig;
     /// # use std::path::PathBuf;
     /// # use std::time::Duration;
     /// #
@@ -3431,7 +3633,7 @@ impl TCPNearConnectorPartialConfig {
     ///                        Duration::from_millis(50));
     ///
     /// assert_eq!(
-    ///     TCPNearConnectorPartialConfig::new(resolve, retry),
+    ///     TCPResolvingNearConnectorPartialConfig::new(resolve, retry),
     ///     serde_yaml::from_str(yaml).unwrap()
     /// );
     /// ```
@@ -3453,7 +3655,7 @@ impl TCPNearConnectorPartialConfig {
         retry: Retry,
         unsafe_opts: TCPNearChannelConfigUnsafe
     ) -> Self {
-        TCPNearConnectorPartialConfig {
+        TCPResolvingNearConnectorPartialConfig {
             unsafe_opts: unsafe_opts,
             resolve: resolve,
             retry: retry
@@ -3492,6 +3694,199 @@ impl TCPNearConnectorPartialConfig {
         self
     ) -> (AddrsConfig, Retry, TCPNearChannelConfigUnsafe) {
         (self.resolve, self.retry, self.unsafe_opts)
+    }
+}
+
+impl TCPNearConnectorConfig {
+    /// Create a new `TCPNearConnectorConfig` from its components.
+    ///
+    /// The arguments of this function correspond to similarly-named
+    /// fields in the YAML format.  See documentation for details.
+    ///
+    /// # Examples
+    ///
+    /// The following example shows the equivalence between this
+    /// function and parsing a YAML configuration:
+    ///
+    /// ```
+    /// # use constellation_common::retry::Retry;
+    /// # use constellation_common::net::IPEndpointAddr;
+    /// # use constellation_common::net::IPEndpoint;
+    /// # use constellation_channels::config::AddrKind;
+    /// # use constellation_channels::config::AddrsConfig;
+    /// # use constellation_channels::config::ResolverConfig;
+    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use std::path::PathBuf;
+    /// # use std::time::Duration;
+    /// #
+    /// let yaml = concat!("addr: test.example.com\n",
+    ///                    "port: 5015\n",
+    ///                    "retry:\n",
+    ///                    "  factor: 100ms\n",
+    ///                    "  exp-base: 2.0\n",
+    ///                    "  exp-factor: 1.0\n",
+    ///                    "  exp-rounds-cap: 20\n",
+    ///                    "  linear-factor: 1.0\n",
+    ///                    "  linear-rounds-cap: 50\n",
+    ///                    "  max-random: 100ms\n",
+    ///                    "  addend: 50ms\n");
+    /// let endpoint = IPEndpointAddr::name(String::from("test.example.com"));
+    /// let endpoint = IPEndpoint::new(endpoint, 5015);
+    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
+    ///                        20, 1.0, Some(50), Duration::from_millis(100),
+    ///                        Duration::from_millis(50));
+    ///
+    /// assert_eq!(
+    ///     TCPNearConnectorConfig::new(endpoint, retry),
+    ///     serde_yaml::from_str(yaml).unwrap()
+    /// );
+    /// ```
+    #[inline]
+    pub fn new(
+        endpoint: IPEndpoint,
+        retry: Retry
+    ) -> Self {
+        Self::new_with_unsafe(
+            endpoint,
+            retry,
+            TCPNearChannelConfigUnsafe::default()
+        )
+    }
+
+    #[inline]
+    pub fn new_with_unsafe(
+        endpoint: IPEndpoint,
+        retry: Retry,
+        unsafe_opts: TCPNearChannelConfigUnsafe
+    ) -> Self {
+        TCPNearConnectorConfig {
+            unsafe_opts: unsafe_opts,
+            endpoint: endpoint,
+            retry: retry
+        }
+    }
+
+    /// Get the [IPEndpoint] to which this `TCPConnectorConfig`
+    /// attempts to connect.
+    #[inline]
+    pub fn endpoint(&self) -> &IPEndpoint {
+        &self.endpoint
+    }
+
+    /// Get the [Retry] configuration for backoff delays for failed
+    /// connection attempt.
+    #[inline]
+    pub fn retry(&self) -> &Retry {
+        &self.retry
+    }
+
+    /// Get the unsafe options.
+    #[inline]
+    pub fn unsafe_opts(&self) -> &TCPNearChannelConfigUnsafe {
+        &self.unsafe_opts
+    }
+
+    /// Decompose this `TCPNearConnectorConfig` into its components.
+    ///
+    /// The components in order are:
+    ///
+    /// - The [IPEndpoint] to which this attempts to connect
+    ///   ([endpoint](TCPNearConnectorConfig::endpoint))
+    /// - The retry configuration for failed connection attempts
+    ///   ([retry](TCPNearConnectorConfig::retry))
+    #[inline]
+    pub(crate) fn take(
+        self
+    ) -> (IPEndpoint, Retry, TCPNearChannelConfigUnsafe) {
+        (self.endpoint, self.retry, self.unsafe_opts)
+    }
+}
+
+impl TCPNearConnectorPartialConfig {
+    /// Create a new `TCPNearConnectorPartialConfig` from its components.
+    ///
+    /// The arguments of this function correspond to similarly-named
+    /// fields in the YAML format.  See documentation for details.
+    ///
+    /// # Examples
+    ///
+    /// The following example shows the equivalence between this
+    /// function and parsing a YAML configuration:
+    ///
+    /// ```
+    /// # use constellation_common::retry::Retry;
+    /// # use constellation_channels::config::AddrKind;
+    /// # use constellation_channels::config::AddrsConfig;
+    /// # use constellation_channels::config::ResolverConfig;
+    /// # use constellation_channels::config::TCPNearConnectorPartialConfig;
+    /// # use std::path::PathBuf;
+    /// # use std::time::Duration;
+    /// #
+    /// let yaml = concat!("retry:\n",
+    ///                    "  factor: 100ms\n",
+    ///                    "  exp-base: 2.0\n",
+    ///                    "  exp-factor: 1.0\n",
+    ///                    "  exp-rounds-cap: 20\n",
+    ///                    "  linear-factor: 1.0\n",
+    ///                    "  linear-rounds-cap: 50\n",
+    ///                    "  max-random: 100ms\n",
+    ///                    "  addend: 50ms\n");
+    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
+    ///                        20, 1.0, Some(50), Duration::from_millis(100),
+    ///                        Duration::from_millis(50));
+    ///
+    /// assert_eq!(
+    ///     TCPNearConnectorPartialConfig::new(retry),
+    ///     serde_yaml::from_str(yaml).unwrap()
+    /// );
+    /// ```
+    #[inline]
+    pub fn new(
+        retry: Retry
+    ) -> Self {
+        Self::new_with_unsafe(
+            retry,
+            TCPNearChannelConfigUnsafe::default()
+        )
+    }
+
+    #[inline]
+    pub fn new_with_unsafe(
+        retry: Retry,
+        unsafe_opts: TCPNearChannelConfigUnsafe
+    ) -> Self {
+        TCPNearConnectorPartialConfig {
+            unsafe_opts: unsafe_opts,
+            retry: retry
+        }
+    }
+
+    /// Get the [Retry] configuration for backoff delays for failed
+    /// connection attempt.
+    #[inline]
+    pub fn retry(&self) -> &Retry {
+        &self.retry
+    }
+
+    /// Get the unsafe options.
+    #[inline]
+    pub fn unsafe_opts(&self) -> &TCPNearChannelConfigUnsafe {
+        &self.unsafe_opts
+    }
+
+    /// Decompose this `TCPNearConnectorConfig` into its components.
+    ///
+    /// The components in order are:
+    ///
+    /// - The name resolution configuration
+    ///   ([resolve](TCPNearConnectorConfig::resolve))
+    /// - The retry configuration for failed connection attempts
+    ///   ([retry](TCPNearConnectorConfig::retry))
+    #[inline]
+    pub(crate) fn take(
+        self
+    ) -> (Retry, TCPNearChannelConfigUnsafe) {
+        (self.retry, self.unsafe_opts)
     }
 }
 
@@ -3905,7 +4300,7 @@ fn test_deserialize_tcp_connector_cfg() {
         "  addr-policy: [ ipv6 ]\n",
         "  renewal: 3600000"
     );
-    let expected = TCPNearConnectorConfig {
+    let expected = TCPResolvingNearConnectorConfig {
         unsafe_opts: TCPNearChannelConfigUnsafe::default(),
         endpoint: IPEndpoint::new(
             IPEndpointAddr::Name(String::from("example.com")),

@@ -183,7 +183,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
 use crate::unix::UnixSocketPath;
 
-pub mod channels;
+//pub mod channels;
 pub mod compound;
 #[cfg(feature = "dtls")]
 pub mod dtls;

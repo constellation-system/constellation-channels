@@ -292,26 +292,17 @@ pub trait NearChannelCreateWithEndpoint: NearChannel + Sized {
     ///
     /// * `ctx`: Context to use to obtain name caches.
     /// * `config`: Configuration object to use to create the channel.
+    /// * `endpoint`: The endpoint to which to connect.
+    /// * `verify_endpoint`: Optional endpoint to use to verify TLS
+    ///   connections.
     fn create_with_endpoint<Ctx>(
         ctx: &mut Ctx,
         config: Self::Config,
-        endpoint: Self::EndpointConfig
+        endpoint: Self::EndpointConfig,
+        verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx;
-
-    /// Get the IP address to which this `NearConnector` connects, if
-    /// applicable.
-    ///
-    /// The default behavior is to return `None`.  This is used to
-    /// configure TLS connectors based on their underlying connectors.
-    ///
-    /// # Parameters
-    ///
-    /// * `endpoint`: Configuration object used to create the channel.
-    fn verify_endpoint(
-        endpoint: &Self::EndpointConfig
-    ) -> Option<&IPEndpointAddr>;
 }
 
 /// Interface for client-side near-link channels.

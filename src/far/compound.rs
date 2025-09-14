@@ -129,7 +129,7 @@ use crate::far::FarChannelCreate;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::near::compound::CompoundNearClientConn;
-use crate::near::compound::CompoundNearConnector;
+use crate::near::compound::CompoundResolvingNearConnector;
 use crate::near::compound::CompoundNearConnectorState;
 use crate::near::compound::CompoundNearConnectorCreateError;
 use crate::near::compound::CompoundNearConnectorStartError;
@@ -141,7 +141,7 @@ use crate::unix::UnixSocketPath;
 
 /// Type alias for [CompoundNearConnector] instances that use
 /// [TLSPeerConfig] as their TLS configuration.
-type ProxyNearConnector = CompoundNearConnector<TLSPeerConfig>;
+type ProxyNearConnector = CompoundResolvingNearConnector<TLSPeerConfig>;
 
 /// Versatile IP-only far-link channel.
 ///
@@ -2820,7 +2820,7 @@ where
                 CompoundFarIPChannel::SOCKS5 { socks5 },
                 CompoundFarIPChannelParam::SOCKS5 { socks5: param }
             ) => <SOCKS5FarChannel<
-                   CompoundNearConnector<TLSPeerConfig>,
+                   CompoundResolvingNearConnector<TLSPeerConfig>,
                    CompoundFarIPChannelXfrmPeerAddr,
                    CompoundFarIPChannel
                 > as FarChannelXfrm<CompoundFarIPChannelXfrm<UDP>,
@@ -3602,7 +3602,7 @@ where
                 Ok(CompoundInboundNegotiator::Basic)
             }
             CompoundFarIPChannel::SOCKS5 { socks5, .. } => {
-                <SOCKS5FarChannel<CompoundNearConnector<TLSPeerConfig>,
+                <SOCKS5FarChannel<CompoundResolvingNearConnector<TLSPeerConfig>,
                                   CompoundFarIPChannelXfrmPeerAddr,
                                   CompoundFarIPChannel> as
                  FarChannelFlows<CompoundFarIPChannelXfrm<UDP>,
@@ -3633,7 +3633,7 @@ where
                 Ok(CompoundOutboundNegotiator::Basic)
             }
             CompoundFarIPChannel::SOCKS5 { socks5, .. } => {
-                <SOCKS5FarChannel<CompoundNearConnector<TLSPeerConfig>,
+                <SOCKS5FarChannel<CompoundResolvingNearConnector<TLSPeerConfig>,
                                   CompoundFarIPChannelXfrmPeerAddr,
                                   CompoundFarIPChannel> as
                  FarChannelFlows<CompoundFarIPChannelXfrm<UDP>,

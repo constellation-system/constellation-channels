@@ -25,7 +25,7 @@ use constellation_channels::near::read_one;
 use constellation_channels::near::write_one;
 use constellation_channels::near::negotiate_one;
 use constellation_channels::near::tcp::TCPNearAcceptor;
-use constellation_channels::near::tcp::TCPNearConnector;
+use constellation_channels::near::tcp::TCPResolvingNearConnector;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::retry::RetryResult;
 use log::info;
@@ -91,7 +91,8 @@ fn client() {
     let mut nscaches = SharedNSNameCaches::new();
     let session = Token(0);
     let mut poll = Poll::new().expect("Expected success");
-    let mut conn = TCPNearConnector::create(&mut nscaches, connect_config)
+    let mut conn = TCPResolvingNearConnector
+        ::create(&mut nscaches, connect_config)
         .expect("expected success");
 
     info!("created channel");

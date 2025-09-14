@@ -422,25 +422,21 @@ impl NearChannelCreate for UnixNearConnector {
 
 impl NearChannelCreateWithEndpoint for UnixNearConnector {
     type Config = UnixNearConnectorPartialConfig;
-    type EndpointConfig = UnixSocketPath;
-    type CreateError = Infallible;
+    type EndpointConfig = UnixSocketAddr;
+    type CreateError = Error;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
         _caches: &mut Ctx,
         _config: UnixNearConnectorPartialConfig,
-        endpoint: UnixSocketPath
+        endpoint: UnixSocketAddr,
+        _verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        Ok(UnixNearConnector { path: endpoint })
-    }
+        let path = UnixSocketPath::try_from(&endpoint)?;
 
-    #[inline]
-    fn verify_endpoint(
-        _endpoint: &Self::EndpointConfig
-    ) -> Option<&IPEndpointAddr> {
-        None
+        Ok(UnixNearConnector { path: path })
     }
 }
 
@@ -542,13 +538,14 @@ fn test_send_recv() {
 
     let client_barrier = barrier.clone();
     let mut client_nscaches = nscaches.clone();
-    let endpoint = UnixSocketPath::try_from(&path).expect("Expected success");
+    let endpoint = UnixSocketAddr::try_from(&path).expect("Expected success");
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
             UnixNearConnector::create_with_endpoint(&mut client_nscaches,
-                                                    connect_config, endpoint)
+                                                    connect_config,
+                                                    endpoint, None)
             .expect("expected success");
 
         client_barrier.wait();
@@ -633,13 +630,14 @@ fn test_send_close() {
 
     let client_barrier = barrier.clone();
     let mut client_nscaches = nscaches.clone();
-    let endpoint = UnixSocketPath::try_from(&path).expect("Expected success");
+    let endpoint = UnixSocketAddr::try_from(&path).expect("Expected success");
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
             UnixNearConnector::create_with_endpoint(&mut client_nscaches,
-                                                    connect_config, endpoint)
+                                                    connect_config,
+                                                    endpoint, None)
             .expect("expected success");
 
         client_barrier.wait();
@@ -723,13 +721,14 @@ fn test_recv_close() {
 
     let client_barrier = barrier.clone();
     let mut client_nscaches = nscaches.clone();
-    let endpoint = UnixSocketPath::try_from(&path).expect("Expected success");
+    let endpoint = UnixSocketAddr::try_from(&path).expect("Expected success");
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
         let mut conn =
             UnixNearConnector::create_with_endpoint(&mut client_nscaches,
-                                                    connect_config, endpoint)
+                                                    connect_config,
+                                                    endpoint, None)
             .expect("expected success");
 
         client_barrier.wait();

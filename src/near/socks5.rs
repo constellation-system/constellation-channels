@@ -134,7 +134,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 ///
 /// ```
 /// # use constellation_channels::near::NearChannelCreate;
-/// # use constellation_channels::near::tcp::TCPNearConnector;
+/// # use constellation_channels::near::tcp::TCPResolvingNearConnector;
 /// # use constellation_channels::near::socks5::SOCKS5NearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
@@ -152,7 +152,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector: SOCKS5NearConnector<TCPNearConnector> =
+/// let connector: SOCKS5NearConnector<TCPResolvingNearConnector> =
 ///     SOCKS5NearConnector::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
@@ -207,30 +207,32 @@ pub struct SOCKS5SessionNegotiation<Proxy> {
 }
 
 #[derive(Debug)]
-pub enum SOCKS5NegotiateError<Inner, Proxy, Endpoint> {
+pub enum SOCKS5NegotiateError<Inner, Proxy> {
     Inner {
+        endpoint: IPEndpoint,
         err: Inner,
     },
     SOCKS5 {
-        endpoint: Endpoint,
+        endpoint: IPEndpoint,
         proxy: Proxy,
         err: SOCKS5Error
     },
     BadSplit
 }
 
-pub enum SOCKS5NegotiatePending<Inner, Proxy, Endpoint> {
+pub enum SOCKS5NegotiatePending<Inner, Proxy> {
     Inner {
+        endpoint: IPEndpoint,
         pending: Inner,
     },
     SOCKS5 {
-        endpoint: Endpoint,
+        endpoint: IPEndpoint,
         proxy: Proxy,
         err: <RawStateMachineError<SOCKS5State> as RecoverableError>::Completable
     }
 }
 
-impl<Inner> Negotiator<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint)>
+impl<Inner> Negotiator<(SOCKS5Stream<Inner::Conn>, IPEndpoint)>
     for SOCKS5NearConnector<Inner>
 where
     Inner: NearConnector + NearChannelCreate
@@ -238,33 +240,37 @@ where
     type State = SOCKS5SessionNegotiation<Inner::State>;
     type NegotiateError = SOCKS5NegotiateError<
         Inner::NegotiateError,
-        Inner::Conn,
-        Inner::Endpoint
+        Inner::Conn
     >;
     type Pending = SOCKS5NegotiatePending<
         Inner::Pending,
         Inner::Conn,
-        Inner::Endpoint,
      >;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint),
+    ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, IPEndpoint),
                                  Self::Pending>,
                 Self::NegotiateError> {
+        let endpoint = state.params.target();
+
         self.proxy.negotiate(state.proxy)
-            .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?
+            .map_err(|err| SOCKS5NegotiateError::Inner {
+                endpoint: endpoint.clone(),
+                err: err
+            })?
             .map_pending(|pending| SOCKS5NegotiatePending::Inner {
+                endpoint: endpoint.clone(),
                 pending: pending
             })
-            .flat_map_ok(|(mut stream, endpoint)| {
+            .flat_map_ok(|(mut stream, _)| {
                 let machine: RawStateMachine<SOCKS5State> =
                     RawStateMachine::new(self.params.clone());
 
                 match machine.run(&mut stream) {
                     Ok(socks5) => Ok(NegotiatorResult::Complete(
-                        (socks5.wrap_stream(stream), endpoint)
+                        (socks5.wrap_stream(stream), endpoint.clone())
                     )),
                     Err(err) => match err.split() {
                         (Some(pending), None) => Ok(NegotiatorResult::Pending(
@@ -290,19 +296,22 @@ where
         err: SOCKS5NegotiatePending<
             Inner::Pending,
             Inner::Conn,
-            Inner::Endpoint,
         >
-    ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, Inner::Endpoint),
+    ) -> Result<NegotiatorResult<(SOCKS5Stream<Inner::Conn>, IPEndpoint),
                                  Self::Pending>,
                 Self::NegotiateError> {
         match err {
-            SOCKS5NegotiatePending::Inner { pending } => self.proxy
+            SOCKS5NegotiatePending::Inner { pending, endpoint } => self.proxy
                 .complete_negotiate(pending)
-                .map_err(|err| SOCKS5NegotiateError::Inner { err: err })?
+                .map_err(|err| SOCKS5NegotiateError::Inner {
+                    endpoint: endpoint.clone(),
+                    err: err
+                })?
                 .map_pending(|pending| SOCKS5NegotiatePending::Inner {
+                    endpoint: endpoint.clone(),
                     pending: pending
                 })
-                .flat_map_ok(|(mut stream, endpoint)| {
+                .flat_map_ok(|(mut stream, _)| {
                     let machine: RawStateMachine<SOCKS5State> =
                         RawStateMachine::new(self.params.clone());
 
@@ -364,7 +373,7 @@ impl<Conn> NearChannel for SOCKS5NearConnector<Conn>
 where
     Conn: NearConnector + NearChannelCreate
 {
-    type Endpoint = Conn::Endpoint;
+    type Endpoint = IPEndpoint;
     type StartError = Conn::StartError;
     type Conn = SOCKS5Stream<Conn::Conn>;
 
@@ -388,11 +397,10 @@ where
         err: SOCKS5NegotiateError<
             Conn::NegotiateError,
             Conn::Conn,
-            Conn::Endpoint
         >
     ) -> Result<(), Error> {
         match err {
-            SOCKS5NegotiateError::Inner { err } =>
+            SOCKS5NegotiateError::Inner { err, .. } =>
                 self.proxy.cleanup(registry, err),
             SOCKS5NegotiateError::SOCKS5 { mut proxy, .. } =>
                 registry.deregister(&mut proxy),
@@ -406,13 +414,13 @@ where
     Conn: NearConnector + NearChannelCreate
 {
     /// Type of endpoint references.
-    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    type EndpointRef<'a> = &'a IPEndpoint
     where
         Self: 'a;
 
     #[inline]
     fn endpoint(&self) -> Self::EndpointRef<'_> {
-        self.proxy.endpoint()
+        self.params.target()
     }
 
     #[inline]
@@ -472,7 +480,8 @@ where
     fn create_with_endpoint<Ctx>(
         caches: &mut Ctx,
         config: Self::Config,
-        target: IPEndpoint
+        target: IPEndpoint,
+        _verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
@@ -494,36 +503,27 @@ where
             proxy: proxy
         })
     }
-
-    #[inline]
-    fn verify_endpoint(
-        endpoint: &Self::EndpointConfig
-    ) -> Option<&IPEndpointAddr> {
-        Some(endpoint.ip_addr())
-    }
 }
 
-impl<Inner, Proxy, Endpoint> ScopedError
-    for SOCKS5NegotiateError<Inner, Proxy, Endpoint>
+impl<Inner, Proxy> ScopedError for SOCKS5NegotiateError<Inner, Proxy>
 where Inner: ScopedError {
     fn scope(&self) -> ErrorScope {
         match self {
-            SOCKS5NegotiateError::Inner { err } => err.scope(),
+            SOCKS5NegotiateError::Inner { err, .. } => err.scope(),
             SOCKS5NegotiateError::SOCKS5 { err, .. } => err.scope(),
             SOCKS5NegotiateError::BadSplit => ErrorScope::Unrecoverable
         }
     }
 }
 
-impl<Inner, Proxy, Endpoint> Display
-    for SOCKS5NegotiateError<Inner, Proxy, Endpoint>
+impl<Inner, Proxy> Display for SOCKS5NegotiateError<Inner, Proxy>
 where Inner: Display {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SOCKS5NegotiateError::Inner { err } => err.fmt(f),
+            SOCKS5NegotiateError::Inner { err, .. } => err.fmt(f),
             SOCKS5NegotiateError::SOCKS5 { err, .. } =>
                 write!(f, "{}", err),
             SOCKS5NegotiateError::BadSplit =>

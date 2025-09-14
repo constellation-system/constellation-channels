@@ -122,7 +122,7 @@ pub enum NearChannelsEntryCreateError<Accept, AuthN> {
 pub enum NearChannelsEntrySessionError<Conn> {
     Conn {
         err: Conn
-    }
+    },
     /// Session is already active
     Active
 }

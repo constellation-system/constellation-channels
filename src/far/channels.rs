@@ -1073,7 +1073,7 @@ where
         Option<AuthN::AuthNSession>,
         SessionNegoStepError<AuthN::NegotiateError>
     >
-    where Addr: Display
+    where Addr: Display + Eq + Hash
     {
         let state = self.state.take();
 
@@ -1219,13 +1219,16 @@ where
         }
     }
 
-    fn get_flow(
+    fn req_flow(
         &mut self,
         authn: &AuthN,
         retry: &Retry,
         backlog_size: Option<usize>,
-        param: &OutboundNego::Param,
-        addr: &Xfrm::PeerAddr,
+        in_param: &InboundNego::Param,
+        out_param: &OutboundNego::Param,
+        endpoint: &Xfrm::PeerAddr,
+        ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
+        sessions: &mut Vec<AuthN::AuthNSession>
     ) -> Result<
         RetryResult<SessionResult<'_, AuthN::AuthNSession>>,
         FlowStateGetFlowError<
@@ -1235,6 +1238,28 @@ where
                            OutboundNego::NegotiateError>
         >
     > {
+        let now = Instant::now();
+        let ent = match self.sessions.entry(endpoint.clone()) {
+            Entry::Occupied(ent) => ent.get_mut(),
+            Entry::Vacant(mut ent) => ent.insert(FlowNegoState {
+                state: None,
+                nretries: 0,
+                when: now
+            })
+        };
+
+        if ent.when <= now {
+            let out = ent.get_flow(&mut self.flows, authn, retry,
+                                   backlog_size, out_param, endpoint)?;
+
+            // Listen, to handle any generated traffic.
+            self.listen(authn, retry, backlog_size, in_param,
+                        ext_endpoints, sessions)?;
+
+            Ok(out)
+        } else {
+            Ok(RetryResult::Retry(ent.when))
+        }
     }
 
     fn listen(
@@ -1259,6 +1284,7 @@ where
         let mut flows = Vec::new();
 
         while {
+
             let mut read = false;
 
             loop {
@@ -1272,18 +1298,28 @@ where
                             match res {
                                 // New flow was created.
                                 ListenResult::New { endpoint, flow } => {
+                                    trace!(target: "flows-nego-state",
+                                           "got new flow from {}",
+                                           endpoint);
+
                                     flows.push((endpoint, flow));
                                 }
                                 // Update to an existing flow.
-                                ListenResult::Existing { endpoint } =>
-                                    // See if there's a pending session.
-                                    if self.sessions.contains_key(&endpoint) {
-                                        endpoints.insert(endpoint);
-                                    } else {
-                                        // No pending session; this is an
-                                        // external one.
-                                        ext_endpoints.insert(endpoint);
-                                    }
+                                ListenResult::Existing { endpoint } => if self
+                                    .sessions.contains_key(&endpoint) {
+                                    trace!(target: "flows-nego-state",
+                                           "traffic on pending session {}",
+                                           endpoint);
+
+                                    endpoints.insert(endpoint);
+                                } else {
+                                    // This shouldn't happen; we're
+                                    // missing a session.
+
+                                    error!(target: "flows-nego-state",
+                                           "traffic on nonexistent session {}",
+                                           endpoint);
+                                }
                             }
                         }
                     }
@@ -1300,17 +1336,34 @@ where
 
             // Process all new sessions.
             for (endpoint, flow) in flows.drain(..) {
+                debug!(target: "flows-nego-state",
+                       "handling incoming flow {}",
+                       endpoint);
+
                 match self.sessions.entry(endpoint) {
-                    Entry::Occupied(mut ent) => if let Some(session) = ent
-                        .get_mut()
-                        .recv_flow(authn, retry, backlog_size, flow)
-                        .map_err(|err| SessionListenError::Start {
-                            err: err
-                        })? {
-                        // Session negotiations complete; report it out.
-                        sessions.push(session)
+                    Entry::Occupied(mut ent) => {
+                        trace!(target: "flows-nego-state",
+                               "entry for flow {} already exists",
+                               ent.key());
+
+                        if let Some(session) = ent
+                            .get_mut()
+                            .recv_flow(authn, retry, backlog_size, flow)
+                            .map_err(|err| SessionListenError::Start {
+                                err: err
+                            })? {
+                            debug!(target: "flows-nego-state",
+                                   "reporting completed session");
+
+                            // Session negotiations complete; report it out.
+                            sessions.push(session)
+                        }
                     },
                     Entry::Vacant(ent) => {
+                        trace!(target: "flows-nego-state",
+                               "no entry for flow {}",
+                               ent.key());
+
                         let (state, session) =
                             FlowNegoState::from_flow(authn, retry,
                                                      backlog_size, flow)
@@ -1321,6 +1374,9 @@ where
                         ent.insert(state);
 
                         if let Some(session) = session {
+                            debug!(target: "flows-nego-state",
+                                   "reporting completed session");
+
                             // Session negotiations complete; report it out.
                             sessions.push(session)
                         }
@@ -1330,6 +1386,10 @@ where
 
             // Process all negotiation steps
             for endpoint in endpoints.drain() {
+                trace!(target: "flows-nego-state",
+                       "traffic on flow {}",
+                       endpoint);
+
                 // Look up the session.
                 if let Some(ent) = self.sessions.get_mut(&endpoint) {
                     // Step negotiations.
@@ -1338,6 +1398,9 @@ where
                         .map_err(|err| SessionListenError::Step {
                             err: err
                         })? {
+                        debug!(target: "flows-nego-state",
+                               "reporting completed session");
+
                         // Session negotiations complete; report it out.
                         sessions.push(session)
                     }

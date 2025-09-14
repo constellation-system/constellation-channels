@@ -215,7 +215,7 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
 /// ```
 /// # use constellation_channels::config::tls::TLSClientConfig;
 /// # use constellation_channels::near::NearChannelCreate;
-/// # use constellation_channels::near::tcp::TCPNearConnector;
+/// # use constellation_channels::near::tcp::TCPResolvingNearConnector;
 /// # use constellation_channels::near::tls::TLSNearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
@@ -229,7 +229,8 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector: TLSNearConnector<TCPNearConnector, TLSClientConfig> =
+/// let connector: TLSNearConnector<TCPResolvingNearConnector,
+///                                 TLSClientConfig> =
 ///     TLSNearConnector::create(&mut nscaches, accept_config).unwrap();
 /// ```
 ///
@@ -867,14 +868,15 @@ where
     fn create_with_endpoint<Ctx>(
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>,
-        endpoint: Conn::EndpointConfig
+        endpoint: Conn::EndpointConfig,
+        verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
         let (tls, config) = config.take();
         let verify_endpoint = match tls.verify_endpoint() {
             Some(endpoint) => Ok(endpoint),
-            None => match Self::verify_endpoint(&endpoint) {
+            None => match verify_endpoint {
                 Some(endpoint) => Ok(endpoint),
                 None => Err(TLSSessionCreateError::Session {
                     error: TLSCreateError::NoName
@@ -899,7 +901,8 @@ where
             // XXX This should probably produce an error.
             IPEndpointAddr::Addr(_) => String::new()
         };
-        let inner = Conn::create_with_endpoint(caches, config, endpoint)
+        let inner = Conn::create_with_endpoint(caches, config, endpoint,
+                                               Some(verify_endpoint))
             .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
 
         Ok(TLSNearConnector {
@@ -908,13 +911,6 @@ where
             domain: domain,
             inner: inner
         })
-    }
-
-    #[inline]
-    fn verify_endpoint(
-        endpoint: &Self::EndpointConfig
-    ) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(endpoint)
     }
 }
 
@@ -1047,19 +1043,14 @@ where
     fn create_with_endpoint<Ctx>(
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>,
-        endpoint: Conn::EndpointConfig
+        endpoint: Conn::EndpointConfig,
+        verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<Box<TLSNearConnector<Conn, TLS>>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
         Ok(Box::new(TLSNearConnector::create_with_endpoint(caches, config,
-                                                           endpoint)?))
-    }
-
-    #[inline]
-    fn verify_endpoint(
-        endpoint: &Self::EndpointConfig
-    ) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(endpoint)
+                                                           endpoint,
+                                                           verify_endpoint)?))
     }
 }
 
@@ -1303,8 +1294,6 @@ where
 }
 
 #[cfg(test)]
-use std::fs::metadata;
-#[cfg(test)]
 use std::thread::spawn;
 
 #[cfg(test)]
@@ -1317,8 +1306,6 @@ use crate::config::TLSNearAcceptorConfig;
 use crate::config::TLSNearConnectorConfig;
 #[cfg(test)]
 use crate::config::UnixNearChannelConfig;
-#[cfg(test)]
-use crate::config::UnixNearConnectorConfig;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
@@ -1381,8 +1368,6 @@ const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 #[cfg(test)]
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
-#[cfg(test)]
-use std::net::Shutdown;
 #[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]

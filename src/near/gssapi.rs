@@ -1289,23 +1289,18 @@ where
     fn create_with_endpoint<Ctx>(
         caches: &mut Ctx,
         config: Self::Config,
-        endpoint: C::EndpointConfig
+        endpoint: C::EndpointConfig,
+        verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        let inner = C::create_with_endpoint(caches, config.inner, endpoint)?;
+        let inner = C::create_with_endpoint(caches, config.inner, endpoint,
+                                            verify_endpoint)?;
 
         Ok(GSSAPINearConnector {
             inner: inner,
             params: config.gssapi
         })
-    }
-
-    #[inline]
-    fn verify_endpoint(
-        endpoint: &Self::EndpointConfig
-    ) -> Option<&IPEndpointAddr> {
-        C::verify_endpoint(endpoint)
     }
 }
 

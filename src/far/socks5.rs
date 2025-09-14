@@ -227,7 +227,7 @@ use crate::resolve::Resolver;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::socks5::SOCKS5FarChannel;
 /// # use constellation_channels::far::udp::UDPFarChannel;
-/// # use constellation_channels::near::tcp::TCPNearConnector;
+/// # use constellation_channels::near::tcp::TCPResolvingNearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = concat!(
@@ -243,7 +243,8 @@ use crate::resolve::Resolver;
 /// let socks5_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let channel: SOCKS5FarChannel<TCPNearConnector, SocketAddr, UDPFarChannel> =
+/// let channel: SOCKS5FarChannel<TCPResolvingNearConnector, SocketAddr,
+///                               UDPFarChannel> =
 ///     SOCKS5FarChannel::create(&mut nscaches, &mut once(Token(0)),
 ///                              socks5_config).unwrap();
 /// ```
