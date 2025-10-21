@@ -990,11 +990,13 @@ where
     Xfrm::PeerAddr: From<InnerXfrm::PeerAddr>,
     <Datagram::Socket as Socket>::Addr: From<SocketAddr>
 {
-    type OutboundNego = Datagram::OutboundNego;
-    type InboundNego = Datagram::InboundNego;
-    type OutboundNegoError = Datagram::OutboundNegoError;
-    type InboundNegoError = Datagram::InboundNegoError;
     type Flow = Datagram::Flow;
+    type InboundNego = Datagram::InboundNego;
+    type OutboundNego = Datagram::OutboundNego;
+    type ShutdownNego = Datagram::ShutdownNego;
+    type InboundNegoError = Datagram::InboundNegoError;
+    type OutboundNegoError = Datagram::OutboundNegoError;
+    type ShutdownNegoError = Datagram::ShutdownNegoError;
 
     #[inline]
     fn inbound_negotiator(
@@ -1008,6 +1010,13 @@ where
         &self
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
         self.datagram.outbound_negotiator()
+    }
+
+    #[inline]
+    fn shutdown_negotiator(
+        &self
+    ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
+        self.datagram.shutdown_negotiator()
     }
 }
 

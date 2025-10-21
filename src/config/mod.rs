@@ -1284,8 +1284,12 @@ pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
 #[serde(rename = "dtls")]
 #[serde(rename_all = "kebab-case")]
 pub struct DTLSFarChannelConfig<Inner> {
-    #[serde(default)]
-    retry: Retry,
+    #[serde(default = "DTLSFarChannelConfig::<Inner>::default_shutdown_retry")]
+    shutdown_retry: Retry,
+    #[serde(default = "DTLSFarChannelConfig::<Inner>::default_shutdown_timeout")]
+    #[serde(deserialize_with = "Retry::deserialize_time")]
+    #[serde(serialize_with = "Retry::serialize_time")]
+    shutdown_timeout: Duration,
     #[serde(flatten)]
     tls: TLSChannelConfig<TLSPeerConfig, Inner>
 }
@@ -1819,6 +1823,8 @@ pub struct ThreadedNSNameCachesConfig {
     /// Interval at which the renewer thread will periodically try to
     /// refresh names.
     #[serde(default = "ThreadedNSNameCachesConfig::default_renewal")]
+    #[serde(deserialize_with = "Retry::deserialize_time")]
+    #[serde(serialize_with = "Retry::serialize_time")]
     renewal: Duration,
     /// Retry configuration for the renewer thread.
     #[serde(default)]
@@ -3059,11 +3065,13 @@ impl<Endpoint> DTLSFarChannelConfig<Endpoint> {
     #[inline]
     pub fn new(
         tls: TLSChannelConfig<TLSPeerConfig, Endpoint>,
-        retry: Retry
+        shutdown_timeout: Duration,
+        shutdown_retry: Retry,
     ) -> Self {
         DTLSFarChannelConfig {
             tls: tls,
-            retry: retry
+            shutdown_timeout: shutdown_timeout,
+            shutdown_retry: shutdown_retry
         }
     }
 
@@ -3075,13 +3083,29 @@ impl<Endpoint> DTLSFarChannelConfig<Endpoint> {
 
     /// Get the retry configuration.
     #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
+    pub fn shutdown_retry(&self) -> &Retry {
+        &self.shutdown_retry
+    }
+
+    /// Get the retry configuration.
+    #[inline]
+    pub fn shutdown_timeout(&self) -> Duration {
+        self.shutdown_timeout
     }
 
     #[inline]
-    pub fn take(self) -> (TLSChannelConfig<TLSPeerConfig, Endpoint>, Retry) {
-        (self.tls, self.retry)
+    pub fn take(
+        self
+    ) -> (TLSChannelConfig<TLSPeerConfig, Endpoint>, Duration, Retry) {
+        (self.tls, self.shutdown_timeout, self.shutdown_retry)
+    }
+
+    fn default_shutdown_retry() -> Retry {
+        Retry::TERRESTRIAL_NETWORK_DEFAULT.clone()
+    }
+
+    fn default_shutdown_timeout() -> Duration {
+        Duration::from_secs(15)
     }
 }
 

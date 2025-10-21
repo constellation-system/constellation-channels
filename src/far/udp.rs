@@ -40,6 +40,7 @@ use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::PassthruNegotiator;
+use constellation_common::net::TrivialNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
@@ -348,11 +349,13 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
       <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
       Xfrm::LocalAddr: From<SocketAddr>,
       Xfrm: DatagramXfrm {
-    type OutboundNego = PassthruNegotiator;
     type InboundNego = PassthruNegotiator;
+    type OutboundNego = PassthruNegotiator;
+    type ShutdownNego = TrivialNegotiator;
     type Flow = BufferedFlow<Self::Socket, Xfrm>;
     type InboundNegoError = Infallible;
     type OutboundNegoError = Infallible;
+    type ShutdownNegoError = Infallible;
 
     #[inline]
     fn inbound_negotiator(
@@ -366,6 +369,13 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
         &self
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
         Ok(PassthruNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_negotiator(
+        &self
+    ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
+        Ok(TrivialNegotiator)
     }
 }
 

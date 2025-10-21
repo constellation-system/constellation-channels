@@ -73,6 +73,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::PassthruNegotiator;
+use constellation_common::net::TrivialNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
@@ -346,9 +347,11 @@ where UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
 {
     type OutboundNego = PassthruNegotiator;
     type InboundNego = PassthruNegotiator;
+    type ShutdownNego = TrivialNegotiator;
     type Flow = BufferedFlow<Self::Socket, Xfrm>;
     type InboundNegoError = Infallible;
     type OutboundNegoError = Infallible;
+    type ShutdownNegoError = Infallible;
 
     #[inline]
     fn inbound_negotiator(
@@ -362,6 +365,13 @@ where UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
         &self
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
         Ok(PassthruNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_negotiator(
+        &self
+    ) -> Result<Self::ShutdownNego, Self::OutboundNegoError> {
+        Ok(TrivialNegotiator)
     }
 }
 
