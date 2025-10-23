@@ -102,9 +102,11 @@ enum SessionNegoState<AuthPending> {
 ///
 /// This is used to store whether a session is in negotiations, or is
 /// active and has already been returned.
-enum SessionState<F, AuthN>
+enum SessionState<F, AuthN, ShutdownNego>
 where F: Flow,
-      AuthN: SessionAuthN<F>
+      AuthN: SessionAuthN<F>,
+      ShutdownNego: NegotiatorStart<(), F>,
+      ShutdownNego::NegotiateError: ScopedError
 {
     /// Session negotiation is pending.
     Pending {
@@ -112,7 +114,12 @@ where F: Flow,
         pending: SessionNegoState<AuthN::Pending>
     },
     /// A session has already been established.
-    Active
+    Active,
+    /// Session shutdown is pending.
+    Shutdown {
+        /// The pending shutdown negotiation state.
+        pending: ShutdownNego::Pending
+    }
 }
 
 /// Retry information for a given possible [Flows] instance.
@@ -121,18 +128,20 @@ struct FlowsRetry {
     retry_when: Instant
 }
 
-struct FlowNegoState<F, AuthN>
+struct FlowNegoState<F, AuthN, ShutdownNego>
 where F: Flow,
-      AuthN: SessionAuthN<F>
+      AuthN: SessionAuthN<F>,
+      ShutdownNego: NegotiatorStart<(), F>,
+      ShutdownNego::NegotiateError: ScopedError
 {
-    state: Option<SessionState<F, AuthN>>,
+    state: Option<SessionState<F, AuthN, ShutdownNego>>,
      /// Number of retries.
     nretries: usize,
     /// When to retry next.
     when: Instant
 }
 
-struct FlowsEntry<F, Sock, InboundNego, OutboundNego, AuthN, Xfrm>
+struct FlowsEntry<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
 where
     F: Flow,
     Sock: Receiver + Sender + Source,
@@ -140,8 +149,10 @@ where
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
     OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    ShutdownNego: NegotiatorStart<(), F>,
     InboundNego::NegotiateError: ScopedError,
     OutboundNego::NegotiateError: ScopedError,
+    ShutdownNego::NegotiateError: ScopedError,
     AuthN: SessionAuthN<F>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -149,7 +160,7 @@ where
     Xfrm::LocalAddr: From<Sock::Addr>,
     Xfrm::Error: ScopedError
 {
-    sessions: HashMap<Xfrm::PeerAddr, FlowNegoState<F, AuthN>>,
+    sessions: HashMap<Xfrm::PeerAddr, FlowNegoState<F, AuthN, ShutdownNego>>,
     flows: Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
     retry: FlowsRetry
 }
@@ -171,7 +182,8 @@ where
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq,
     <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError
+    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
 {
     xfrm: PhantomData<Xfrm>,
     auth: PhantomData<AuthN>,
@@ -190,7 +202,7 @@ where
     flows: HashMap<
         Token,
         FlowsEntry<Channel::Flow, Channel::Socket, Channel::InboundNego,
-                   Channel::OutboundNego, AuthN, Xfrm>
+                   Channel::OutboundNego, Channel::ShutdownNego, AuthN, Xfrm>
     >,
     flows_config: FlowsConfig,
     xfrm_param: InnerXfrm::CreateParam,
@@ -215,7 +227,8 @@ where
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq,
     <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError
+    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
 {
     /// Session negotiation is pending.
     Pending {
@@ -236,6 +249,7 @@ where
         Display,
     <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
     <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
     AuthN: Clone + SessionAuthN<Channel::Flow>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -265,6 +279,7 @@ where
         Display,
     <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
     <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
     AuthN: Clone + SessionAuthN<Channel::Flow>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -378,16 +393,21 @@ pub enum SessionStateBacklogError {
 }
 
 #[derive(Debug)]
-pub enum SessionNegoStepError<AuthN> {
+pub enum SessionNegoStepError<AuthN, Shutdown> {
     /// Error occurred stepping session negotiations
     Auth {
         /// The error that occurred stepping session negotiations.
         err: AuthNegoStepError<AuthN>
+    },
+    /// An error occurred during shutdown negotiations.
+    Shutdown {
+        /// The error that occurred during shutdown negotiations.
+        err: Shutdown
     }
 }
 
 #[derive(Debug)]
-pub enum SessionListenError<Flows, Start, AuthN> {
+pub enum SessionListenError<Flows, Start, AuthN, Shutdown> {
     /// Error occurred listening for flows.
     Flows {
         /// Error that occurred listening for flows.
@@ -401,16 +421,16 @@ pub enum SessionListenError<Flows, Start, AuthN> {
     /// Error occurred stepping session negotiations
     Step {
         /// The error that occurred stepping session negotiations.
-        err: SessionNegoStepError<AuthN>
+        err: SessionNegoStepError<AuthN, Shutdown>
     }
 }
 
 #[derive(Debug)]
-pub enum SessionFlowsError<Flows, Listen, Start, AuthN> {
+pub enum SessionFlowsError<Flows, Listen, Start, AuthN, Shutdown> {
     /// Error orrucred listening for input after requesting.
     Listen {
         /// The error that occurred listening for input.
-        err: SessionListenError<Listen, Start, AuthN>
+        err: SessionListenError<Listen, Start, AuthN, Shutdown>
     },
     /// Error occurred requesting the flow.
     Flows {
@@ -446,7 +466,7 @@ pub enum AcquiredEntryCreateError<Resolve, Flows, Wrap> {
 }
 
 #[derive(Debug)]
-pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN> {
+pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown> {
     /// Error occurred refreshing addresses.
     Refresh {
         /// Error that occurred while refreshing addresses.
@@ -455,7 +475,7 @@ pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN> {
     /// Error occurred listening for flows.
     Listen {
         /// Error that occurred listening for flows.
-        err: SessionListenError<Flows, Start, AuthN>
+        err: SessionListenError<Flows, Start, AuthN, Shutdown>
     },
 }
 
@@ -602,12 +622,14 @@ impl<AuthPending> SessionNegoState<AuthPending> {
     }
 }
 
-impl<F, AuthN> FlowNegoState<F, AuthN>
+impl<F, AuthN, ShutdownNego> FlowNegoState<F, AuthN, ShutdownNego>
 where
     F: Flow,
     AuthN: SessionAuthN<F, Param = ()>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
+    ShutdownNego: NegotiatorStart<(), F>,
+    ShutdownNego::NegotiateError: ScopedError
 {
     /// Take an incoming negotiated session and create a state in the
     /// authentication phase.
@@ -959,12 +981,13 @@ where
     {
         if self.state.is_some() {
             match &mut self.state {
-                // Pending negotiation; return a reference to the backlog.
-                Some(SessionState::Pending { .. }) =>
-                    Ok(RetryResult::Success(None)),
                 // There's already an active session.
                 Some(SessionState::Active) =>
                     Err(FlowStateGetFlowError::Active),
+                // Negotiations are pending, there is no session.
+                Some(SessionState::Pending { .. } |
+                     SessionState::Shutdown { .. }) =>
+                    Ok(RetryResult::Success(None)),
                 // Impossible case.
                 None => Err(FlowStateGetFlowError::Impossible)
             }
@@ -1009,10 +1032,13 @@ where
             }
             // No existing state at all; start fresh in the
             // authentication state.
+            //
+            // Alternatively, shutdown negotiations were pending, and
+            // this discards them.
 
             // XXX Possibly rate-limit incoming connections to
             // avoid DoS?
-            None => {
+            Some(SessionState::Shutdown { .. }) | None => {
                 let res = SessionNegoState::auth(authn, flow);
 
                 self.handle_to_auth_result(retry, &peer, res)
@@ -1022,15 +1048,17 @@ where
 
     /// Take an incoming negotiated session and transition this state
     /// into the authentication phase.
-    fn step_auth<Addr>(
+    fn step<Addr>(
         &mut self,
         authn: &AuthN,
+        shutdown: &ShutdownNego,
         retry: &Retry,
         addr: Addr,
         ext_endpoints: &mut HashSet<Addr>
     ) -> Result<
         Option<AuthN::AuthNSession>,
-        SessionNegoStepError<AuthN::NegotiateError>
+        SessionNegoStepError<AuthN::NegotiateError,
+                             ShutdownNego::NegotiateError>
     >
     where Addr: Display + Eq + Hash
     {
@@ -1040,69 +1068,28 @@ where
             // A pending negotiation exists; step it.
             Some(SessionState::Pending { pending }) => match pending
                 .step_auth(authn) {
-            // Negotiations completed immediately; set the state
-            // to active and return.
-            Ok(NegotiatorResult::Complete(AuthNResult::Accept(out))) => {
-                info!(target: "flows-nego-state",
-                      "authenticated new session with {} over {}",
-                      out.prin(), addr);
-
-                self.state = Some(SessionState::Active);
-                self.nretries = 0;
-
-                Ok(Some(out))
-            },
-            // Authentication failed.
-            Ok(NegotiatorResult::Complete(AuthNResult::Reject(_))) => {
-                info!(target: "flows-nego-state",
-                      "authentication failed for session with {}",
-                      addr);
-
-                let delay = retry.retry_delay(self.nretries);
-
-                debug!(target: "flows-nego-state",
-                       "authentication failed, delay for {}.{:03}s",
-                       delay.as_secs(), delay.subsec_millis());
-
-                self.state = None;
-                self.nretries += 1;
-                self.when = Instant::now() + delay;
-
-                Ok(None)
-            }
-            // Negotiations stopped in a pending state.
-            Ok(NegotiatorResult::Pending(pending)) => {
-                self.state = Some(SessionState::Pending {
-                    pending: pending
-                });
-
-                Ok(None)
-            }
-            // Error occurred; check its scope.
-            Err(err) => match err.scope() {
-                // Pass these errors through.
-                ErrorScope::Unrecoverable |
-                ErrorScope::Shutdown |
-                ErrorScope::External |
-                ErrorScope::System => Err(SessionNegoStepError::Auth {
-                    err: err
-                }),
-                // Retry after a delay
-                scope => {
-                    if !matches![scope, ErrorScope::Session] {
-                        error!(target: "flows-nego-state",
-                               "shouldn't see error with scope {} here",
-                               scope);
-                    }
-
+                // Negotiations completed immediately; set the state
+                // to active and return.
+                Ok(NegotiatorResult::Complete(AuthNResult::Accept(out))) => {
                     info!(target: "flows-nego-state",
-                          "session with {} failed: {}",
-                          addr, err);
+                          "authenticated new session with {} over {}",
+                          out.prin(), addr);
+
+                    self.state = Some(SessionState::Active);
+                    self.nretries = 0;
+
+                    Ok(Some(out))
+                },
+                // Authentication failed.
+                Ok(NegotiatorResult::Complete(AuthNResult::Reject(_))) => {
+                    info!(target: "flows-nego-state",
+                          "authentication failed for session with {}",
+                          addr);
 
                     let delay = retry.retry_delay(self.nretries);
 
                     debug!(target: "flows-nego-state",
-                           "negotiation failed, delay for {}.{:03}s",
+                           "authentication failed, delay for {}.{:03}s",
                            delay.as_secs(), delay.subsec_millis());
 
                     self.state = None;
@@ -1111,7 +1098,48 @@ where
 
                     Ok(None)
                 }
-            }
+                // Negotiations stopped in a pending state.
+                Ok(NegotiatorResult::Pending(pending)) => {
+                    self.state = Some(SessionState::Pending {
+                        pending: pending
+                    });
+
+                    Ok(None)
+                }
+                // Error occurred; check its scope.
+                Err(err) => match err.scope() {
+                    // Pass these errors through.
+                    ErrorScope::Unrecoverable |
+                    ErrorScope::Shutdown |
+                    ErrorScope::External |
+                    ErrorScope::System => Err(SessionNegoStepError::Auth {
+                        err: err
+                    }),
+                    // Retry after a delay
+                    scope => {
+                        if !matches![scope, ErrorScope::Session] {
+                            error!(target: "flows-nego-state",
+                                   "shouldn't see error with scope {} here",
+                                   scope);
+                        }
+
+                        info!(target: "flows-nego-state",
+                              "session with {} failed: {}",
+                              addr, err);
+
+                        let delay = retry.retry_delay(self.nretries);
+
+                        debug!(target: "flows-nego-state",
+                               "negotiation failed, delay for {}.{:03}s",
+                               delay.as_secs(), delay.subsec_millis());
+
+                        self.state = None;
+                        self.nretries += 1;
+                        self.when = Instant::now() + delay;
+
+                        Ok(None)
+                    }
+                }
             }
             // There's already an active session, but this isn't an error.
             Some(SessionState::Active) => {
@@ -1119,10 +1147,32 @@ where
 
                 Ok(None)
             }
+            Some(SessionState::Shutdown { pending }) => match shutdown
+                .complete_negotiate(pending)
+                .map_err(|err| SessionNegoStepError::Shutdown { err: err })? {
+                NegotiatorResult::Complete(()) => {
+                    info!(target: "flows-nego-state",
+                           "successfully shutdown session with {}",
+                          addr);
+
+                    Ok(None)
+                }
+                NegotiatorResult::Pending(pending) => {
+                    debug!(target: "flows-nego-state",
+                           "continuing session shutdown negotiation with {}",
+                           addr);
+
+                    self.state = Some(SessionState::Shutdown {
+                        pending: pending
+                    });
+
+                    Ok(None)
+                }
+            }
             // No existing state at all; ignore this.
             None => {
                 debug!(target: "flows-nego-state",
-                      "attempting to inactive session with {}",
+                      "attempting to step inactive session with {}",
                       addr);
 
                 Ok(None)
@@ -1141,8 +1191,8 @@ impl FlowsRetry {
     }
 }
 
-impl<F, Sock, InboundNego, OutboundNego, AuthN, Xfrm>
-    FlowsEntry<F, Sock, InboundNego, OutboundNego, AuthN, Xfrm>
+impl<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
+    FlowsEntry<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
 where
     F: Flow,
     Sock: Receiver + Sender + Source,
@@ -1150,8 +1200,10 @@ where
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
     OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    ShutdownNego: NegotiatorStart<(), F>,
     InboundNego::NegotiateError: ScopedError,
     OutboundNego::NegotiateError: ScopedError,
+    ShutdownNego::NegotiateError: ScopedError,
     AuthN: SessionAuthN<F, Param = ()>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -1226,6 +1278,7 @@ where
     fn listen(
         &mut self,
         authn: &AuthN,
+        shutdown: &ShutdownNego,
         retry: &Retry,
         param: &InboundNego::Param,
         ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
@@ -1237,7 +1290,8 @@ where
                              InboundNego::NegotiateError,
                              OutboundNego::NegotiateError>,
             AuthN::StartError,
-            AuthN::NegotiateError
+            AuthN::NegotiateError,
+            ShutdownNego::NegotiateError
         >
     > {
         let mut endpoints = HashSet::new();
@@ -1352,7 +1406,7 @@ where
                 if let Some(ent) = self.sessions.get_mut(&endpoint) {
                     // Step negotiations.
                     if let Some(session) = ent
-                        .step_auth(authn, retry, endpoint, ext_endpoints)
+                        .step(authn, shutdown, retry, endpoint, ext_endpoints)
                         .map_err(|err| SessionListenError::Step {
                             err: err
                         })? {
@@ -1376,8 +1430,9 @@ where
     }
 }
 
-impl<F, Sock, InboundNego, OutboundNego, AuthN, Xfrm> Source
-    for FlowsEntry<F, Sock, InboundNego, OutboundNego, AuthN, Xfrm>
+impl<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm> Source
+    for FlowsEntry<F, Sock, InboundNego, OutboundNego,
+                   ShutdownNego, AuthN, Xfrm>
 where
     F: Flow,
     Sock: Receiver + Sender + Source,
@@ -1385,8 +1440,10 @@ where
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
     OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    ShutdownNego: NegotiatorStart<(), F>,
     InboundNego::NegotiateError: ScopedError,
     OutboundNego::NegotiateError: ScopedError,
+    ShutdownNego::NegotiateError: ScopedError,
     AuthN: SessionAuthN<F, Param = ()>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -1432,6 +1489,7 @@ where
         Display,
     <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
     <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
     AuthN: Clone + SessionAuthN<Channel::Flow, Param = ()>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -1846,6 +1904,7 @@ where
         channel: &Channel,
         policy: &SocketAddrPolicy,
         authn: &AuthN,
+        shutdown: &Channel::ShutdownNego,
         retry: &Retry,
         param: &<Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
         tokens: &HashSet<Token>,
@@ -1870,7 +1929,8 @@ where
                 <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
             >,
             AuthN::StartError,
-            AuthN::NegotiateError
+            AuthN::NegotiateError,
+            <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
         >
     >
     where I: Iterator<Item = Token>
@@ -1881,7 +1941,7 @@ where
                 for (_, ent) in self.flows
                     .iter_mut()
                     .filter(|(token, _)| tokens.contains(token)) {
-                        ent.listen(authn, retry, param,
+                        ent.listen(authn, shutdown, retry, param,
                                    ext_endpoints, sessions)
                         .map_err(|err| AcquiredEntryListenError::Listen {
                             err: err
@@ -1902,8 +1962,8 @@ where
     ) -> Result<
         RetryResult<(
             &mut FlowsEntry<Channel::Flow, Channel::Socket,
-                            Channel::InboundNego,
-                            Channel::OutboundNego, AuthN, Xfrm>,
+                            Channel::InboundNego, Channel::OutboundNego,
+                            Channel::ShutdownNego, AuthN, Xfrm>,
             Option<Vec<Channel::Param>>,
             Option<Instant>
         )>,
@@ -2375,11 +2435,13 @@ where AuthN: ScopedError {
     }
 }
 
-impl<AuthN> ScopedError for SessionNegoStepError<AuthN>
-where AuthN: ScopedError {
+impl<AuthN, Shutdown> ScopedError for SessionNegoStepError<AuthN, Shutdown>
+where AuthN: ScopedError,
+      Shutdown: ScopedError {
     fn scope(&self) -> ErrorScope {
         match self {
             SessionNegoStepError::Auth { err } => err.scope(),
+            SessionNegoStepError::Shutdown { err } => err.scope(),
         }
     }
 }
@@ -2445,11 +2507,12 @@ where Resolve: ScopedError,
     }
 }
 
-impl<Flows, Start, AuthN> ScopedError
-    for SessionListenError<Flows, Start, AuthN>
+impl<Flows, Start, AuthN, Shutdown> ScopedError
+    for SessionListenError<Flows, Start, AuthN, Shutdown>
 where Flows: ScopedError,
       Start: ScopedError,
       AuthN: ScopedError,
+      Shutdown: ScopedError,
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -2460,12 +2523,13 @@ where Flows: ScopedError,
     }
 }
 
-impl<Refresh, Flows, Start, AuthN> ScopedError
-    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN>
+impl<Refresh, Flows, Start, AuthN, Shutdown> ScopedError
+    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown>
 where Refresh: ScopedError,
       Flows: ScopedError,
       Start: ScopedError,
       AuthN: ScopedError,
+      Shutdown: ScopedError,
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -2546,14 +2610,16 @@ where
     }
 }
 
-impl<AuthN> Display for SessionNegoStepError<AuthN>
-where AuthN: Display {
+impl<AuthN, Shutdown> Display for SessionNegoStepError<AuthN, Shutdown>
+where AuthN: Display,
+      Shutdown: Display {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), std::fmt::Error> {
         match self {
             SessionNegoStepError::Auth { err } => err.fmt(f),
+            SessionNegoStepError::Shutdown { err } => err.fmt(f),
         }
     }
 }
@@ -2576,10 +2642,12 @@ where
     }
 }
 
-impl<Flows, Start, AuthN> Display for SessionListenError<Flows, Start, AuthN>
+impl<Flows, Start, AuthN, Shutdown> Display
+    for SessionListenError<Flows, Start, AuthN, Shutdown>
 where Flows: Display,
       Start: Display,
       AuthN: Display,
+      Shutdown: Display
 {
     fn fmt(
         &self,
@@ -2638,12 +2706,13 @@ where Resolve: Display,
     }
 }
 
-impl<Refresh, Flows, Start, AuthN> Display
-    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN>
+impl<Refresh, Flows, Start, AuthN, Shutdown> Display
+    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown>
 where Refresh: Display,
       Flows: Display,
       Start: Display,
       AuthN: Display,
+      Shutdown: Display
 {
     fn fmt(
         &self,
