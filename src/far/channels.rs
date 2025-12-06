@@ -52,6 +52,7 @@ use log::debug;
 use log::error;
 use log::info;
 use log::trace;
+use log::warn;
 use mio::event::Source;
 use mio::Events;
 use mio::Interest;
@@ -104,6 +105,7 @@ enum SessionNegoState<AuthPending> {
 /// active and has already been returned.
 enum SessionState<F, AuthN, ShutdownNego>
 where F: Flow,
+      F::PeerAddr: Eq + Hash,
       AuthN: SessionAuthN<F>,
       ShutdownNego: NegotiatorStart<(), F>,
       ShutdownNego::NegotiateError: ScopedError
@@ -130,6 +132,7 @@ struct FlowsRetry {
 
 struct FlowNegoState<F, AuthN, ShutdownNego>
 where F: Flow,
+      F::PeerAddr: Eq + Hash,
       AuthN: SessionAuthN<F>,
       ShutdownNego: NegotiatorStart<(), F>,
       ShutdownNego::NegotiateError: ScopedError
@@ -144,6 +147,7 @@ where F: Flow,
 struct FlowsEntry<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
 where
     F: Flow,
+    F::PeerAddr: Eq + Hash,
     Sock: Receiver + Sender + Source,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
@@ -168,6 +172,7 @@ where
 struct AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
+    <Channel::Flow as Flow>::PeerAddr: Eq + Hash,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
@@ -213,6 +218,7 @@ where
 enum AcquireState<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
+    <Channel::Flow as Flow>::PeerAddr: Eq + Hash,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
@@ -244,6 +250,7 @@ where
 struct ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
+    <Channel::Flow as Flow>::PeerAddr: Eq + Hash,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
@@ -274,6 +281,7 @@ where
 pub struct FarChannels<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
+    <Channel::Flow as Flow>::PeerAddr: Eq + Hash,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
@@ -439,6 +447,25 @@ pub enum SessionFlowsError<Flows, Listen, Start, AuthN, Shutdown> {
     }
 }
 
+/// Errors that can occur shutting down a session.
+#[derive(Debug)]
+pub enum SessionShutdownError<Start, Negotiate> {
+    /// Error occurred starting negotiations.
+    Start {
+        err: Start,
+    },
+    /// Error occurred during negotiation.
+    Negotiate {
+        err: Negotiate
+    },
+    /// The session was in a shutdown state.
+    Shutdown,
+    /// A pending session negotiation exists.
+    Pending,
+    /// The session has no existing state.
+    None
+}
+
 #[derive(Debug)]
 pub enum AcquiredEntryCreateError<Resolve, Flows, Wrap> {
     /// Error refreshing name cache entries.
@@ -504,6 +531,18 @@ pub enum AcquiredEntryFlowError<Flows, Wrap, Flow> {
         err: Flow
     }
 }
+
+#[derive(Debug)]
+pub enum AcquiredEntryShutdownError<Flows, Wrap> {
+    /// Error occurred while refreshing addresses.
+    Refresh {
+        /// Error that occurred while refreshing addresses.
+        err: FarChannelsRefreshError<Flows, Wrap>
+    },
+    /// The token and flows tables were inconsistent.
+    Inconsistent
+}
+
 
 #[derive(Debug)]
 pub enum AcquireStateCreateError<Acquire, Nego, Flows> {
@@ -625,6 +664,7 @@ impl<AuthPending> SessionNegoState<AuthPending> {
 impl<F, AuthN, ShutdownNego> FlowNegoState<F, AuthN, ShutdownNego>
 where
     F: Flow,
+    F::PeerAddr: Eq + Hash,
     AuthN: SessionAuthN<F, Param = ()>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -1046,8 +1086,65 @@ where
         }
     }
 
-    /// Take an incoming negotiated session and transition this state
-    /// into the authentication phase.
+    fn shutdown_session<Addr>(
+        &mut self,
+        shutdown: &ShutdownNego,
+        param: &ShutdownNego::Param,
+        addr: Addr,
+        session: AuthN::AuthNSession
+    ) -> Result<
+        (),
+        SessionShutdownError<ShutdownNego::StartError,
+                             ShutdownNego::NegotiateError>
+    >
+    where Addr: Display + Eq + Hash
+    {
+        match &self.state {
+            // This is what we expect.
+            Some(SessionState::Active) => {
+                error!(target: "flows-nego-state",
+                       "shutting down active session with {}",
+                       addr);
+
+                let (_, session) = session.take();
+                let state = shutdown.start(param, session)
+                    .map_err(|err| SessionShutdownError::Start { err: err })?;
+
+                match shutdown.negotiate(state)
+                    .map_err(|err| SessionShutdownError::Negotiate {
+                        err: err
+                    })? {
+                    NegotiatorResult::Complete(()) => {
+                        info!(target: "flows-nego-state",
+                              "shutdown session with {}",
+                              addr);
+
+                        self.state = None;
+                    }
+                    NegotiatorResult::Pending(pending) => {
+                        debug!(target: "flows-nego-state",
+                               "continuing shutdown negotiation with {}",
+                               addr);
+
+                        self.state = Some(SessionState::Shutdown {
+                            pending: pending
+                        });
+                    }
+                }
+
+                Ok(())
+            }
+            // None of these should ever happen, but they're not
+            // fatal.
+            Some(SessionState::Pending { .. }) =>
+                Err(SessionShutdownError::Pending),
+            Some(SessionState::Shutdown { .. }) =>
+                Err(SessionShutdownError::Shutdown),
+            None => Err(SessionShutdownError::None)
+        }
+    }
+
+    /// Step the ongoing negotiations, if possible.
     fn step<Addr>(
         &mut self,
         authn: &AuthN,
@@ -1159,7 +1256,7 @@ where
                 }
                 NegotiatorResult::Pending(pending) => {
                     debug!(target: "flows-nego-state",
-                           "continuing session shutdown negotiation with {}",
+                           "continuing shutdown negotiation with {}",
                            addr);
 
                     self.state = Some(SessionState::Shutdown {
@@ -1195,6 +1292,7 @@ impl<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
     FlowsEntry<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
 where
     F: Flow,
+    F::PeerAddr: Eq + Hash,
     Sock: Receiver + Sender + Source,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
@@ -1271,6 +1369,34 @@ where
                                        out_param, endpoint)?;
 
                 Ok(out)
+            }
+        }
+    }
+
+    fn shutdown_flow(
+        &mut self,
+        shutdown: &ShutdownNego,
+        param: &ShutdownNego::Param,
+        session: AuthN::AuthNSession
+    ) -> Result<
+        (),
+        SessionShutdownError<ShutdownNego::StartError,
+                             ShutdownNego::NegotiateError>
+    > {
+        let endpoint = session.get().peer_addr();
+
+        match self.sessions.entry(endpoint) {
+            Entry::Vacant(_) => Err(SessionShutdownError::None),
+            Entry::Occupied(mut ent) => {
+                let state = ent.get_mut();
+
+                state.shutdown_session(shutdown, param, &endpoint, session)?;
+
+                if state.state.is_none() {
+                    ent.remove();
+                }
+
+                Ok(())
             }
         }
     }
@@ -1435,6 +1561,7 @@ impl<F, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm> Source
                    ShutdownNego, AuthN, Xfrm>
 where
     F: Flow,
+    F::PeerAddr: Eq + Hash,
     Sock: Receiver + Sender + Source,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
@@ -1484,6 +1611,7 @@ impl<Channel, AuthN, Xfrm, InnerXfrm>
     AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
+    <Channel::Flow as Flow>::PeerAddr: Eq + Hash,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
@@ -1830,10 +1958,6 @@ where
         }
     }
 
-    /// Refresh the addresses and update all [Flows], if needed.
-    ///
-    /// The [RefreshResult] reports all new addresses, if a refresh
-    /// happens.
     fn refresh<I>(
         &mut self,
         registry: &mut Registry,
@@ -1992,6 +2116,61 @@ where
                     .ok_or(AcquiredEntryFlowsError::Inconsistent)?;
 
                 Ok((flows, addrs, refresh_when))
+            })
+    }
+
+    fn shutdown_flow<I>(
+        &mut self,
+        registry: &mut Registry,
+        tokens: &mut I,
+        channel: &Channel,
+        policy: &SocketAddrPolicy,
+        channel_param: &Channel::Param,
+        shutdown: &Channel::ShutdownNego,
+        param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
+        session: AuthN::AuthNSession
+    ) -> Result<
+        RetryResult<(
+            Option<Vec<Channel::Param>>,
+            Option<Instant>
+        )>,
+        AcquiredEntryShutdownError<
+            FarChannelFlowsError<
+                Channel::SocketError,
+                Channel::XfrmError,
+                Channel::InboundNegoError,
+                Channel::OutboundNegoError,
+            >,
+            <Channel::Acquired as FarChannelAcquired>::WrapError,
+        >
+    >
+    where I: Iterator<Item = Token>
+    {
+        self.refresh(registry, tokens, channel, policy)
+            .map_err(|err| AcquiredEntryShutdownError::Refresh { err: err })?
+            .map_ok(move |(addrs, refresh_when)| {
+                // The token might have gotten deleted in the refresh;
+                // don't throw a hard error here.
+                if let Some(token) = self
+                    .tokens
+                    .get(channel_param) {
+                    // The flows tables should always be consistent.
+                    let flows = self
+                        .flows
+                        .get_mut(&token)
+                        .ok_or(AcquiredEntryShutdownError::Inconsistent)?;
+
+                    // Try to shut down the flow.  Errors here aren't
+                    // fatal, and should not be reported.
+                    if let Err(err) = flows
+                        .shutdown_flow(shutdown, param, session) {
+                        warn!(target: "",
+                              "error shutting down channel {}: {}",
+                              channel_param, err)
+                    }
+                }
+
+                Ok((addrs, refresh_when))
             })
     }
 
@@ -2459,6 +2638,21 @@ where AuthN: ScopedError,
     }
 }
 
+impl<Start, Negotiate> ScopedError for SessionShutdownError<Start, Negotiate>
+where
+    Negotiate: ScopedError,
+    Start: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SessionShutdownError::Start { err } => err.scope(),
+            SessionShutdownError::Negotiate { err } => err.scope(),
+            SessionShutdownError::Shutdown |
+            SessionShutdownError::Pending |
+            SessionShutdownError::None => ErrorScope::Unrecoverable
+        }
+    }
+}
+
 impl<AuthN, Start, Flow> ScopedError
     for FlowStateGetFlowError<AuthN, Start, Flow>
 where AuthN: ScopedError,
@@ -2548,6 +2742,19 @@ where Flows: ScopedError,
             AcquiredEntryFlowsError::Refresh { err } => err.scope(),
             AcquiredEntryFlowsError::ParamNotFound |
             AcquiredEntryFlowsError::Inconsistent => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl<Flows, Wrap> ScopedError for AcquiredEntryShutdownError<Flows, Wrap>
+where Flows: ScopedError,
+      Wrap: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            AcquiredEntryShutdownError::Refresh { err } => err.scope(),
+            AcquiredEntryShutdownError::Inconsistent =>
+                ErrorScope::Unrecoverable
         }
     }
 }
@@ -2657,6 +2864,27 @@ where Flows: Display,
             SessionListenError::Flows { err } => err.fmt(f),
             SessionListenError::Start { err } => err.fmt(f),
             SessionListenError::Step { err } => err.fmt(f)
+        }
+    }
+}
+
+impl<Start, Negotiate> Display for SessionShutdownError<Start, Negotiate>
+where
+    Negotiate: Display,
+    Start: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SessionShutdownError::Start { err } => err.fmt(f),
+            SessionShutdownError::Negotiate { err } => err.fmt(f),
+            SessionShutdownError::Shutdown =>
+                write!(f, "session has shutdown state"),
+            SessionShutdownError::Pending =>
+                write!(f, "session has pending state"),
+            SessionShutdownError::None =>
+                write!(f, "session has no active")
         }
     }
 }
@@ -2775,6 +3003,23 @@ where Flows: Display,
         match self {
             AcquiredEntryFlowError::Flows { err } => err.fmt(f),
             AcquiredEntryFlowError::Flow { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Flows, Wrap> Display for AcquiredEntryShutdownError<Flows, Wrap>
+where Flows: Display,
+      Wrap: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            AcquiredEntryShutdownError::Refresh { err } => err.fmt(f),
+            AcquiredEntryShutdownError::Inconsistent => {
+                write!(f, "no flows for given token")
+            }
         }
     }
 }
