@@ -95,7 +95,6 @@ use crate::far::dtls::DTLSOutboundNegoPending;
 use crate::far::dtls::DTLSOutboundNegotiator;
 use crate::far::dtls::DTLSOutboundNegotiatorState;
 use crate::far::dtls::DTLSOutboundParam;
-use crate::far::dtls::DTLSStartError;
 use crate::far::flows::BufferedFlow;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquireError;
@@ -143,6 +142,7 @@ use crate::tls::TLSShutdownError;
 use crate::tls::TLSShutdownNegotiator;
 use crate::tls::TLSShutdownNegoPending;
 use crate::tls::TLSShutdownNegotiatorState;
+use crate::tls::TLSStartError;
 
 /// Type alias for [CompoundNearConnector] instances that use
 /// [TLSPeerConfig] as their TLS configuration.
@@ -825,8 +825,8 @@ pub enum CompoundShutdownError {
 #[derive(Debug)]
 pub enum CompoundNegotiatorStartError {
     DTLS {
-        dtls: Box<DTLSStartError<CompoundNegotiatorStartError,
-                                 TLSLoadConfigError>>
+        dtls: Box<TLSStartError<CompoundNegotiatorStartError,
+                                TLSLoadConfigError>>
     },
     Mismatch
 }

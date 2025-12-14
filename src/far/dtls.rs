@@ -84,6 +84,7 @@ use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::tls::TLSShutdownNegotiator;
+use crate::tls::TLSStartError;
 
 /// A far-link channel that negotiates Datagram Transport-Layer
 /// Security sessions for individual flows.
@@ -261,16 +262,6 @@ pub enum DTLSNegotiateError<Inner> {
 }
 
 #[derive(Debug)]
-pub enum DTLSStartError<Inner, DTLS> {
-    Inner {
-        err: Inner
-    },
-    DTLS {
-        err: DTLS
-    }
-}
-
-#[derive(Debug)]
 pub enum DTLSOutboundNegoError<Inner> {
     Inner {
         err: Inner
@@ -323,19 +314,6 @@ where
             DTLSNegotiateError::OpenSSL { .. } => ErrorScope::Session,
             DTLSNegotiateError::Handshake { .. } => ErrorScope::External,
             DTLSNegotiateError::NoName => ErrorScope::Unrecoverable
-        }
-    }
-}
-
-impl<Inner, DTLS> ScopedError for DTLSStartError<Inner, DTLS>
-where
-    Inner: ScopedError,
-    DTLS: ScopedError
-{
-    fn scope(&self) -> ErrorScope {
-        match self {
-            DTLSStartError::Inner { err } => err.scope(),
-            DTLSStartError::DTLS { err } => err.scope()
         }
     }
 }
@@ -716,7 +694,7 @@ where
     Xfrm: DatagramXfrm,
 {
     type Param = Inner::Param;
-    type StartError = DTLSStartError<Inner::StartError, TLSLoadConfigError>;
+    type StartError = TLSStartError<Inner::StartError, TLSLoadConfigError>;
 
     fn start(
         &self,
@@ -724,11 +702,11 @@ where
         stream: BufferedFlow<Sock, Xfrm>
     ) -> Result<Self::State, Self::StartError> {
         let inner = self.inner.start(param, stream)
-            .map_err(|err| DTLSStartError::Inner { err: err })?;
+            .map_err(|err| TLSStartError::Inner { err: err })?;
         let acceptor = self
             .tls
             .load_server(None, true)
-            .map_err(|err| DTLSStartError::DTLS { err: err })?;
+            .map_err(|err| TLSStartError::TLS { err: err })?;
 
         Ok(DTLSInboundNegotiatorState {
             acceptor: acceptor,
@@ -921,7 +899,7 @@ where
     Sock: Socket + Sender + Receiver
 {
     type Param = DTLSOutboundParam<Inner::Param>;
-    type StartError = DTLSStartError<Inner::StartError, TLSLoadConfigError>;
+    type StartError = TLSStartError<Inner::StartError, TLSLoadConfigError>;
 
     fn start(
         &self,
@@ -929,11 +907,11 @@ where
         stream: BufferedFlow<Sock, Xfrm>
     ) -> Result<Self::State, Self::StartError> {
         let inner = self.inner.start(&param.inner, stream)
-            .map_err(|err| DTLSStartError::Inner { err: err })?;
+            .map_err(|err| TLSStartError::Inner { err: err })?;
         let connector = self
             .tls
             .load_client(None, &param.verify_endpoint, true)
-            .map_err(|err| DTLSStartError::DTLS { err: err })?;
+            .map_err(|err| TLSStartError::TLS { err: err })?;
         let domain = match &param.verify_endpoint {
             IPEndpointAddr::Name(name) => match name.find('.') {
                 Some(idx) => {
@@ -995,20 +973,6 @@ where
                     "and no verify-endpoint provided"
                 )
             )
-        }
-    }
-}
-
-impl<Inner, DTLS> Display for DTLSStartError<Inner, DTLS>
-where Inner: Display,
-      DTLS: Display {
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            DTLSStartError::Inner { err } => err.fmt(f),
-            DTLSStartError::DTLS { err } => err.fmt(f),
         }
     }
 }

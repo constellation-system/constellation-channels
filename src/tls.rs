@@ -98,6 +98,16 @@ pub enum TLSShutdownError<Inner> {
     Timeout
 }
 
+#[derive(Debug)]
+pub enum TLSStartError<Inner, TLS> {
+    Inner {
+        err: Inner
+    },
+    TLS {
+        err: TLS
+    }
+}
+
 impl <Stream, Inner> TLSShutdownNegotiator<Stream, Inner>
 where
     Stream: Credentials + Session + Read + Write,
@@ -302,6 +312,19 @@ where Inner: ScopedError
     }
 }
 
+impl<Inner, TLS> ScopedError for TLSStartError<Inner, TLS>
+where
+    Inner: ScopedError,
+    TLS: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            TLSStartError::Inner { err } => err.scope(),
+            TLSStartError::TLS { err } => err.scope()
+        }
+    }
+}
+
 impl<Inner> Display for TLSShutdownError<Inner>
 where
     Inner: Display
@@ -316,6 +339,20 @@ where
             TLSShutdownError::OpenSSL { err } => write!(f, "{}", err),
             TLSShutdownError::Timeout =>
                 write!(f, "shutdown negotiations timed out")
+        }
+    }
+}
+
+impl<Inner, TLS> Display for TLSStartError<Inner, TLS>
+where Inner: Display,
+      TLS: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            TLSStartError::Inner { err } => err.fmt(f),
+            TLSStartError::TLS { err } => err.fmt(f),
         }
     }
 }
