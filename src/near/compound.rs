@@ -1870,6 +1870,7 @@ where
 {
     type Endpoint = CompoundNearConcreteAddr;
     type Conn = CompoundNearServerConn;
+    type ShutdownNego = CompoundShutdownNegotiator<CompoundNearServerConn>;
     type StartError = CompoundNearAcceptorStartError;
 
     fn start(
@@ -1897,6 +1898,21 @@ where
                 Ok(out)
             }
             CompoundNearAcceptor::TLS { tls } => tls.start(registry, token)
+        }
+    }
+
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        match self {
+            CompoundNearAcceptor::Unix { .. } |
+            CompoundNearAcceptor::TCP { .. } =>
+                CompoundShutdownNegotiator::Basic,
+            CompoundNearAcceptor::TLS { tls } => {
+                let nego = tls.shutdown_nego();
+
+                CompoundShutdownNegotiator::TLS { tls: Box::new(nego) }
+            }
         }
     }
 
@@ -2012,6 +2028,7 @@ where
 {
     type Endpoint = CompoundNearConcreteAddr;
     type Conn = CompoundNearServerConn;
+    type ShutdownNego = CompoundShutdownNegotiator<CompoundNearServerConn>;
     type StartError = CompoundNearAcceptorStartError;
 
     #[inline]
@@ -2021,6 +2038,12 @@ where
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         self.as_mut().start(registry, token)
+    }
+
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        self.as_ref().shutdown_nego()
     }
 
     #[inline]
@@ -2184,6 +2207,7 @@ where
 {
     type Endpoint = CompoundNearNameAddr;
     type Conn = CompoundNearClientConn;
+    type ShutdownNego = CompoundShutdownNegotiator<CompoundNearClientConn>;
     type StartError = CompoundNearConnectorStartError;
 
     fn start(
@@ -2221,6 +2245,22 @@ where
                 Ok(out)
             }
             CompoundNearConnector::TLS { tls } => tls.start(registry, token)
+        }
+    }
+
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        match self {
+            CompoundNearConnector::SOCKS5 { .. } |
+            CompoundNearConnector::Unix { .. } |
+            CompoundNearConnector::TCP { .. } =>
+                CompoundShutdownNegotiator::Basic,
+            CompoundNearConnector::TLS { tls } => {
+                let nego = tls.shutdown_nego();
+
+                CompoundShutdownNegotiator::TLS { tls: Box::new(nego) }
+            }
         }
     }
 
@@ -2353,6 +2393,7 @@ where
 {
     type Endpoint = CompoundNearNameAddr;
     type Conn = CompoundNearClientConn;
+    type ShutdownNego = CompoundShutdownNegotiator<CompoundNearClientConn>;
     type StartError = CompoundNearConnectorStartError;
 
     #[inline]
@@ -2362,6 +2403,13 @@ where
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         self.as_mut().start(registry, token)
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        self.as_ref().shutdown_nego()
     }
 
     #[inline]
@@ -2743,6 +2791,7 @@ where
 {
     type Endpoint = CompoundNearNameAddr;
     type Conn = CompoundNearClientConn;
+    type ShutdownNego = CompoundShutdownNegotiator<CompoundNearClientConn>;
     type StartError = CompoundNearConnectorStartError;
 
     fn start(
@@ -2781,6 +2830,22 @@ where
             }
             CompoundResolvingNearConnector::TLS { tls } =>
                 tls.start(registry, token)
+        }
+    }
+
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        match self {
+            CompoundResolvingNearConnector::SOCKS5 { .. } |
+            CompoundResolvingNearConnector::Unix { .. } |
+            CompoundResolvingNearConnector::TCP { .. } =>
+                CompoundShutdownNegotiator::Basic,
+            CompoundResolvingNearConnector::TLS { tls } => {
+                let nego = tls.shutdown_nego();
+
+                CompoundShutdownNegotiator::TLS { tls: Box::new(nego) }
+            }
         }
     }
 
@@ -2997,6 +3062,7 @@ where
 {
     type Endpoint = CompoundNearNameAddr;
     type Conn = CompoundNearClientConn;
+    type ShutdownNego = CompoundShutdownNegotiator<CompoundNearClientConn>;
     type StartError = CompoundNearConnectorStartError;
 
     #[inline]
@@ -3006,6 +3072,13 @@ where
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         self.as_mut().start(registry, token)
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        self.as_ref().shutdown_nego()
     }
 
     #[inline]

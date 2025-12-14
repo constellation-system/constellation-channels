@@ -56,6 +56,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use constellation_streams::state_machine::OnceMachineAction;
@@ -173,6 +174,10 @@ pub struct GSSAPIClientNegotiation<Inner> {
 
 pub struct GSSAPIServerNegotiation<Inner> {
     params: ServerGSSAPIConfig,
+    inner: Inner
+}
+
+pub struct GSSAPIShutdownNegotiator<Inner> {
     inner: Inner
 }
 
@@ -431,6 +436,50 @@ where
     stream
         .write_all(&buf)
         .map_err(|err| GSSAPIError::IO { err: err })
+}
+
+impl<Inner> Negotiator<()> for GSSAPIShutdownNegotiator<Inner>
+where
+    Inner: Negotiator<()>
+{
+    type State = Inner::State;
+    type Pending = Inner::Pending;
+    type NegotiateError = Inner::NegotiateError;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+        self.inner.negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: Self::Pending
+    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+        self.inner.complete_negotiate(pending)
+    }
+}
+
+impl<Inner, Stream, Ctx> NegotiatorStart<(), GSSAPIStream<Stream, Ctx>>
+    for GSSAPIShutdownNegotiator<Inner>
+where
+    Inner: NegotiatorStart<(), Stream>,
+    Stream: Session + Source + Read + Write,
+    Ctx: SecurityContext {
+    type Param = Inner::Param;
+    type StartError = Inner::StartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: GSSAPIStream<Stream, Ctx>
+    ) -> Result<Self::State, Self::StartError> {
+        self.inner.start(param, stream.stream)
+    }
 }
 
 impl GSSAPIClientState {
@@ -1010,6 +1059,7 @@ where
 {
     type Endpoint = A::Endpoint;
     type Conn = GSSAPIStream<A::Conn, ServerCtx>;
+    type ShutdownNego = GSSAPIShutdownNegotiator<A::ShutdownNego>;
     type StartError = A::StartError;
 
     #[inline]
@@ -1024,6 +1074,17 @@ where
                 inner: inner
             }
         }))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        GSSAPIShutdownNegotiator {
+            inner: inner
+        }
     }
 
     fn cleanup(
@@ -1219,6 +1280,7 @@ where
 {
     type Endpoint = C::Endpoint;
     type Conn = GSSAPIStream<C::Conn, ClientCtx>;
+    type ShutdownNego = GSSAPIShutdownNegotiator<C::ShutdownNego>;
     type StartError = C::StartError;
 
     #[inline]
@@ -1233,6 +1295,17 @@ where
                 inner: inner
             }
         }))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        GSSAPIShutdownNegotiator {
+            inner: inner
+        }
     }
 
     fn cleanup(

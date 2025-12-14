@@ -47,6 +47,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::TrivialNegotiator;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
@@ -414,6 +415,7 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
 impl NearChannel for TCPNearAcceptor {
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
+    type ShutdownNego = TrivialNegotiator;
     type StartError = Error;
 
     #[inline]
@@ -432,6 +434,13 @@ impl NearChannel for TCPNearAcceptor {
                           Interest::READABLE | Interest::WRITABLE)?;
 
         Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        TrivialNegotiator
     }
 
     #[inline]
@@ -506,6 +515,7 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPResolvingNearConnector {
 impl NearChannel for TCPResolvingNearConnector {
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
+    type ShutdownNego = TrivialNegotiator;
     type StartError = Error;
 
     #[inline]
@@ -571,6 +581,13 @@ impl NearChannel for TCPResolvingNearConnector {
         }
 
         Ok(RetryResult::Retry(self.when.clone()))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        TrivialNegotiator
     }
 
     #[inline]
@@ -695,6 +712,7 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
 impl NearChannel for TCPNearConnector {
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
+    type ShutdownNego = TrivialNegotiator;
     type StartError = Error;
 
     #[inline]
@@ -717,6 +735,13 @@ impl NearChannel for TCPNearConnector {
 
 
         Ok(RetryResult::Success(out))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        TrivialNegotiator
     }
 
     #[inline]

@@ -63,6 +63,7 @@ use std::net::Shutdown;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
 use constellation_common::unix::UnixSocketAddr;
 use constellation_common::unix::UnixSocketPath;
@@ -291,6 +292,7 @@ impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearAcceptor {
 impl NearChannel for UnixNearAcceptor {
     type Endpoint = UnixSocketAddr;
     type Conn = UnixStream;
+    type ShutdownNego = TrivialNegotiator;
     type StartError = Error;
 
     #[inline]
@@ -306,6 +308,13 @@ impl NearChannel for UnixNearAcceptor {
                           Interest::READABLE | Interest::WRITABLE)?;
 
         Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        TrivialNegotiator
     }
 
     #[inline]
@@ -367,6 +376,7 @@ impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearConnector {
 impl NearChannel for UnixNearConnector {
     type Endpoint = UnixSocketAddr;
     type Conn = UnixStream;
+    type ShutdownNego = TrivialNegotiator;
     type StartError = Error;
 
     #[inline]
@@ -386,6 +396,13 @@ impl NearChannel for UnixNearConnector {
                           Interest::READABLE | Interest::WRITABLE)?;
 
         Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        TrivialNegotiator
     }
 
     #[inline]

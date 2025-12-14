@@ -4992,7 +4992,6 @@ impl ScopedError for CompoundNegotiatorStartError {
     }
 }
 
-
 impl ScopedError for Box<CompoundNegotiatorStartError> {
     #[inline]
     fn scope(&self) -> ErrorScope {

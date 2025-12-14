@@ -38,6 +38,7 @@ use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
@@ -49,6 +50,7 @@ use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::Session;
+use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use log::info;
 use log::warn;
@@ -171,6 +173,8 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
     tls: PhantomData<TLS>,
     /// The configuration for establishing TLS sessions.
     acceptor: SslAcceptor,
+    shutdown_retry: Retry,
+    shutdown_timeout: Duration,
     /// The underlying [NearChannel] instance for obtaining
     /// connections.
     inner: A
@@ -257,6 +261,8 @@ pub struct TLSNearConnector<Conn, TLS> {
     /// The configuration for establishing TLS sessions.
     connector: SslConnector,
     domain: String,
+    shutdown_retry: Retry,
+    shutdown_timeout: Duration,
     /// The underlying [NearChannel] instance for obtaining
     /// connections.
     inner: Conn
@@ -473,9 +479,11 @@ impl<A, TLS> NearChannel for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannel + Source,
+    A::Conn: Credentials
 {
     type Endpoint = A::Endpoint;
     type Conn = TLSConn<A::Conn, A::Endpoint>;
+    type ShutdownNego = TLSShutdownNegotiator<A::Conn, A::ShutdownNego>;
     type StartError = A::StartError;
 
     #[inline]
@@ -485,6 +493,16 @@ where
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         self.inner.start(registry, token)
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
+                                   self.shutdown_timeout)
     }
 
     fn cleanup(
@@ -599,6 +617,7 @@ impl<A, TLS> NearChannelCreate for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
     A: NearChannelCreate + Source,
+    A::Conn: Credentials
 {
     type Config = TLSChannelConfig<TLS, A::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, A::CreateError>;
@@ -610,7 +629,7 @@ where
     ) -> Result<TLSNearAcceptor<A, TLS>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        let (tls, endpoint) = config.take();
+        let (tls, endpoint, shutdown_retry, shutdown_timeout) = config.take();
         let acceptor = tls.load_server(None, false).map_err(|err| {
             TLSSessionCreateError::Session {
                 error: TLSCreateError::TLS { error: err }
@@ -622,7 +641,9 @@ where
         Ok(TLSNearAcceptor {
             tls: PhantomData,
             inner: inner,
-            acceptor: acceptor
+            acceptor: acceptor,
+            shutdown_retry: shutdown_retry,
+            shutdown_timeout: shutdown_timeout,
         })
     }
 
@@ -781,10 +802,12 @@ where
 impl<Conn, TLS> NearChannel for TLSNearConnector<Conn, TLS>
 where
     Conn: NearConnector,
+    Conn::Conn: Credentials,
     TLS: TLSLoadClient
 {
     type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
+    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn, Conn::ShutdownNego>;
     type StartError = Conn::StartError;
 
     #[inline]
@@ -794,6 +817,16 @@ where
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         self.inner.start(registry, token)
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
+                                   self.shutdown_timeout)
     }
 
     fn cleanup(
@@ -821,6 +854,7 @@ impl<Conn, TLS> NearChannelCreate for TLSNearConnector<Conn, TLS>
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreate + NearConnector,
+    Conn::Conn: Credentials,
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
@@ -832,7 +866,7 @@ where
     ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        let (tls, endpoint) = config.take();
+        let (tls, endpoint, shutdown_retry, shutdown_timeout) = config.take();
         let verify_endpoint = match tls.verify_endpoint() {
             Some(endpoint) => Ok(endpoint),
             None => match Conn::verify_endpoint(&endpoint) {
@@ -865,6 +899,8 @@ where
 
         Ok(TLSNearConnector {
             tls: PhantomData,
+            shutdown_timeout: shutdown_timeout,
+            shutdown_retry: shutdown_retry,
             connector: connector,
             domain: domain,
             inner: inner
@@ -881,6 +917,7 @@ impl<Conn, TLS> NearChannelCreateWithEndpoint for TLSNearConnector<Conn, TLS>
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreateWithEndpoint + NearConnector,
+    Conn::Conn: Credentials,
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type EndpointConfig = Conn::EndpointConfig;
@@ -896,7 +933,7 @@ where
     where
         Ctx: NSNameCachesCtx
     {
-        let (tls, config) = config.take();
+        let (tls, config, shutdown_retry, shutdown_timeout) = config.take();
         let verify_endpoint = match tls.verify_endpoint() {
             Some(endpoint) => Ok(endpoint),
             None => match verify_endpoint {
@@ -930,6 +967,8 @@ where
 
         Ok(TLSNearConnector {
             tls: PhantomData,
+            shutdown_timeout: shutdown_timeout,
+            shutdown_retry: shutdown_retry,
             connector: connector,
             domain: domain,
             inner: inner
@@ -940,6 +979,7 @@ where
 impl<Conn, TLS> NearConnector for TLSNearConnector<Conn, TLS>
 where
     Conn: NearConnector,
+    Conn::Conn: Credentials,
     TLS: TLSLoadClient
 {
     /// Type of endpoint references.
@@ -1000,10 +1040,12 @@ where
 impl<Conn, TLS> NearChannel for Box<TLSNearConnector<Conn, TLS>>
 where
     Conn: NearConnector,
+    Conn::Conn: Credentials,
     TLS: TLSLoadClient
 {
     type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
+    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn, Conn::ShutdownNego>;
     type StartError = Conn::StartError;
 
     #[inline]
@@ -1013,6 +1055,16 @@ where
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         self.as_mut().start(registry, token)
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
+                                   self.shutdown_timeout)
     }
 
     fn cleanup(
@@ -1032,6 +1084,7 @@ impl<Conn, TLS> NearChannelCreate for Box<TLSNearConnector<Conn, TLS>>
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreate + NearConnector,
+    Conn::Conn: Credentials,
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
@@ -1057,6 +1110,7 @@ impl<Conn, TLS> NearChannelCreateWithEndpoint
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreateWithEndpoint + NearConnector,
+    Conn::Conn: Credentials,
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type EndpointConfig = Conn::EndpointConfig;
@@ -1080,6 +1134,7 @@ where
 impl<Conn, TLS> NearConnector for Box<TLSNearConnector<Conn, TLS>>
 where
     Conn: NearConnector + Source,
+    Conn::Conn: Credentials,
     TLS: TLSLoadClient
 {
     /// Type of endpoint references.

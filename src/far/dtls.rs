@@ -419,8 +419,8 @@ where
     where
         Ctx: NSNameCachesCtx,
         I: Iterator<Item = Token> {
-        let (tls, shutdown_timeout, shutdown_retry) = config.take();
-        let (tls, inner) = tls.take();
+        let tls = config.take();
+        let (tls, inner, shutdown_retry, shutdown_timeout) = tls.take();
         let inner = Channel::create(caches, tokens, inner)?;
 
         Ok(DTLSFarChannel {

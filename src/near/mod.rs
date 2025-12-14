@@ -168,6 +168,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use log::trace;
@@ -218,6 +219,8 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     /// See [take_connection](NearChannel::take-connection)
     /// [endpoint](NearConnector::endpoint).
     type Endpoint: Clone + Debug + Display + Sized;
+    /// Type of shutdown negotiators.
+    type ShutdownNego: Negotiator<()> + NegotiatorStart<(), Self::Conn>;
     /// Type of errors that can occur starting a negotiation.
     type StartError: Display + ScopedError;
 
@@ -231,6 +234,11 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
         registry: &Registry,
         token: Token
     ) -> Result<RetryResult<Self::State>, Self::StartError>;
+
+    /// Get an instance of the shutdown negotiator.
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego;
 
     fn cleanup(
         &mut self,

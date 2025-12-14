@@ -70,6 +70,8 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
+use std::io::Read;
+use std::io::Write;
 
 use constellation_common::error::ErrorScope;
 use constellation_common::error::RecoverableError;
@@ -78,6 +80,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Stream;
@@ -86,6 +89,7 @@ use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
+use mio::event::Source;
 use mio::Registry;
 use mio::Token;
 
@@ -200,6 +204,10 @@ pub struct SOCKS5NearConnector<Conn: NearConnector> {
     /// SOCKS5 protocol parameters.
     params: SOCKS5Params,
     proxy: Conn
+}
+
+pub struct SOCKS5ShutdownNegotiator<Inner> {
+    inner: Inner
 }
 
 pub struct SOCKS5SessionNegotiation<Proxy> {
@@ -373,12 +381,56 @@ where
     }
 }
 
+impl<Inner> Negotiator<()> for SOCKS5ShutdownNegotiator<Inner>
+where
+    Inner: Negotiator<()>
+{
+    type State = Inner::State;
+    type Pending = Inner::Pending;
+    type NegotiateError = Inner::NegotiateError;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+        self.inner.negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: Self::Pending
+    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+        self.inner.complete_negotiate(pending)
+    }
+}
+
+impl<Inner, Stream> NegotiatorStart<(), SOCKS5Stream<Stream>>
+    for SOCKS5ShutdownNegotiator<Inner>
+where
+    Inner: NegotiatorStart<(), Stream>,
+    Stream: Session + Source + Read + Write {
+    type Param = Inner::Param;
+    type StartError = Inner::StartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: SOCKS5Stream<Stream>
+    ) -> Result<Self::State, Self::StartError> {
+        self.inner.start(param, stream.take())
+    }
+}
+
 impl<Conn> NearChannel for SOCKS5NearConnector<Conn>
 where
     Conn: NearConnector + NearChannelCreate
 {
     type Endpoint = IPEndpoint;
     type StartError = Conn::StartError;
+    type ShutdownNego = SOCKS5ShutdownNegotiator<Conn::ShutdownNego>;
     type Conn = SOCKS5Stream<Conn::Conn>;
 
     #[inline]
@@ -393,6 +445,17 @@ where
                 proxy: proxy
             }
         }))
+    }
+
+    #[inline]
+    fn shutdown_nego(
+        &self
+    ) -> Self::ShutdownNego {
+        let inner = self.proxy.shutdown_nego();
+
+        SOCKS5ShutdownNegotiator {
+            inner: inner
+        }
     }
 
     fn cleanup(

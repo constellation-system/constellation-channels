@@ -37,6 +37,7 @@ use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
+use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use log::debug;
@@ -53,11 +54,19 @@ use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::session::Session;
 
 /// Newtype wrapper for IDs created to refer to specific channels.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NearChannelID(Token);
+
+enum DuplexEntry<Accept, Conn> {
+    Accept {
+        accept: Accept
+    },
+    Conn {
+        conn: Conn
+    }
+}
 
 enum SessionNegoEntry<AuthN, Endpoint, Shutdown> {
     /// Authentication negotiation is pending.
