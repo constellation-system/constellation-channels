@@ -56,6 +56,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use constellation_streams::state_machine::OnceMachineAction;
 use constellation_streams::state_machine::RawMachineState;
@@ -249,7 +250,7 @@ pub enum GSSAPICredError<Inner> {
 #[derive(Debug)]
 pub struct GSSAPIStream<Stream, Ctx>
 where
-    Stream: Source + Read + Write,
+    Stream: Session + Source + Read + Write,
     Ctx: SecurityContext {
     /// The GSSAPI context.
     ctx: Ctx,
@@ -1337,9 +1338,28 @@ where
     }
 }
 
+impl<Stream, Ctx> Session for GSSAPIStream<Stream, Ctx>
+where
+    Stream: Source + Session + Read + Write,
+    Ctx: SecurityContext
+{
+    type LocalAddr = Stream::LocalAddr;
+    type PeerAddr = Stream::PeerAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.stream.local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
+        self.stream.peer_addr()
+    }
+}
+
 impl<Stream, Ctx> Source for GSSAPIStream<Stream, Ctx>
 where
-    Stream: Source + Read + Write,
+    Stream: Session + Source + Read + Write,
     Ctx: SecurityContext
 {
     #[inline]
@@ -1412,7 +1432,7 @@ where
 
 impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
 where
-    Stream: Source + CredentialsMut + Read + Write
+    Stream: Session + Source + CredentialsMut + Read + Write
 {
     type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
@@ -1442,7 +1462,7 @@ where
 
 impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
 where
-    Stream: Source + CredentialsMut + Read + Write
+    Stream: Session + Source + CredentialsMut + Read + Write
 {
     type Cred = GSSAPIStreamCred<Stream::Cred>;
     type CredError = GSSAPICredError<Stream::CredError>;
@@ -1475,7 +1495,7 @@ where
 
 impl<Stream, Ctx> Read for GSSAPIStream<Stream, Ctx>
 where
-    Stream: Source + Read + Write,
+    Stream: Session + Source + Read + Write,
     Ctx: SecurityContext
 {
     #[inline]
@@ -1495,7 +1515,7 @@ where
 
 impl<Stream, Ctx> Write for GSSAPIStream<Stream, Ctx>
 where
-    Stream: Source + Read + Write,
+    Stream: Session + Source + Read + Write,
     Ctx: SecurityContext
 {
     #[inline]

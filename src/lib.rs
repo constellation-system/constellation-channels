@@ -58,8 +58,8 @@ pub mod config;
 pub mod far;
 pub mod near;
 pub mod resolve;
-#[cfg(feature = "unix")]
-pub mod unix;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 #[cfg(test)]
 use std::sync::Once;

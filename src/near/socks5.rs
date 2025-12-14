@@ -78,6 +78,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use constellation_socks5::comm::SOCKS5Stream;
 use constellation_socks5::error::SOCKS5Error;
@@ -270,7 +271,8 @@ where
 
                 match machine.run(&mut stream) {
                     Ok(socks5) => Ok(NegotiatorResult::Complete(
-                        (socks5.wrap_stream(stream), endpoint.clone())
+                        (socks5.wrap_stream(stream, endpoint.clone()),
+                         endpoint.clone())
                     )),
                     Err(err) => match err.split() {
                         (Some(pending), None) => Ok(NegotiatorResult::Pending(
@@ -317,7 +319,8 @@ where
 
                     match machine.run(&mut stream) {
                         Ok(socks5) => Ok(NegotiatorResult::Complete(
-                            (socks5.wrap_stream(stream), endpoint)
+                            (socks5.wrap_stream(stream, endpoint.clone()),
+                             endpoint)
                         )),
                         Err(err) => match err.split() {
                             (Some(pending), None) => Ok(
@@ -346,7 +349,8 @@ where
 
                 match machine.run(&mut proxy) {
                     Ok(socks5) => Ok(NegotiatorResult::Complete(
-                        (socks5.wrap_stream(proxy), endpoint)
+                        (socks5.wrap_stream(proxy, endpoint.clone()),
+                         endpoint)
                     )),
                     Err(err) => match err.split() {
                         (Some(pending), None) => Ok(NegotiatorResult::Pending(

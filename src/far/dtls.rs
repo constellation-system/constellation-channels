@@ -35,11 +35,9 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::time::Duration;
-use std::time::Instant;
 
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::SSLCred;
@@ -53,6 +51,7 @@ use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
+use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
@@ -78,13 +77,13 @@ use crate::config::tls::TLSLoadServer;
 use crate::config::tls::TLSPeerConfig;
 use crate::config::DTLSFarChannelConfig;
 use crate::far::flows::BufferedFlow;
-use crate::far::flows::Flow;
 use crate::far::FarChannel;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
+use crate::tls::TLSShutdownNegotiator;
 
 /// A far-link channel that negotiates Datagram Transport-Layer
 /// Security sessions for individual flows.
@@ -161,9 +160,9 @@ pub struct DTLSFarChannel<Channel> {
 ///
 /// This has a [Drop] instance that will attempt to shut down the
 /// session when dropped.
-pub struct DTLSFlow<F: Flow + Read + Write> {
+pub struct DTLSFlow<Flow: Session + Read + Write> {
     /// The underlying SSL stream.
-    ssl: SslStream<F>
+    ssl: SslStream<Flow>
 }
 
 pub struct DTLSOutboundParam<Inner> {
@@ -189,18 +188,6 @@ pub struct DTLSOutboundNegotiator<Inner> {
     inner: Inner
 }
 
-/// [Negotiator] state for shutting down sessions for
-/// [DTLSFarChannel].
-#[derive(Clone)]
-pub struct DTLSShutdownNegotiator<F, Inner> {
-    flow: PhantomData<F>,
-    /// Total maximum duration.
-    timeout: Duration,
-    /// Retry configuration for sending shutdown messages.
-    retry: Retry,
-    inner: Inner
-}
-
 /// [Negotiator] state for inbound sessions for [DTLSFarChannel].
 #[derive(Clone)]
 pub struct DTLSInboundNegotiatorState<Inner> {
@@ -219,15 +206,6 @@ pub struct DTLSOutboundNegotiatorState<Inner> {
     inner: Inner,
     /// Domain name to use for DTLS verification.
     domain: String
-}
-
-/// [Negotiator] state for shutting down sessions for [DTLSFarChannel].
-pub struct DTLSShutdownNegotiatorState<F, Inner>
-where F: Flow + Read + Write {
-    inner: PhantomData<Inner>,
-    /// The [SslConnector] to use for DTLS negotiations.
-    /// The underlying SSL stream.
-    ssl: SslStream<F>,
 }
 
 pub enum DTLSInboundNegoPending<Conn, Inner> {
@@ -249,24 +227,6 @@ pub enum DTLSOutboundNegoPending<Conn, Inner> {
     DTLS {
         pending: MidHandshakeSslStream<Conn>
     }
-}
-
-pub enum DTLSShutdownNegoPending<F, InnerState>
-where F: Flow + Read + Write {
-    /// Shutting down the DTLS session.
-    DTLS {
-        inner: PhantomData<InnerState>,
-        /// Stream to shut down.
-        ssl: SslStream<F>,
-        /// Maximum time for attempting to shut down.
-        timeout: Instant,
-        /// Number of shutdown messages sent.
-        nretries: usize,
-        /// When to send the next message.
-        when: Instant
-    }
-    // XXX This does not shut down the inner stream, due to a
-    // limitation in the OpenSSL bindings library.
 }
 
 /// Errors that can occur during DTLS session negotiation.
@@ -293,25 +253,11 @@ pub enum DTLSNegotiateError<Inner> {
         /// The handshake error.
         err: Error
     },
+    IO {
+        err: std::io::Error
+    },
     /// No server name could be established.
     NoName
-}
-
-/// Errors that can occur during DTLS session negotiation.
-#[derive(Debug)]
-pub enum DTLSShutdownError<Inner> {
-    /// An error occurred on the underlying channel.
-    Inner {
-        /// The underlying channel error.
-        inner: Inner
-    },
-    /// Error during .
-    OpenSSL {
-        /// The handshake error.
-        err: Error
-    },
-    /// Shutdown timed out.
-    Timeout
 }
 
 #[derive(Debug)]
@@ -371,6 +317,7 @@ where
 {
     fn scope(&self) -> ErrorScope {
         match self {
+            DTLSNegotiateError::IO { err } => err.scope(),
             DTLSNegotiateError::Inner { inner } => inner.scope(),
             DTLSNegotiateError::TLSLoad { tls } => tls.scope(),
             DTLSNegotiateError::OpenSSL { .. } => ErrorScope::Session,
@@ -412,18 +359,6 @@ where Inner: ScopedError
             DTLSOutboundNegoError::Inner { err } => err.scope(),
             DTLSOutboundNegoError::TLSLoad { err } => err.scope(),
             DTLSOutboundNegoError::NoName => ErrorScope::Unrecoverable
-        }
-    }
-}
-
-impl<Inner> ScopedError for DTLSShutdownError<Inner>
-where Inner: ScopedError
-{
-    fn scope(&self) -> ErrorScope {
-        match self {
-            DTLSShutdownError::Inner { inner } => inner.scope(),
-            DTLSShutdownError::OpenSSL { err } => err.scope(),
-            DTLSShutdownError::Timeout => ErrorScope::Session
         }
     }
 }
@@ -564,8 +499,8 @@ where
     type Flow = DTLSFlow<Inner::Flow>;
     type InboundNego = DTLSInboundNegotiator<Inner::InboundNego>;
     type OutboundNego = DTLSOutboundNegotiator<Inner::OutboundNego>;
-    type ShutdownNego = DTLSShutdownNegotiator<Inner::Flow,
-                                               Inner::ShutdownNego>;
+    type ShutdownNego = TLSShutdownNegotiator<Inner::Flow,
+                                              Inner::ShutdownNego>;
     type InboundNegoError = DTLSInboundNegoError<Inner::InboundNegoError>;
     type OutboundNegoError = DTLSOutboundNegoError<Inner::OutboundNegoError>;
     type ShutdownNegoError = Inner::ShutdownNegoError;
@@ -602,34 +537,31 @@ where
     ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
         let inner = self.inner.shutdown_negotiator()?;
 
-        Ok(DTLSShutdownNegotiator {
-            flow: PhantomData,
-            timeout: self.shutdown_timeout,
-            retry: self.shutdown_retry.clone(),
-            inner: inner
-        })
+        Ok(TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
+                                      self.shutdown_timeout))
     }
 }
 
-impl <F, Inner> Negotiator<DTLSFlow<F>> for DTLSInboundNegotiator<Inner>
+impl <Flow, Inner> Negotiator<DTLSFlow<Flow>> for DTLSInboundNegotiator<Inner>
 where
-    F: Credentials + Flow + Read + Write,
-    Inner: Negotiator<F>
+    Flow: Credentials + Session + Read + Write,
+    Inner: Negotiator<Flow>
 {
     type State = DTLSInboundNegotiatorState<Inner::State>;
-    type Pending = DTLSInboundNegoPending<F, Inner::Pending>;
+    type Pending = DTLSInboundNegoPending<Flow, Inner::Pending>;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<DTLSFlow<F>, Self::Pending>,
+    ) -> Result<NegotiatorResult<DTLSFlow<Flow>, Self::Pending>,
                 Self::NegotiateError> {
         match self.inner
             .negotiate(state.inner)
             .map_err(|e| DTLSNegotiateError::Inner { inner: e })? {
             NegotiatorResult::Complete(flow) => {
-                let addr = flow.peer_addr();
+                let addr = flow.peer_addr()
+                    .map_err(|err| DTLSNegotiateError::IO { err: err })?;
 
                 debug!(target: "far-dtls",
                        "accepting DTLS session from {}", addr);
@@ -677,8 +609,8 @@ where
 
     fn complete_negotiate(
         &self,
-        pending: DTLSInboundNegoPending<F, Inner::Pending>
-    ) -> Result<NegotiatorResult<DTLSFlow<F>, Self::Pending>,
+        pending: DTLSInboundNegoPending<Flow, Inner::Pending>
+    ) -> Result<NegotiatorResult<DTLSFlow<Flow>, Self::Pending>,
                 Self::NegotiateError> {
         match pending {
             DTLSInboundNegoPending::Inner { acceptor, pending } => match self
@@ -686,7 +618,8 @@ where
                 .complete_negotiate(pending)
                 .map_err(|e| DTLSNegotiateError::Inner { inner: e })? {
                 NegotiatorResult::Complete(flow) => {
-                    let addr = flow.peer_addr();
+                    let addr = flow.peer_addr()
+                        .map_err(|err| DTLSNegotiateError::IO { err: err })?;
 
                     debug!(target: "far-dtls",
                            "accepting DTLS session from {}", addr);
@@ -733,7 +666,8 @@ where
                 )
             }
             DTLSInboundNegoPending::DTLS { pending } => {
-                let addr = pending.get_ref().peer_addr();
+                let addr = pending.get_ref().peer_addr()
+                    .map_err(|err| DTLSNegotiateError::IO { err: err })?;
 
                 trace!(target: "far-dtls",
                        "resuming DTLS negotiation with {}",
@@ -769,12 +703,12 @@ where
     }
 }
 
-impl <F, Inner, Sock, Xfrm>
-    NegotiatorStart<DTLSFlow<F>, BufferedFlow<Sock, Xfrm>>
+impl <Flow, Inner, Sock, Xfrm>
+    NegotiatorStart<DTLSFlow<Flow>, BufferedFlow<Sock, Xfrm>>
     for DTLSInboundNegotiator<Inner>
 where
-    F: Credentials + Flow + Read + Write,
-    Inner: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    Flow: Credentials + Session + Read + Write,
+    Inner: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Sock: Socket + Sender + Receiver,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
@@ -803,25 +737,26 @@ where
     }
 }
 
-impl <F, Inner> Negotiator<DTLSFlow<F>> for DTLSOutboundNegotiator<Inner>
+impl <Flow, Inner> Negotiator<DTLSFlow<Flow>> for DTLSOutboundNegotiator<Inner>
 where
-    F: Credentials + Flow + Read + Write,
-    Inner: Negotiator<F>
+    Flow: Credentials + Session + Read + Write,
+    Inner: Negotiator<Flow>
 {
     type State = DTLSOutboundNegotiatorState<Inner::State>;
-    type Pending = DTLSOutboundNegoPending<F, Inner::Pending>;
+    type Pending = DTLSOutboundNegoPending<Flow, Inner::Pending>;
     type NegotiateError = DTLSNegotiateError<Inner::NegotiateError>;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<DTLSFlow<F>, Self::Pending>,
+    ) -> Result<NegotiatorResult<DTLSFlow<Flow>, Self::Pending>,
                 Self::NegotiateError> {
         match self.inner
             .negotiate(state.inner)
             .map_err(|e| DTLSNegotiateError::Inner { inner: e })? {
             NegotiatorResult::Complete(flow) => {
-                let addr = flow.peer_addr();
+                let addr = flow.peer_addr()
+                    .map_err(|err| DTLSNegotiateError::IO { err: err })?;
 
                 debug!(target: "far-dtls",
                        "establishing DTLS session with {}",
@@ -872,8 +807,8 @@ where
 
     fn complete_negotiate(
         &self,
-        pending: DTLSOutboundNegoPending<F, Inner::Pending>
-    ) -> Result<NegotiatorResult<DTLSFlow<F>, Self::Pending>,
+        pending: DTLSOutboundNegoPending<Flow, Inner::Pending>
+    ) -> Result<NegotiatorResult<DTLSFlow<Flow>, Self::Pending>,
                 Self::NegotiateError> {
         match pending {
             DTLSOutboundNegoPending::Inner {
@@ -883,7 +818,8 @@ where
                 .complete_negotiate(pending)
                 .map_err(|e| DTLSNegotiateError::Inner { inner: e })? {
                 NegotiatorResult::Complete(flow) => {
-                    let addr = flow.peer_addr();
+                    let addr = flow.peer_addr()
+                        .map_err(|err| DTLSNegotiateError::IO { err: err })?;
 
                     debug!(target: "far-dtls",
                            "establishing DTLS session with {}", addr);
@@ -930,7 +866,8 @@ where
                 )
             }
             DTLSOutboundNegoPending::DTLS { pending } => {
-                let addr = pending.get_ref().peer_addr();
+                let addr = pending.get_ref().peer_addr()
+                    .map_err(|err| DTLSNegotiateError::IO { err: err })?;
 
                 trace!(target: "far-dtls",
                        "resuming DTLS negotiation with {}",
@@ -971,12 +908,12 @@ where
     }
 }
 
-impl <F, Inner, Sock, Xfrm>
-    NegotiatorStart<DTLSFlow<F>, BufferedFlow<Sock, Xfrm>>
+impl <Flow, Inner, Sock, Xfrm>
+    NegotiatorStart<DTLSFlow<Flow>, BufferedFlow<Sock, Xfrm>>
     for DTLSOutboundNegotiator<Inner>
 where
-    Inner: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    F: Credentials + Flow + Read + Write,
+    Inner: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    Flow: Credentials + Session + Read + Write,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
     Xfrm::LocalAddr: From<Sock::Addr>,
@@ -1018,151 +955,11 @@ where
     }
 }
 
-impl <F, Inner> Negotiator<()> for DTLSShutdownNegotiator<F, Inner>
+impl <Stream, Inner> NegotiatorStart<(), DTLSFlow<Stream>>
+    for TLSShutdownNegotiator<Stream, Inner>
 where
-    F: Credentials + Flow + Read + Write,
-    Inner: Negotiator<()>
-{
-    type State = DTLSShutdownNegotiatorState<F, Inner::State>;
-    type Pending = DTLSShutdownNegoPending<F, Inner::Pending>;
-    type NegotiateError = DTLSShutdownError<Inner::NegotiateError>;
-
-    fn negotiate(
-        &self,
-        mut state: Self::State
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
-        debug!(target: "far-dtls",
-               "shutting down DTLS session with {}",
-               state.ssl.get_ref().peer_addr());
-
-        match state.ssl.shutdown() {
-            Ok(ShutdownResult::Sent) => {
-                let now = Instant::now();
-                let timeout = now + self.timeout;
-                let delay = self.retry.retry_delay(0);
-                let when = now + delay;
-
-                Ok(NegotiatorResult::Pending(
-                    DTLSShutdownNegoPending::DTLS {
-                        inner: PhantomData,
-                        ssl: state.ssl,
-                        timeout: timeout,
-                        when: when,
-                        nretries: 1,
-                    }
-                ))
-            }
-            Ok(ShutdownResult::Received) => {
-                info!(target: "far-dtls",
-                      "DTLS session with {} shut down successfully",
-                      state.ssl.get_ref().peer_addr());
-
-                // XXX Need to shut down the inner stream here, but
-                // we'd need to deconstruct the SSL stream to do that.
-                //
-                // Ok(self.inner.negotiate(state.inner)?
-                //    .map_pending(|inner| DTLSShutdownNegoPending::Inner {
-                //        pending: inner
-                //    }))
-
-                Ok(NegotiatorResult::Complete(()))
-            }
-            Err(err) => match err.code() {
-                ErrorCode::WANT_READ | ErrorCode::WANT_WRITE => {
-                    let now = Instant::now();
-                    let timeout = now + self.timeout;
-                    let delay = self.retry.retry_delay(0);
-                    let when = now + delay;
-
-                    trace!(target: "far-dtls",
-                           "pausing DTLS negotiation with {}",
-                           state.ssl.get_ref().peer_addr());
-
-                    Ok(NegotiatorResult::Pending(
-                        DTLSShutdownNegoPending::DTLS {
-                            inner: PhantomData,
-                            ssl: state.ssl,
-                            timeout: timeout,
-                            when: when,
-                            nretries: 1,
-                        }
-                    ))
-                },
-                _ => Err(DTLSShutdownError::OpenSSL { err: err })
-            }
-        }
-    }
-
-    fn complete_negotiate(
-        &self,
-        pending: DTLSShutdownNegoPending<F, Inner::Pending>
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
-        let now = Instant::now();
-
-        match pending {
-            DTLSShutdownNegoPending::DTLS {
-                mut ssl, inner, timeout, nretries, ..
-            } => match ssl.shutdown() {
-                Ok(ShutdownResult::Sent) => {
-                    let delay = self.retry.retry_delay(nretries);
-                    let when = now + delay;
-
-                    Ok(NegotiatorResult::Pending(
-                        DTLSShutdownNegoPending::DTLS {
-                            inner: inner,
-                            ssl: ssl,
-                            timeout: timeout,
-                            when: when,
-                            nretries: nretries + 1,
-                        }
-                    ))
-                }
-                Ok(ShutdownResult::Received) => {
-                    info!(target: "far-dtls",
-                          "DTLS session with {} shut down successfully",
-                          ssl.get_ref().peer_addr());
-
-                    // XXX Need to shut down the inner stream here, but
-                    // we'd need to deconstruct the SSL stream to do that.
-                    //
-                    // Ok(self.inner.negotiate(state.inner)?
-                    //    .map_pending(|inner| DTLSShutdownNegoPending::Inner {
-                    //        pending: inner
-                    //    }))
-
-                    Ok(NegotiatorResult::Complete(()))
-                }
-                Err(err) => match err.code() {
-                    ErrorCode::WANT_READ | ErrorCode::WANT_WRITE => {
-                        let delay = self.retry.retry_delay(nretries);
-                        let when = now + delay;
-
-                        trace!(target: "far-dtls",
-                               "pausing DTLS negotiation with {}",
-                               ssl.get_ref().peer_addr());
-
-                        Ok(NegotiatorResult::Pending(
-                            DTLSShutdownNegoPending::DTLS {
-                                inner: inner,
-                                ssl: ssl,
-                                timeout: timeout,
-                                when: when,
-                                nretries: nretries + 1,
-                            }
-                        ))
-                    },
-                    _ => Err(DTLSShutdownError::OpenSSL { err: err })
-                }
-            }
-        }
-    }
-}
-
-impl <F, Inner> NegotiatorStart<(), DTLSFlow<F>>
-    for DTLSShutdownNegotiator<F, Inner>
-where
-    Inner: NegotiatorStart<(), F>,
-    F: Credentials + Flow + Read + Write,
+    Inner: NegotiatorStart<(), Stream>,
+    Stream: Credentials + Session + Read + Write,
 {
     type Param = ();
     type StartError = Inner::StartError;
@@ -1170,13 +967,10 @@ where
     #[inline]
     fn start(
         &self,
-        _param: &(),
-        stream: DTLSFlow<F>
+        param: &(),
+        stream: DTLSFlow<Stream>
     ) -> Result<Self::State, Self::StartError> {
-        Ok(DTLSShutdownNegotiatorState {
-            inner: PhantomData,
-            ssl: stream.ssl,
-        })
+        self.start(param, stream.ssl)
     }
 }
 
@@ -1190,6 +984,7 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             DTLSNegotiateError::Inner { inner } => write!(f, "{}", inner),
+            DTLSNegotiateError::IO { err } => write!(f, "{}", err),
             DTLSNegotiateError::TLSLoad { tls } => write!(f, "{}", tls),
             DTLSNegotiateError::OpenSSL { err } => write!(f, "{}", err),
             DTLSNegotiateError::Handshake { err } => write!(f, "{}", err),
@@ -1200,23 +995,6 @@ where
                     "and no verify-endpoint provided"
                 )
             )
-        }
-    }
-}
-
-impl<Inner> Display for DTLSShutdownError<Inner>
-where
-    Inner: Display
-{
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            DTLSShutdownError::Inner { inner } => write!(f, "{}", inner),
-            DTLSShutdownError::OpenSSL { err } => write!(f, "{}", err),
-            DTLSShutdownError::Timeout =>
-                write!(f, "shutdown negotiations timed out")
         }
     }
 }
@@ -1268,9 +1046,9 @@ where Inner: Display {
     }
 }
 
-impl<F> ConcurrentStream for DTLSFlow<F>
+impl<Flow> ConcurrentStream for DTLSFlow<Flow>
 where
-    F: ConcurrentStream + Flow + Read + Write
+    Flow: ConcurrentStream + Session + Read + Write
 {
     #[inline]
     fn condvar(&self) -> Arc<Condvar> {
@@ -1278,30 +1056,30 @@ where
     }
 }
 
-impl<F> Credentials for DTLSFlow<F>
+impl<Flow> Credentials for DTLSFlow<Flow>
 where
-    F: Credentials + Flow + Read + Write
+    Flow: Credentials + Session + Read + Write
 {
-    type Cred = SSLCred<<F as Credentials>::Cred>;
-    type CredError = <F as Credentials>::CredError;
+    type Cred = SSLCred<<Flow as Credentials>::Cred>;
+    type CredError = <Flow as Credentials>::CredError;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
-        Option<SSLCred<<F as Credentials>::Cred>>,
-        <F as Credentials>::CredError
+        Option<SSLCred<<Flow as Credentials>::Cred>>,
+        <Flow as Credentials>::CredError
     > {
         self.ssl.creds()
     }
 }
 
-impl<F> Flow for DTLSFlow<F>
+impl<Flow> Session for DTLSFlow<Flow>
 where
-    F: Flow + Read + Write
+    Flow: Session + Read + Write
 {
-    type LocalAddr = F::LocalAddr;
-    type PeerAddr = F::PeerAddr;
+    type LocalAddr = Flow::LocalAddr;
+    type PeerAddr = Flow::PeerAddr;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, std::io::Error> {
@@ -1309,14 +1087,14 @@ where
     }
 
     #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
+    fn peer_addr(&self) -> Result<Self::PeerAddr, std::io::Error> {
         self.ssl.get_ref().peer_addr()
     }
 }
 
-impl<F> Read for DTLSFlow<F>
+impl<Flow> Read for DTLSFlow<Flow>
 where
-    F: Flow + Read + Write
+    Flow: Session + Read + Write
 {
     #[inline]
     fn read(
@@ -1359,9 +1137,9 @@ where
     }
 }
 
-impl<F> Write for DTLSFlow<F>
+impl<Flow> Write for DTLSFlow<Flow>
 where
-    F: Flow + Read + Write
+    Flow: Session + Read + Write
 {
     #[inline]
     fn write(

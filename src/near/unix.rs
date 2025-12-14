@@ -64,6 +64,8 @@ use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::retry::RetryResult;
+use constellation_common::unix::UnixSocketAddr;
+use constellation_common::unix::UnixSocketPath;
 use log::debug;
 use log::info;
 use log::warn;
@@ -81,8 +83,6 @@ use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::unix::UnixSocketAddr;
-use crate::unix::UnixSocketPath;
 
 /// Server side of a Unix socket near-link channel.
 ///

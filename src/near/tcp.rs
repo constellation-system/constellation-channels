@@ -47,6 +47,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use log::debug;
@@ -237,6 +238,21 @@ impl TCPStream {
         shutdown: Shutdown
     ) -> Result<(), Error> {
         self.inner.shutdown(shutdown)
+    }
+}
+
+impl Session for TCPStream {
+    type LocalAddr = SocketAddr;
+    type PeerAddr = SocketAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.inner.local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
+        self.inner.peer_addr()
     }
 }
 

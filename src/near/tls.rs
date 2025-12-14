@@ -46,7 +46,9 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorStart;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use log::info;
 use log::warn;
@@ -71,6 +73,7 @@ use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
+use crate::tls::TLSShutdownNegotiator;
 
 /// Wrapper for TLS sessions.
 pub struct TLSConn<S: Source + Read + Write, Endpoint: Display> {
@@ -505,6 +508,25 @@ where
     }
 }
 
+impl<S, Endpoint> Session for TLSConn<S, Endpoint>
+where
+    S: Source + Read + Write + Session,
+    Endpoint: Display
+{
+    type LocalAddr = S::LocalAddr;
+    type PeerAddr = S::PeerAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.ssl.get_ref().local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
+        self.ssl.get_ref().peer_addr()
+    }
+}
+
 impl<S, Endpoint> Source for TLSConn<S, Endpoint>
 where
     S: Source + Read + Write,
@@ -872,7 +894,8 @@ where
         verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx
+    {
         let (tls, config) = config.take();
         let verify_endpoint = match tls.verify_endpoint() {
             Some(endpoint) => Ok(endpoint),
@@ -1075,6 +1098,26 @@ where
     }
 }
 
+impl <Stream, Inner, Endpoint> NegotiatorStart<(), TLSConn<Stream, Endpoint>>
+    for TLSShutdownNegotiator<Stream, Inner>
+where
+    Inner: NegotiatorStart<(), Stream>,
+    Stream: Credentials + Session + Source + Read + Write,
+    Endpoint: Display
+{
+    type Param = ();
+    type StartError = Inner::StartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &(),
+        stream: TLSConn<Stream, Endpoint>
+    ) -> Result<Self::State, Self::StartError> {
+        self.start(param, stream.ssl)
+    }
+}
+
 impl<S, Endpoint> Credentials for TLSConn<S, Endpoint>
 where
     S: Credentials + Source + Read + Write,
@@ -1100,38 +1143,6 @@ where
     #[inline]
     fn creds(&mut self) -> Result<Option<SSLCred<S::Cred>>, S::CredError> {
         self.ssl.creds()
-    }
-}
-
-impl<S, Endpoint> Drop for TLSConn<S, Endpoint>
-where
-    S: Source + Read + Write,
-    Endpoint: Display
-{
-    fn drop(&mut self) {
-        loop {
-            match self.ssl.shutdown() {
-                Ok(ShutdownResult::Sent) => {
-                    info!(target: "far-dtls",
-                          "shutting down TLS session with {}",
-                          self.peer);
-                }
-                Ok(ShutdownResult::Received) => {
-                    info!(target: "far-dtls",
-                          "TLS session with {} successfully shut down",
-                          self.peer);
-
-                    return;
-                }
-                Err(err) => {
-                    warn!(target: "far-dtls",
-                          "error shutting down DTLS session with {}: {}",
-                          self.peer, err);
-
-                    return;
-                }
-            }
-        }
     }
 }
 

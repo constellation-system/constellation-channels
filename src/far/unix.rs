@@ -78,6 +78,7 @@ use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
+use constellation_common::unix::UnixSocketPath;
 use log::info;
 use log::warn;
 use mio::event::Source;
@@ -94,7 +95,6 @@ use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::unix::UnixSocketPath;
 
 /// Unix socket far-link channel.
 ///

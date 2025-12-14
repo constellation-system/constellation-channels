@@ -157,6 +157,7 @@ use std::fmt::Formatter;
 use std::io::Error;
 use std::net::SocketAddr;
 
+use constellation_auth::cred::Credentials;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
@@ -166,8 +167,10 @@ use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
+use constellation_common::unix::UnixSocketPath;
 use mio::Registry;
 use mio::Token;
 use mio::event::Source;
@@ -176,12 +179,10 @@ use crate::addrs::SocketAddrPolicy;
 use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
 use crate::far::flows::BufferedFlow;
-use crate::far::flows::Flow;
 use crate::far::flows::Flows;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolver;
-use crate::unix::UnixSocketPath;
 
 pub mod channels;
 pub mod compound;
@@ -487,7 +488,7 @@ where
     <<Self::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
     InnerXfrm: DatagramXfrm {
-    type Flow: Flow;
+    type Flow: Session + Credentials;
     type InboundNego: NegotiatorStart<
         Self::Flow,
         BufferedFlow<Self::Socket, Xfrm>

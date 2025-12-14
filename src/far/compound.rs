@@ -25,7 +25,6 @@
 //! good reason to impose more stringent restrictions on what types of
 //! channels can be configured.
 
-use std::cell::BorrowMutError;
 use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::fmt::Debug;
@@ -58,10 +57,12 @@ use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
+use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
+use constellation_common::unix::UnixSocketPath;
 #[cfg(feature = "socks5")]
 use constellation_socks5::comm::SOCKS5Param;
 #[cfg(feature = "socks5")]
@@ -94,13 +95,8 @@ use crate::far::dtls::DTLSOutboundNegoPending;
 use crate::far::dtls::DTLSOutboundNegotiator;
 use crate::far::dtls::DTLSOutboundNegotiatorState;
 use crate::far::dtls::DTLSOutboundParam;
-use crate::far::dtls::DTLSShutdownError;
-use crate::far::dtls::DTLSShutdownNegotiator;
-use crate::far::dtls::DTLSShutdownNegoPending;
-use crate::far::dtls::DTLSShutdownNegotiatorState;
 use crate::far::dtls::DTLSStartError;
 use crate::far::flows::BufferedFlow;
-use crate::far::flows::Flow;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquireError;
 #[cfg(feature = "socks5")]
@@ -143,7 +139,10 @@ use crate::near::compound::CompoundNearConnectorNegotiateError;
 use crate::near::compound::CompoundNearConnectorNegotiatePending;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolution;
-use crate::unix::UnixSocketPath;
+use crate::tls::TLSShutdownError;
+use crate::tls::TLSShutdownNegotiator;
+use crate::tls::TLSShutdownNegoPending;
+use crate::tls::TLSShutdownNegotiatorState;
 
 /// Type alias for [CompoundNearConnector] instances that use
 /// [TLSPeerConfig] as their TLS configuration.
@@ -610,8 +609,8 @@ where
         ip: CompoundIPShutdownNegotiator<UDP>
     },
     DTLS {
-        dtls: Box<DTLSShutdownNegotiator<CompoundFlow<Unix, UDP>,
-                                         CompoundShutdownNegotiator<Unix, UDP>>>
+        dtls: Box<TLSShutdownNegotiator<CompoundFlow<Unix, UDP>,
+                                        CompoundShutdownNegotiator<Unix, UDP>>>
     }
 }
 
@@ -622,8 +621,8 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     Basic,
     DTLS {
-        dtls: Box<DTLSShutdownNegotiator<CompoundIPFlow<UDP>,
-                                         CompoundIPShutdownNegotiator<UDP>>>
+        dtls: Box<TLSShutdownNegotiator<CompoundIPFlow<UDP>,
+                                        CompoundIPShutdownNegotiator<UDP>>>
     }
 }
 
@@ -693,7 +692,7 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     Basic,
     DTLS {
-        dtls: Box<DTLSShutdownNegotiatorState<
+        dtls: Box<TLSShutdownNegotiatorState<
             CompoundFlow<Unix, UDP>,
             CompoundShutdownNegotiatorState<Unix, UDP>,
         >>
@@ -708,7 +707,7 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     Basic,
     DTLS {
-        dtls: Box<DTLSShutdownNegotiatorState<
+        dtls: Box<TLSShutdownNegotiatorState<
             CompoundIPFlow<UDP>,
             CompoundIPShutdownNegotiatorState<UDP>,
         >>
@@ -772,7 +771,7 @@ where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     DTLS {
-        dtls: Box<DTLSShutdownNegoPending<
+        dtls: Box<TLSShutdownNegoPending<
             CompoundFlow<Unix, UDP>,
             CompoundShutdownNegotiatorPending<Unix, UDP>,
         >>
@@ -786,7 +785,7 @@ pub enum CompoundIPShutdownNegotiatorPending<UDP>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     DTLS {
-        dtls: Box<DTLSShutdownNegoPending<
+        dtls: Box<TLSShutdownNegoPending<
             CompoundIPFlow<UDP>,
             CompoundIPShutdownNegotiatorPending<UDP>,
         >>
@@ -818,7 +817,7 @@ pub enum CompoundNegotiateError {
 #[derive(Debug)]
 pub enum CompoundShutdownError {
     DTLS {
-        dtls: Box<DTLSShutdownError<CompoundShutdownError>>
+        dtls: Box<TLSShutdownError<CompoundShutdownError>>
     },
     Mismatch
 }
@@ -988,14 +987,14 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Cred = CompoundFarChannelSessionCred;
-    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
+    type CredError = CompoundFarChannelSessionCredError<Error>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred>,
-        CompoundFarChannelSessionCredError<BorrowMutError>
+        CompoundFarChannelSessionCredError<Error>
     > {
         match self {
             CompoundFlow::DTLS { flow } => {
@@ -1031,14 +1030,14 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Cred = CompoundFarChannelSessionCred;
-    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
+    type CredError = CompoundFarChannelSessionCredError<Error>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred>,
-        CompoundFarChannelSessionCredError<BorrowMutError>
+        CompoundFarChannelSessionCredError<Error>
     > {
         self.as_ref().creds()
     }
@@ -1049,14 +1048,14 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Cred = CompoundFarIPChannelSessionCred;
-    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
+    type CredError = CompoundFarChannelSessionCredError<Error>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred>,
-        CompoundFarChannelSessionCredError<BorrowMutError>
+        CompoundFarChannelSessionCredError<Error>
     > {
         match self {
             CompoundIPFlow::DTLS { flow } => {
@@ -1084,14 +1083,14 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
 {
     type Cred = CompoundFarIPChannelSessionCred;
-    type CredError = CompoundFarChannelSessionCredError<BorrowMutError>;
+    type CredError = CompoundFarChannelSessionCredError<Error>;
 
     #[inline]
     fn creds(
         &self
     ) -> Result<
         Option<Self::Cred>,
-        CompoundFarChannelSessionCredError<BorrowMutError>
+        CompoundFarChannelSessionCredError<Error>
     > {
         self.as_ref().creds()
     }
@@ -4128,7 +4127,7 @@ where
     }
 }
 
-impl<Unix, UDP> Flow for CompoundFlow<Unix, UDP>
+impl<Unix, UDP> Session for CompoundFlow<Unix, UDP>
 where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
@@ -4145,19 +4144,19 @@ where
     }
 
     #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
         match self {
             CompoundFlow::Basic { flow } => flow.peer_addr(),
             CompoundFlow::DTLS { flow } => flow.peer_addr(),
-            CompoundFlow::IP { flow } => CompoundFarChannelXfrmPeerAddr::IP {
-                ip: flow.peer_addr()
-            }
+            CompoundFlow::IP { flow } => Ok(CompoundFarChannelXfrmPeerAddr::IP {
+                ip: flow.peer_addr()?
+            })
 
         }
     }
 }
 
-impl<Unix, UDP> Flow for Box<CompoundFlow<Unix, UDP>>
+impl<Unix, UDP> Session for Box<CompoundFlow<Unix, UDP>>
 where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
@@ -4170,7 +4169,7 @@ where
     }
 
     #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
         self.as_ref().peer_addr()
     }
 }
@@ -4293,7 +4292,7 @@ where
     }
 }
 
-impl<UDP> Flow for CompoundIPFlow<UDP>
+impl<UDP> Session for CompoundIPFlow<UDP>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     type LocalAddr = CompoundFarChannelAddr;
@@ -4313,7 +4312,7 @@ where
     }
 
     #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
         match self {
             CompoundIPFlow::Basic { flow } => flow.peer_addr(),
             CompoundIPFlow::DTLS { flow } => flow.peer_addr()
@@ -4321,7 +4320,7 @@ where
     }
 }
 
-impl<UDP> Flow for Box<CompoundIPFlow<UDP>>
+impl<UDP> Session for Box<CompoundIPFlow<UDP>>
 where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     type LocalAddr = CompoundFarChannelAddr;
@@ -4333,7 +4332,7 @@ where
     }
 
     #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
         self.as_ref().peer_addr()
     }
 }

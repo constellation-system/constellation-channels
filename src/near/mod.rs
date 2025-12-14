@@ -168,6 +168,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
+use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use log::trace;
 use mio::event::Source;
@@ -210,7 +211,8 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     /// Type of connections.
     ///
     /// See [take_connection](NearChannel::connection).
-    type Conn: CredentialsMut + Read + Write + Debug + Sized + Source;
+    type Conn: CredentialsMut + Read + Write + Debug + Sized + Source
+        + Session<PeerAddr = Self::Endpoint>;
     /// Type of connection endpoints.
     ///
     /// See [take_connection](NearChannel::take-connection)

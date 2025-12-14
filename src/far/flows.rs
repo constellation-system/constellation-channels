@@ -107,7 +107,6 @@
 //!   once. This is primarily intended for clients that may dispatch
 //!   transactions to multiple endpoints, and for testing.
 
-use std::cell::BorrowMutError;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -131,6 +130,7 @@ use constellation_common::net::DatagramXfrm;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
+use constellation_common::net::Session;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
 use log::debug;
@@ -147,23 +147,6 @@ use crate::config::FlowsConfig;
 
 type MsgBuf = VecDeque<Vec<u8>>;
 
-/// Trait for traffic flows from an individual peer address.
-///
-/// Implementors of this trait are also expected to implement [Read]
-/// and [Write].
-pub trait Flow: Credentials + Read + Write {
-    /// The type of local addresses.
-    type LocalAddr: Display;
-    /// The type of peer (remote) addresses.
-    type PeerAddr: Display;
-
-    /// Get the local address for this flow.
-    fn local_addr(&self) -> Result<Self::LocalAddr, Error>;
-
-    /// Get the peer (remote) address for this flow.
-    fn peer_addr(&self) -> Self::PeerAddr;
-}
-
 enum PendingEntry<In, Out> {
     /// A stalled inbound negotiation.
     In {
@@ -179,12 +162,12 @@ enum PendingEntry<In, Out> {
     }
 }
 
-pub struct Flows<F, Sock, InboundNego, OutboundNego, Xfrm>
+pub struct Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>
 where
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm,
     Xfrm::LocalAddr: From<Sock::Addr>,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
@@ -233,6 +216,9 @@ where
     inbuf: Rc<RefCell<MsgBuf>>,
 }
 
+/// Results that can occur when listening.
+///
+/// See [Flows::listen].
 pub enum ListenResult<Flow, Endpoint> {
     /// A message from a totally new endpoint was received.
     New {
@@ -304,13 +290,13 @@ pub enum FlowsFlowError<Start, Nego> {
     Taken
 }
 
-impl<F, Sock, InboundNego, OutboundNego, Xfrm> Source
-    for Flows<F, Sock, InboundNego, OutboundNego, Xfrm>
+impl<Flow, Sock, InboundNego, OutboundNego, Xfrm> Source
+    for Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>
 where
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm,
     Xfrm::LocalAddr: From<Sock::Addr>,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
@@ -351,18 +337,29 @@ where
     }
 }
 
-impl<F, Sock, InboundNego, OutboundNego, Xfrm>
-    Flows<F, Sock, InboundNego, OutboundNego, Xfrm>
+impl<Flow, Sock, InboundNego, OutboundNego, Xfrm>
+    Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>
 where
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm,
     Xfrm::LocalAddr: From<Sock::Addr>,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
+    /// Create a [Flows] from its necessary components.
+    ///
+    /// # Parameters
+    ///
+    /// - `config`: The configuration object for the [Flows].
+    ///
+    /// - `socket`: The underlying socket to use.
+    ///
+    /// - `inbound_nego`: [Negotiator] to use for inbound sessions.
+    ///
+    /// - `outbound_nego`: [Negotiator] to use for outbound sessions.
     pub(crate) fn create(
         config: FlowsConfig,
         socket: Sock,
@@ -411,6 +408,7 @@ where
             .local_addr()
     }
 
+    /// Check if the outbound message buffer is empty.
     #[inline]
     pub(crate) fn outbound_empty(&self) -> Result<bool, Error> {
         Ok(self.outbuf.try_borrow()
@@ -418,6 +416,11 @@ where
             .is_empty())
     }
 
+    /// Try to send buffered messages.
+    ///
+    /// This will try to send any outbound buffered messages.  These
+    /// are messages that were queued up by flows, which could not be
+    /// sent due to [ErrorKind::WouldBlock] results.
     pub fn push(
         &mut self
     ) -> Result<(), Error> {
@@ -456,10 +459,33 @@ where
         Ok(())
     }
 
+    /// Listen for incoming traffic flows.
+    ///
+    /// This can have the effect of creating a completely new flow, of
+    /// producing messages on an existing flow, or of handling the
+    /// traffic internally.  This will be indicated with a [ListenResult].
+    ///
+    /// One message will be processed per call.
+    ///
+    /// # Parameters
+    ///
+    /// - `param`: Inbound negotiator parameter, used to create new
+    ///   incoming negotiations.
+    ///
+    /// # Return Value
+    ///
+    /// Three possible cases, depending on behavior.
+    ///
+    /// - `Some(ListenResult::Existing { .. })`: Traffic was received
+    ///   on an existing flow.
+    ///
+    /// - `Some(ListenResult::New { .. })`: A new flow was negotiated.
+    ///
+    /// - `None`: Traffic was purely internal.
     pub fn listen(
         &mut self,
         param: &InboundNego::Param,
-    ) -> Result<Option<ListenResult<F, Xfrm::PeerAddr>>,
+    ) -> Result<Option<ListenResult<Flow, Xfrm::PeerAddr>>,
                 FlowsListenError<Xfrm::Error, InboundNego::StartError,
                                  InboundNego::NegotiateError,
                                  OutboundNego::NegotiateError>> {
@@ -684,12 +710,36 @@ where
         }
     }
 
+    /// Request a flow.
+    ///
+    /// This may or may not immediately return the requested flow,
+    /// depending on whether negotiations concluded immediately.  If
+    /// negotiations did not conclude immediately, then the flow will
+    /// be reported in a future call to [listen](Flows::listen).
+    ///
+    /// # Parameters
+    ///
+    /// - `param`: Outbound negotiator parameter, used to create new
+    ///   outgoing negotiations.
+    ///
+    /// - `addr`: Address of the counterparty.
+    ///
+    /// # Return
+    ///
+    /// Two cases, depending on whether negotiations concluded
+    /// immediately:
+    ///
+    /// - `Some(..)`: Negotiations finished immediately, and a flow
+    ///   was created.
+    ///
+    /// - `None`: Negotiations are ongoing, and the flow will be
+    ///   reported in a future call to [listen](Flows::listen).
     pub fn flow(
         &mut self,
         param: &OutboundNego::Param,
         addr: Xfrm::PeerAddr,
     ) -> Result<
-        Option<F>,
+        Option<Flow>,
         FlowsFlowError<OutboundNego::StartError,
                        OutboundNego::NegotiateError>
     > {
@@ -787,7 +837,7 @@ where
     }
 }
 
-impl<Sock, Xfrm> Flow for BufferedFlow<Sock, Xfrm>
+impl<Sock, Xfrm> Session for BufferedFlow<Sock, Xfrm>
 where
     Xfrm: DatagramXfrm,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
@@ -806,8 +856,8 @@ where
 
     /// Get the peer (remote) address for this flow.
     #[inline]
-    fn peer_addr(&self) -> Self::PeerAddr {
-        self.addr.clone()
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
+        Ok(self.addr.clone())
     }
 
 }
@@ -956,12 +1006,14 @@ where
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
     Sock: Socket + Sender + Receiver {
     type Cred = Xfrm::PeerAddr;
-    type CredError = BorrowMutError;
+    type CredError = Error;
 
     #[inline]
-    fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, BorrowMutError> {
-        if self.socket.try_borrow_mut()?.allow_session_addr_creds() {
-            Ok(Some(self.peer_addr()))
+    fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Error> {
+        if self.socket.try_borrow_mut()
+            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?
+            .allow_session_addr_creds() {
+            Ok(Some(self.peer_addr()?))
         } else {
             Ok(None)
         }
@@ -1051,19 +1103,19 @@ where
     }
 }
 
-pub fn connect_one<F, Sock, InboundNego, OutboundNego, Xfrm>(
-    flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
+pub fn connect_one<Flow, Sock, InboundNego, OutboundNego, Xfrm>(
+    flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
     out_param: &OutboundNego::Param,
     in_param: &InboundNego::Param,
     addr: Xfrm::PeerAddr,
     token: Token,
-) -> Result<F, Error>
+) -> Result<Flow, Error>
 where
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     flows.flow(out_param, addr)
@@ -1077,17 +1129,17 @@ where
         })
 }
 
-pub fn accept_one<F, Sock, InboundNego, OutboundNego, Xfrm>(
-    flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
+pub fn accept_one<Flow, Sock, InboundNego, OutboundNego, Xfrm>(
+    flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
     param: &InboundNego::Param,
     token: Token,
-) -> Result<(F, Xfrm::PeerAddr), Error>
+) -> Result<(Flow, Xfrm::PeerAddr), Error>
 where
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     let mut events = Events::with_capacity(2);
@@ -1139,8 +1191,8 @@ where
     }
 }
 
-pub fn write_one<W, F, Sock, InboundNego, OutboundNego, Xfrm>(
-    flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
+pub fn write_one<W, Flow, Sock, InboundNego, OutboundNego, Xfrm>(
+    flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
     stream: &mut W,
     bytes: &[u8],
@@ -1148,10 +1200,10 @@ pub fn write_one<W, F, Sock, InboundNego, OutboundNego, Xfrm>(
 ) -> Result<(), Error>
 where
     W: Write,
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     trace!(target: "write-one",
@@ -1188,8 +1240,8 @@ where
     Ok(())
 }
 
-pub fn read_one<R, F, Sock, InboundNego, OutboundNego, Xfrm>(
-    flows: &mut Flows<F, Sock, InboundNego, OutboundNego, Xfrm>,
+pub fn read_one<R, Flow, Sock, InboundNego, OutboundNego, Xfrm>(
+    flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
     stream: &mut R,
     buf: &mut [u8],
@@ -1199,10 +1251,10 @@ pub fn read_one<R, F, Sock, InboundNego, OutboundNego, Xfrm>(
 ) -> Result<usize, Error>
 where
     R: Read,
-    F: Flow,
+    Flow: Session,
     Sock: Socket + Sender + Receiver + Source,
-    OutboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
-    InboundNego: NegotiatorStart<F, BufferedFlow<Sock, Xfrm>>,
+    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
+    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     let mut events = Events::with_capacity(2);
