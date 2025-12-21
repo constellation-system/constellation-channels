@@ -83,7 +83,7 @@ use crate::far::FarChannelCreate;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::tls::TLSShutdownNegotiator;
+use crate::tls::DTLSShutdownNegotiator;
 use crate::tls::TLSStartError;
 
 /// A far-link channel that negotiates Datagram Transport-Layer
@@ -341,6 +341,14 @@ where Inner: ScopedError
     }
 }
 
+impl<Flow> From<DTLSFlow<Flow>> for SslStream<Flow>
+where Flow: Session {
+    #[inline]
+    fn from(val: DTLSFlow<Flow>) -> SslStream<Flow> {
+        val.ssl
+    }
+}
+
 impl<Channel> FarChannel for DTLSFarChannel<Channel>
 where
     Channel: FarChannel
@@ -477,8 +485,8 @@ where
     type Flow = DTLSFlow<Inner::Flow>;
     type InboundNego = DTLSInboundNegotiator<Inner::InboundNego>;
     type OutboundNego = DTLSOutboundNegotiator<Inner::OutboundNego>;
-    type ShutdownNego = TLSShutdownNegotiator<Inner::Flow,
-                                              Inner::ShutdownNego>;
+    type ShutdownNego = DTLSShutdownNegotiator<Inner::Flow,
+                                               Inner::ShutdownNego>;
     type InboundNegoError = DTLSInboundNegoError<Inner::InboundNegoError>;
     type OutboundNegoError = DTLSOutboundNegoError<Inner::OutboundNegoError>;
     type ShutdownNegoError = Inner::ShutdownNegoError;
@@ -515,8 +523,8 @@ where
     ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
         let inner = self.inner.shutdown_negotiator()?;
 
-        Ok(TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
-                                      self.shutdown_timeout))
+        Ok(DTLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
+                                       self.shutdown_timeout))
     }
 }
 
@@ -930,25 +938,6 @@ where
             domain: domain,
             inner: inner
         })
-    }
-}
-
-impl <Stream, Inner> NegotiatorStart<(), DTLSFlow<Stream>>
-    for TLSShutdownNegotiator<Stream, Inner>
-where
-    Inner: NegotiatorStart<(), Stream>,
-    Stream: Credentials + Session + Read + Write,
-{
-    type Param = ();
-    type StartError = Inner::StartError;
-
-    #[inline]
-    fn start(
-        &self,
-        param: &(),
-        stream: DTLSFlow<Stream>
-    ) -> Result<Self::State, Self::StartError> {
-        self.start(param, stream.ssl)
     }
 }
 

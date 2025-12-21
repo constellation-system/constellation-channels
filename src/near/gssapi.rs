@@ -438,9 +438,9 @@ where
         .map_err(|err| GSSAPIError::IO { err: err })
 }
 
-impl<Inner> Negotiator<()> for GSSAPIShutdownNegotiator<Inner>
+impl<Value, Inner> Negotiator<Value> for GSSAPIShutdownNegotiator<Inner>
 where
-    Inner: Negotiator<()>
+    Inner: Negotiator<Value>
 {
     type State = Inner::State;
     type Pending = Inner::Pending;
@@ -450,7 +450,7 @@ where
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError> {
         self.inner.negotiate(state)
     }
 
@@ -458,15 +458,16 @@ where
     fn complete_negotiate(
         &self,
         pending: Self::Pending
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError> {
         self.inner.complete_negotiate(pending)
     }
 }
 
-impl<Inner, Stream, Ctx> NegotiatorStart<(), GSSAPIStream<Stream, Ctx>>
+impl<Value, Inner, Stream, Ctx>
+    NegotiatorStart<Value, GSSAPIStream<Stream, Ctx>>
     for GSSAPIShutdownNegotiator<Inner>
 where
-    Inner: NegotiatorStart<(), Stream>,
+    Inner: NegotiatorStart<Value, Stream>,
     Stream: Session + Source + Read + Write,
     Ctx: SecurityContext {
     type Param = Inner::Param;
@@ -1060,6 +1061,7 @@ where
     type Endpoint = A::Endpoint;
     type Conn = GSSAPIStream<A::Conn, ServerCtx>;
     type ShutdownNego = GSSAPIShutdownNegotiator<A::ShutdownNego>;
+    type ShutdownValue = A::ShutdownValue;
     type StartError = A::StartError;
 
     #[inline]
@@ -1085,6 +1087,13 @@ where
         GSSAPIShutdownNegotiator {
             inner: inner
         }
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<Self::ShutdownValue, Self::Conn>>::Param {
+        self.inner.shutdown_param()
     }
 
     fn cleanup(
@@ -1281,6 +1290,7 @@ where
     type Endpoint = C::Endpoint;
     type Conn = GSSAPIStream<C::Conn, ClientCtx>;
     type ShutdownNego = GSSAPIShutdownNegotiator<C::ShutdownNego>;
+    type ShutdownValue = C::ShutdownValue;
     type StartError = C::StartError;
 
     #[inline]
@@ -1306,6 +1316,13 @@ where
         GSSAPIShutdownNegotiator {
             inner: inner
         }
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<Self::ShutdownValue, Self::Conn>>::Param {
+        self.inner.shutdown_param()
     }
 
     fn cleanup(

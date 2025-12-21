@@ -381,9 +381,10 @@ where
     }
 }
 
-impl<Inner> Negotiator<()> for SOCKS5ShutdownNegotiator<Inner>
+impl<Value, Inner> Negotiator<Value>
+    for SOCKS5ShutdownNegotiator<Inner>
 where
-    Inner: Negotiator<()>
+    Inner: Negotiator<Value>
 {
     type State = Inner::State;
     type Pending = Inner::Pending;
@@ -393,7 +394,7 @@ where
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError> {
         self.inner.negotiate(state)
     }
 
@@ -401,15 +402,15 @@ where
     fn complete_negotiate(
         &self,
         pending: Self::Pending
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError> {
         self.inner.complete_negotiate(pending)
     }
 }
 
-impl<Inner, Stream> NegotiatorStart<(), SOCKS5Stream<Stream>>
+impl<Inner, Stream, Value> NegotiatorStart<Value, SOCKS5Stream<Stream>>
     for SOCKS5ShutdownNegotiator<Inner>
 where
-    Inner: NegotiatorStart<(), Stream>,
+    Inner: NegotiatorStart<Value, Stream>,
     Stream: Session + Source + Read + Write {
     type Param = Inner::Param;
     type StartError = Inner::StartError;
@@ -431,6 +432,7 @@ where
     type Endpoint = IPEndpoint;
     type StartError = Conn::StartError;
     type ShutdownNego = SOCKS5ShutdownNegotiator<Conn::ShutdownNego>;
+    type ShutdownValue = Conn::ShutdownValue;
     type Conn = SOCKS5Stream<Conn::Conn>;
 
     #[inline]
@@ -456,6 +458,13 @@ where
         SOCKS5ShutdownNegotiator {
             inner: inner
         }
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::Param {
+        self.proxy.shutdown_param()
     }
 
     fn cleanup(

@@ -75,6 +75,7 @@ use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
+use crate::tls::SSLStream;
 use crate::tls::TLSShutdownNegotiator;
 
 /// Wrapper for TLS sessions.
@@ -329,6 +330,15 @@ impl ScopedError for TLSCreateError {
     }
 }
 
+impl<Stream, Endpoint> From<TLSConn<Stream, Endpoint>> for SslStream<Stream>
+where Stream: Source + Session,
+      Endpoint: Display {
+    #[inline]
+    fn from(val: TLSConn<Stream, Endpoint>) -> SslStream<Stream> {
+        val.ssl
+    }
+}
+
 impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
     for TLSNearAcceptor<A, TLS>
 where
@@ -483,7 +493,9 @@ where
 {
     type Endpoint = A::Endpoint;
     type Conn = TLSConn<A::Conn, A::Endpoint>;
-    type ShutdownNego = TLSShutdownNegotiator<A::Conn, A::ShutdownNego>;
+    type ShutdownNego = TLSShutdownNegotiator<A::Conn, A::ShutdownNego,
+                                              A::ShutdownValue>;
+    type ShutdownValue = SSLStream<A::Conn>;
     type StartError = A::StartError;
 
     #[inline]
@@ -503,6 +515,13 @@ where
 
         TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
                                    self.shutdown_timeout)
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> () {
+        ()
     }
 
     fn cleanup(
@@ -807,7 +826,10 @@ where
 {
     type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
-    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn, Conn::ShutdownNego>;
+    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn,
+                                              Conn::ShutdownNego,
+                                              Conn::ShutdownValue>;
+    type ShutdownValue = SSLStream<Conn::Conn>;
     type StartError = Conn::StartError;
 
     #[inline]
@@ -827,6 +849,13 @@ where
 
         TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
                                    self.shutdown_timeout)
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> () {
+        ()
     }
 
     fn cleanup(
@@ -1045,7 +1074,10 @@ where
 {
     type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
-    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn, Conn::ShutdownNego>;
+    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn,
+                                              Conn::ShutdownNego,
+                                              Conn::ShutdownValue>;
+    type ShutdownValue = SSLStream<Conn::Conn>;
     type StartError = Conn::StartError;
 
     #[inline]
@@ -1065,6 +1097,13 @@ where
 
         TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
                                    self.shutdown_timeout)
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> () {
+        ()
     }
 
     fn cleanup(
@@ -1150,26 +1189,6 @@ where
     #[inline]
     fn shutdown(&mut self) -> Result<(), Error> {
         self.as_mut().shutdown()
-    }
-}
-
-impl <Stream, Inner, Endpoint> NegotiatorStart<(), TLSConn<Stream, Endpoint>>
-    for TLSShutdownNegotiator<Stream, Inner>
-where
-    Inner: NegotiatorStart<(), Stream>,
-    Stream: Credentials + Session + Source + Read + Write,
-    Endpoint: Display
-{
-    type Param = ();
-    type StartError = Inner::StartError;
-
-    #[inline]
-    fn start(
-        &self,
-        param: &(),
-        stream: TLSConn<Stream, Endpoint>
-    ) -> Result<Self::State, Self::StartError> {
-        self.start(param, stream.ssl)
     }
 }
 

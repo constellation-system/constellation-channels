@@ -802,7 +802,7 @@ where
                                scope);
                     }
 
-                    info!(target: "flows-nego-state",
+                    warn!(target: "flows-nego-state",
                           "session authentication with {} failed: {}",
                           addr, err);
 

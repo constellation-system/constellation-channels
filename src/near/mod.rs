@@ -220,7 +220,9 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     /// [endpoint](NearConnector::endpoint).
     type Endpoint: Clone + Debug + Display + Sized;
     /// Type of shutdown negotiators.
-    type ShutdownNego: Negotiator<()> + NegotiatorStart<(), Self::Conn>;
+    type ShutdownNego: Negotiator<Self::ShutdownValue>
+        + NegotiatorStart<Self::ShutdownValue, Self::Conn>;
+    type ShutdownValue: Source;
     /// Type of errors that can occur starting a negotiation.
     type StartError: Display + ScopedError;
 
@@ -239,6 +241,10 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     fn shutdown_nego(
         &self
     ) -> Self::ShutdownNego;
+
+    fn shutdown_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<Self::ShutdownValue, Self::Conn>>::Param;
 
     fn cleanup(
         &mut self,

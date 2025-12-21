@@ -139,7 +139,7 @@ use crate::near::compound::CompoundNearConnectorNegotiatePending;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolution;
 use crate::tls::TLSShutdownError;
-use crate::tls::TLSShutdownNegotiator;
+use crate::tls::DTLSShutdownNegotiator;
 use crate::tls::TLSShutdownNegoPending;
 use crate::tls::TLSShutdownNegotiatorState;
 use crate::tls::TLSStartError;
@@ -609,8 +609,8 @@ where
         ip: CompoundIPShutdownNegotiator<UDP>
     },
     DTLS {
-        dtls: Box<TLSShutdownNegotiator<CompoundFlow<Unix, UDP>,
-                                        CompoundShutdownNegotiator<Unix, UDP>>>
+        dtls: Box<DTLSShutdownNegotiator<CompoundFlow<Unix, UDP>,
+                                         CompoundShutdownNegotiator<Unix, UDP>>>
     }
 }
 
@@ -621,8 +621,8 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr> {
     Basic,
     DTLS {
-        dtls: Box<TLSShutdownNegotiator<CompoundIPFlow<UDP>,
-                                        CompoundIPShutdownNegotiator<UDP>>>
+        dtls: Box<DTLSShutdownNegotiator<CompoundIPFlow<UDP>,
+                                         CompoundIPShutdownNegotiator<UDP>>>
     }
 }
 

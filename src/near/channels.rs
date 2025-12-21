@@ -23,6 +23,10 @@ use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
 use std::hash::Hash;
+use std::io::IoSlice;
+use std::io::IoSliceMut;
+use std::io::Read;
+use std::io::Write;
 use std::iter::Peekable;
 use std::marker::PhantomData;
 use std::time::Instant;
@@ -43,6 +47,9 @@ use constellation_common::retry::RetryResult;
 use log::debug;
 use log::error;
 use log::info;
+use log::trace;
+use log::warn;
+use mio::event::Source;
 use mio::Registry;
 use mio::Token;
 
@@ -59,7 +66,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NearChannelID(Token);
 
-enum DuplexEntry<Accept, Conn> {
+enum DuplexValue<Accept, Conn> {
     Accept {
         accept: Accept
     },
@@ -68,83 +75,78 @@ enum DuplexEntry<Accept, Conn> {
     }
 }
 
-enum SessionNegoEntry<AuthN, Endpoint, Shutdown> {
+enum SessionNegoEntry<Channel, AuthN>
+where
+    Channel: NearChannel,
+    Channel::NegotiateError: ScopedError,
+    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
+    AuthN::NegotiateError: ScopedError
+{
+    /// Session negotiation is pending.
+    Session {
+        /// Pending negotiation state.
+        pending: Channel::Pending
+    },
     /// Authentication negotiation is pending.
     AuthN {
         /// Endpoint for this negotiation.
-        endpoint: Endpoint,
+        endpoint: Channel::Endpoint,
         /// Pending negotiation state.
-        pending: AuthN,
+        pending: AuthN::Pending,
     },
     Active {
         /// Endpoint for this session.
-        endpoint: Endpoint,
+        endpoint: Channel::Endpoint,
     },
     /// Shutdown negotiation is pending.
     Shutdown {
+        /// Endpoint for this session.
+        endpoint: Channel::Endpoint,
         /// Pending negotiation state.
-        pending: Shutdown
+        pending: <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::Pending
     }
 }
 
-enum DuplexNegoEntry<Conn, Accept, AuthN, Endpoint, Shutdown> {
-    /// Connector session negotiation is pending.
-    Conn {
-        /// Pending negotiation state.
-        pending: Conn
-    },
-    /// Acceptor session negotiation is pending.
-    Accept {
-        /// Pending negotiation state.
-        pending: Accept
-    },
-    /// Session-level state.
-    Session {
-        session: SessionNegoEntry<AuthN, Endpoint, Shutdown>
-    }
-}
-
-enum NegoEntry<Conn, AuthN, Endpoint, Shutdown> {
-    /// Connector session negotiation is pending.
-    Conn {
-        /// Pending negotiation state.
-        pending: Conn
-    },
-    /// Session-level state.
-    Session {
-        session: SessionNegoEntry<AuthN, Endpoint, Shutdown>
-    }
-}
-
-struct ConnectorEntry<State> {
-    /// Token to use for registering sessions.
-    token: Token,
-    state: Option<State>,
+struct ConnectorEntry<Channel, AuthN>
+where
+    Channel: NearChannel,
+    Channel::NegotiateError: ScopedError,
+    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
+    AuthN::NegotiateError: ScopedError
+{
+    channel: Channel,
+    shutdown: Channel::ShutdownNego,
+    state: Option<SessionNegoEntry<Channel, AuthN>>,
     /// Number of retries.
     nretries: usize,
     /// When to retry next.
     when: Instant
 }
 
-enum ChannelMode<Acceptor, Conn, AuthN, ShutdownNego>
+enum ChannelMode<Accept, Conn, AcceptAuthN, ConnAuthN>
 where
     Conn: NearConnector + NearChannelCreateWithEndpoint,
+    Conn::Endpoint: Clone + Eq + Hash,
     Conn::Conn: Session,
     Conn::NegotiateError: ScopedError,
-    ShutdownNego: NegotiatorStart<(), Conn::Conn>,
-    ShutdownNego::NegotiateError: ScopedError,
-    Acceptor: NearChannel<Conn = Conn::Conn, Endpoint = Conn::Endpoint>
-        + NearChannelCreate,
-    Acceptor::Endpoint: Clone + Eq + Hash,
-    AuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError
+    Accept: NearChannel + NearChannelCreate,
+    Accept::Endpoint: Clone + Eq + Hash,
+    Accept::Conn: Session,
+    Accept::NegotiateError: ScopedError,
+    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
+    ConnAuthN::NegotiateError: ScopedError,
+    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
+    AcceptAuthN::NegotiateError: ScopedError
 {
     /// Full-duplex channels, which can establish outbound as well as
     /// inbound connections.
     Duplex {
         config: Conn::Config,
+        in_authn: AcceptAuthN,
+        out_authn: ConnAuthN,
         /// Acceptor for incoming sessions.
-        acceptor: Acceptor,
+        acceptor: Accept,
+        shutdown: Accept::ShutdownNego,
         /// Token for acceptor.
         token: Token,
         /// Retry delay for acceptor.
@@ -153,77 +155,86 @@ where
         tokens: HashMap<Conn::Endpoint, Token>,
         negos: HashMap<
             Token,
-            ConnectorEntry<DuplexNegoEntry<Conn::State, Acceptor::State,
-                                           AuthN::State, Conn::Endpoint,
-                                           ShutdownNego::Pending>>
+            DuplexValue<
+                SessionNegoEntry<Accept, AcceptAuthN>,
+                ConnectorEntry<Conn, ConnAuthN>
+            >
         >
     },
     /// Outbound-only channels, which can only establish connections.
     Outbound {
         config: Conn::Config,
+        authn: ConnAuthN,
         /// Session information for each endpoint.
-        sessions: HashMap<Conn::Endpoint, Token>,
+        tokens: HashMap<Conn::Endpoint, Token>,
         negos: HashMap<
             Token,
-            ConnectorEntry<NegoEntry<Conn::State, AuthN::State,
-                                     Conn::Endpoint, ShutdownNego::Pending>>
+            ConnectorEntry<Conn, ConnAuthN>,
         >,
     },
     /// Inbound-only channels, which can only listen for connections.
     Inbound {
+        authn: AcceptAuthN,
         /// Acceptor for incoming sessions.
-        acceptor: Acceptor,
+        acceptor: Accept,
+        shutdown: Accept::ShutdownNego,
         /// Token for acceptor.
         token: Token,
         /// Retry delay for acceptor.
         retry_when: Option<Instant>,
         /// Session information for each endpoint.
-        sessions: HashMap<Acceptor::Endpoint, Token>,
-        negos: HashMap<Token, NegoEntry<Acceptor::State, AuthN::State,
-                                        Acceptor::Endpoint,
-                                        ShutdownNego::Pending>>,
+        sessions: HashMap<Accept::Endpoint, Token>,
+        negos: HashMap<
+            Token,
+            SessionNegoEntry<Accept, AcceptAuthN>,
+        >
     }
 }
 
-struct ChannelEntry<Acceptor, Conn, AuthN, ShutdownNego>
+struct ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>
 where
     Conn: NearConnector + NearChannelCreateWithEndpoint,
+    Conn::Endpoint: Clone + Eq + Hash,
     Conn::Conn: Session,
+    Conn::Config: Clone,
     Conn::NegotiateError: ScopedError,
-    ShutdownNego: NegotiatorStart<(), Conn::Conn>,
-    ShutdownNego::NegotiateError: ScopedError,
-    Acceptor: NearChannel<Conn = Conn::Conn, Endpoint = Conn::Endpoint>
-        + NearChannelCreate,
-    Acceptor::Endpoint: Clone + Eq + Hash,
-    AuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError
+    Accept: NearChannel + NearChannelCreate,
+    Accept::Endpoint: Clone + Eq + Hash,
+    Accept::Conn: Session,
+    Accept::NegotiateError: ScopedError,
+    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
+    ConnAuthN::NegotiateError: ScopedError,
+    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
+    AcceptAuthN::NegotiateError: ScopedError
 {
-    mode: ChannelMode<Acceptor, Conn, AuthN, ShutdownNego>,
-    /// Authenticator instance to use for sessions.
-    authn: AuthN,
+    mode: ChannelMode<Accept, Conn, AcceptAuthN, ConnAuthN>,
     /// Retry configuration to use.
     retry: Retry,
 }
 
-pub struct NearChannels<Acceptor, Conn, AuthN, ShutdownNego>
+pub struct NearChannels<Accept, Conn, AcceptAuthN, ConnAuthN>
 where
     Conn: NearConnector + NearChannelCreateWithEndpoint,
+    Conn::Endpoint: Clone + Eq + Hash,
     Conn::Conn: Session,
+    Conn::Config: Clone,
     Conn::NegotiateError: ScopedError,
-    ShutdownNego: NegotiatorStart<(), Conn::Conn>,
-    ShutdownNego::NegotiateError: ScopedError,
-    Acceptor: NearChannel<Conn = Conn::Conn, Endpoint = Conn::Endpoint>
-        + NearChannelCreate,
-    Acceptor::Endpoint: Clone + Eq + Hash,
-    AuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
+    Accept: NearChannel + NearChannelCreate,
+    Accept::Endpoint: Clone + Eq + Hash,
+    Accept::Conn: Session,
+    Accept::NegotiateError: ScopedError,
+    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
+    ConnAuthN::NegotiateError: ScopedError,
+    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
+    AcceptAuthN::NegotiateError: ScopedError
 {
     /// Map from names to `NearChannelID`s.
     ids: HashMap<String, NearChannelID>,
+    tokens: HashMap<Token, NearChannelID>,
     /// Reverse map from `NearChannelID`s to names.
     names: Vec<String>,
     /// Array of registry entries for each channel.
-    channels: Vec<ChannelEntry<Acceptor, Conn, AuthN, ShutdownNego>>
+    channels: Vec<ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>>
 }
 
 #[derive(Debug)]
@@ -253,12 +264,18 @@ pub enum NearChannelsEntrySessionError<Conn, Req> {
 }
 
 #[derive(Debug)]
-pub enum SessionEntryStepError<AuthN, Shutdown> {
+pub enum SessionEntryStepError<Session, AuthN, Shutdown> {
+    Session {
+        err: Session
+    },
     AuthN {
         err: AuthN
     },
     Shutdown {
         err: Shutdown
+    },
+    IO {
+        err: std::io::Error
     }
 }
 
@@ -286,97 +303,239 @@ pub enum NegoEntrySessionError<Nego, AuthN> {
     }
 }
 
-
-
-
-
 #[derive(Debug)]
-pub enum SessionEntryCreateSessionError<Start, Session, Auth> {
-    /// Error occurred starting session negotiations.
-    Start {
-        /// The error that occurred starting session negotiations.
-        err: Start
-    },
-    /// Error occurred during session negotiations.
+pub enum SessionEntryCreateError<Session, Shutdown> {
     Session {
-        /// The error that occurred during session negotiations.
         err: Session
     },
-    /// Error occurred during session negotiations.
-    Auth {
-        /// The error that occurred during session negotiations.
-        err: Auth
-    },
-    /// Session is already active
-    Active
-}
-
-pub enum SessionEntryShutdownError<Start, Nego> {
-    /// Error occurred starting shutdown negotiations.
-    Start {
-        /// The error that occurred starting shutdown negotiations.
-        err: Start
-    },
-    /// Error occurred during shutdown negotiations.
-    Nego {
-        /// The error that occurred during shutdown negotiations.
-        err: Nego
-    },
-    /// The session was in a shutdown state.
-    Shutdown,
-    /// A session negotiation exists.
-    Session,
-    /// An authentication negotiation exists.
-    AuthN,
-    /// The session has no existing state.
-    None
-}
-
-#[derive(Debug)]
-pub enum SessionNegoStepError<Session, AuthN, Shutdown> {
-    /// An error occurred during session negotiations.
-    Session {
-        /// The error that occurred during session negotiations.
-        err: Session
-    },
-    /// An error occurred during authentication negotiations.
-    AuthN {
-        /// The error that occurred during authentication negotiations.
-        err: AuthN
-    },
-    /// An error occurred clearing the backlog.
-    IO {
-        /// The error that occurred clearing the backlog.
-        err: Error
-    },
-    /// An error occurred during shutdown negotiations.
     Shutdown {
-        /// The error that occurred during shutdown negotiations.
         err: Shutdown
+    },
+    IO {
+        err: std::io::Error
     }
 }
 
-impl<AuthNPending, Endpoint, ShutdownPending>
-    SessionNegoEntry<AuthNPending, Endpoint, ShutdownPending>
-where Endpoint: Clone + Eq + Hash {
-    fn authn<Stream, AuthN>(
+#[derive(Debug)]
+pub enum SessionEntryShutdownError<Start, Shutdown> {
+    Shutdown {
+        err: ShutdownError<Start, Shutdown>
+    },
+    NotActive
+}
+
+#[derive(Debug)]
+pub enum SessionCreateError<Session, Shutdown> {
+    Session {
+        err: Session
+    },
+    Shutdown {
+        err: Shutdown
+    },
+    IO {
+        err: std::io::Error
+    }
+}
+
+#[derive(Debug)]
+pub enum ConnectorEntryCreateError<Start, Nego> {
+    Start {
+        err: Start
+    },
+    Nego {
+        err: Nego
+    }
+}
+
+#[derive(Debug)]
+pub enum ConnectorEntryStepError<Start, Connect, Step> {
+    Start {
+        err: Start
+    },
+    Connect {
+        err: Connect
+    },
+    Step {
+        err: Step
+    }
+}
+
+
+
+impl<Channel, AuthN> SessionNegoEntry<Channel, AuthN>
+where
+    Channel: NearChannel,
+    Channel::Endpoint: Clone + Eq + Hash,
+    Channel::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError: ScopedError,
+    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
+    AuthN::NegotiateError: ScopedError
+{
+    /// Create a new `SessionNegoEntry`.
+    ///
+    /// This will advance negotiations as far as they can go, possibly
+    /// to the point of failing to create the `SessionNegoEntry` due
+    /// to authentication failures.
+    ///
+    /// # Parameters
+    ///
+    /// - `channel`: The [NearChannel] definition to use.
+    ///
+    /// - `authn`: The [SessionAuthN] to use for authentication.
+    ///
+    /// - `shutdown`: The [Negotiator] to use for shutting down sessions.
+    ///
+    /// - `param`: The parameter to use to begin shutdown.
+    ///
+    /// - `state`: The initial state to use for session negotiations.
+    ///
+    /// # Return Values
+    ///
+    /// - `Some(self, Some(session))`: If a session was successfully
+    ///   negotiated.
+    ///
+    /// - `Some(self, None)`: If negotiations could not be concluded.
+    ///
+    /// - `None`: If negotiations concluded, but did not yield a session.
+    fn create(
+        channel: &Channel,
         authn: &AuthN,
-        endpoint: Endpoint,
-        stream: Stream
+        shutdown: &Channel::ShutdownNego,
+        state: Channel::State,
+    ) -> Result<
+        Option<(Self, Option<AuthN::AuthNSession>)>,
+        SessionEntryCreateError<
+            NegoEntrySessionError<
+                Channel::NegotiateError,
+                SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+            >,
+            ShutdownError<
+                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            >
+        >
+    > {
+        match SessionNegoEntry::session(channel, authn, state) {
+            Ok(NegotiatorResult::Complete((AuthNResult::Accept((out, session)),
+                                           endpoint))) => {
+                info!(target: "session-nego-entry",
+                      "authenticated new session with {} over {}",
+                      session.prin(), endpoint);
+
+                Ok(Some((out, Some(session))))
+            },
+            Ok(NegotiatorResult::Complete((AuthNResult::Reject(stream),
+                                          endpoint))) => {
+                info!(target: "session-nego-entry",
+                      "authentication rejected for session with {}",
+                      endpoint);
+
+                let res = Self::do_shutdown(shutdown, &channel.shutdown_param(),
+                                            endpoint.clone(), stream)
+                    .map_err(|err| SessionEntryCreateError::Shutdown {
+                        err: err
+                    })?;
+                let out = Self::handle_shutdown_result(res, endpoint);
+
+                Ok(out.map(|out| (out, None)))
+            },
+            Ok(NegotiatorResult::Pending(pending)) => Ok(Some((pending, None))),
+            Err(err) => match err.scope() {
+                // Pass these errors through.
+                ErrorScope::Unrecoverable |
+                ErrorScope::Shutdown |
+                ErrorScope::External |
+                ErrorScope::System =>
+                    Err(SessionEntryCreateError::Session { err: err }),
+                // Retry after a delay
+                scope => {
+                    if !matches![scope, ErrorScope::Session] {
+                        error!(target: "session-nego-entry",
+                               "shouldn't see error with scope {} here",
+                               scope);
+                    }
+
+                    warn!(target: "session-nego-entry",
+                          "session negotiation failed: {}",
+                          err);
+
+                    // See if we need to shut down the stream.
+                    let stream = match err {
+                        NegoEntrySessionError::AuthN {
+                            err: SessionEntryAuthNError::Start { err }
+                        } => authn.start_err_stream(err),
+                        NegoEntrySessionError::AuthN {
+                            err: SessionEntryAuthNError::AuthN { err }
+                        } => authn.err_stream(err),
+                        _ => None
+                    };
+
+                    if let Some(stream) = stream {
+                        let endpoint = stream.peer_addr()
+                            .map_err(|err| SessionEntryCreateError::IO {
+                                err: err
+                            })?;
+                        let res = Self::do_shutdown(shutdown,
+                                                    &channel.shutdown_param(),
+                                                    endpoint.clone(),
+                                                    stream)
+                            .map_err(|err| SessionEntryCreateError::Shutdown {
+                                err: err
+                            })?;
+                        let out = Self::handle_shutdown_result(res, endpoint);
+
+                        Ok(out.map(|out| (out, None)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    }
+
+    fn session(
+        channel: &Channel,
+        authn: &AuthN,
+        state: Channel::State,
     ) -> Result<
         NegotiatorResult<
-            AuthNResult<(Self, AuthN::AuthNSession), Stream>,
+            (AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>,
+             Channel::Endpoint),
+            Self
+        >,
+        NegoEntrySessionError<
+            Channel::NegotiateError,
+            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+        >
+    > {
+        channel.negotiate(state)
+            .map_err(|err| NegoEntrySessionError::Nego { err: err })?
+            .map_pending(|pending| SessionNegoEntry::Session {
+                pending: pending
+            })
+            .flat_map_ok(|(stream, endpoint)|
+                         Self::authn(authn, endpoint.clone(), stream)
+                         .map(|res| res.map(|res| (res, endpoint)))
+                         .map_err(|err| NegoEntrySessionError::AuthN {
+                             err: err
+                         }))
+    }
+
+    fn authn(
+        authn: &AuthN,
+        endpoint: Channel::Endpoint,
+        stream: Channel::Conn
+    ) -> Result<
+        NegotiatorResult<
+            AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>,
             Self
         >,
         SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
-    >
-    where
-        Stream: Session,
-        AuthN: SessionAuthN<Stream, Param = ()>
-            + Negotiator<AuthNResult<AuthN::AuthNSession, Stream>,
-                         Pending = AuthNPending>,
-        AuthN::NegotiateError: ScopedError,
-        AuthN::StartError: ScopedError {
+    > {
+        debug!(target: "session-nego-entry",
+               "starting session authentication over {}",
+               endpoint);
+
         let state = authn
             .start(&(), stream)
             .map_err(|err| SessionEntryAuthNError::Start {
@@ -386,31 +545,41 @@ where Endpoint: Clone + Eq + Hash {
         Ok(authn
            .negotiate(state)
            .map_err(|err| SessionEntryAuthNError::AuthN { err: err })?
-           .map_pending(|pending| SessionNegoEntry::AuthN {
-               endpoint: endpoint.clone(),
-               pending: pending
+           .map_pending(|pending| {
+               debug!(target: "session-nego-entry",
+                      "continuing session authentication over {}",
+                      endpoint);
+
+               SessionNegoEntry::AuthN {
+                   endpoint: endpoint.clone(),
+                   pending: pending
+               }
            })
-           .map(|res| res.map(|session| (SessionNegoEntry::Active {
-               endpoint: endpoint
-           }, session))))
+           .map(|res| {
+               debug!(target: "session-nego-entry",
+                      "completed session authentication over {}",
+                      endpoint);
+
+               res.map(|session| (SessionNegoEntry::Active {
+                   endpoint: endpoint
+               }, session))
+           }))
     }
 
     /// Create a `SessionNegoEntry` for shutdown negotiations.
-    fn shutdown<Stream, ShutdownNego>(
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        stream: Stream
+    fn do_shutdown(
+        registry: &Registry,
+        shutdown: &Channel::ShutdownNego,
+        param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
+        endpoint: Channel::Endpoint,
+        stream: Channel::Conn,
     ) -> Result<
         NegotiatorResult<(), Self>,
-        ShutdownError<ShutdownNego::StartError,
-                      ShutdownNego::NegotiateError>
-    >
-    where
-        Stream: Session,
-        ShutdownNego: NegotiatorStart<(), Stream>
-            + Negotiator<(), Pending = ShutdownPending>,
-        ShutdownNego::NegotiateError: ScopedError,
-    {
+        ShutdownError<
+            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+        >
+    > {
         let state = shutdown.start(param, stream)
             .map_err(|err| ShutdownError::Start { err: err })?;
 
@@ -419,48 +588,63 @@ where Endpoint: Clone + Eq + Hash {
                err: err
            })?
            .map_pending(|pending| SessionNegoEntry::Shutdown {
+               endpoint: endpoint,
                pending: pending
+           })
+           .map(|mut val| {
+               val.deregister(registry);
            }))
     }
 
-    fn listen<Stream, AuthN, ShutdownNego>(
+    fn do_step(
         self,
-        endpoints: &mut HashSet<Endpoint>,
+        endpoints: &mut HashSet<Channel::Endpoint>,
+        registry: &Registry,
+        channel: &Channel,
         authn: &AuthN,
-        shutdown: &ShutdownNego,
+        shutdown: &Channel::ShutdownNego,
     ) -> Result<
         NegotiatorResult<
-            Option<AuthNResult<(Self, AuthN::AuthNSession), Stream>>,
+            (Option<AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>>,
+             Channel::Endpoint),
             Self
         >,
         SessionEntryStepError<
-            AuthN::NegotiateError,
-            ShutdownNego::NegotiateError
+            Channel::NegotiateError,
+            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
         >
-    >
-    where
-        Stream: Session<PeerAddr = Endpoint>,
-        AuthN: SessionAuthN<Stream, Param = ()>
-            + Negotiator<AuthNResult<AuthN::AuthNSession, Stream>,
-                         Pending = AuthNPending>,
-        AuthN::NegotiateError: ScopedError,
-        AuthN::StartError: ScopedError,
-        ShutdownNego: NegotiatorStart<(), Stream>
-            + Negotiator<(), Pending = ShutdownPending>,
-        ShutdownNego::NegotiateError: ScopedError
-    {
+    > {
         match self {
+            SessionNegoEntry::Session { pending } => channel
+                .complete_negotiate(pending)
+                .map_err(|err| SessionEntryStepError::Session { err: err })?
+                .map_pending(|pending| SessionNegoEntry::Session {
+                    pending: pending
+                })
+                .flat_map_ok(|(stream, endpoint)|
+                             Self::authn(authn, endpoint.clone(), stream)
+                             .map(|res| res.map(|res| (Some(res), endpoint)))
+                             .map_err(|err| SessionEntryStepError::AuthN {
+                                 err: err
+                             })),
             SessionNegoEntry::AuthN { pending, endpoint } =>
                 Ok(authn
                    .complete_negotiate(pending)
-                   .map_err(|err| SessionEntryStepError::AuthN { err: err })?
+                   .map_err(|err| SessionEntryStepError::AuthN {
+                       err: SessionEntryAuthNError::AuthN {
+                           err: err
+                       }
+                   })?
                    .map_pending(|pending| SessionNegoEntry::AuthN {
                        endpoint: endpoint.clone(),
                        pending: pending
                    })
-                   .map(|res| Some(res.map(|session| (SessionNegoEntry::Active {
-                       endpoint: endpoint
-                   }, session))))),
+                   .map(|res| (Some(res.map(|session|
+                                            (SessionNegoEntry::Active {
+                                                endpoint: endpoint.clone()
+                                            }, session))),
+                                    endpoint))),
             SessionNegoEntry::Active { endpoint } => {
                 endpoints.insert(endpoint.clone());
 
@@ -468,981 +652,1113 @@ where Endpoint: Clone + Eq + Hash {
                     endpoint: endpoint
                 }))
             }
-            SessionNegoEntry::Shutdown { pending } =>
+            SessionNegoEntry::Shutdown { pending, endpoint } =>
                 Ok(shutdown.complete_negotiate(pending)
                    .map_err(|err| SessionEntryStepError::Shutdown { err: err })?
                    .map_pending(|pending| SessionNegoEntry::Shutdown {
+                       endpoint: endpoint.clone(),
                        pending: pending
                    })
-                   .map(|()| None))
-        }
-    }
-}
+                   .map(|mut val| {
+                       val.deregister(registry);
 
-impl<ConnPending, AuthNPending, Endpoint, ShutdownPending>
-    NegoEntry<ConnPending, AuthNPending, Endpoint, ShutdownPending>
-where Endpoint: Clone + Eq + Hash {
-    fn session<Conn, AuthN>(
-        conn: &Conn,
-        authn: &AuthN,
-        state: Conn::State,
-    ) -> Result<
-        NegotiatorResult<
-            AuthNResult<(Self, AuthN::AuthNSession), Conn::Conn>,
-            Self
-        >,
-        NegoEntrySessionError<
-            Conn::NegotiateError,
-            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
-        >
-    >
-    where
-        Conn: NearConnector<Pending = ConnPending> +
-        NearChannelCreateWithEndpoint,
-        Conn::Conn: Session<PeerAddr = Endpoint>,
-        Conn::NegotiateError: ScopedError,
-        AuthN: SessionAuthN<Conn::Conn, Param = ()>
-            + Negotiator<AuthNResult<AuthN::AuthNSession, Conn::Conn>,
-                         Pending = AuthNPending>,
-        AuthN::NegotiateError: ScopedError,
-        AuthN::StartError: ScopedError {
-        conn.negotiate(state)
-            .map_err(|err| NegoEntrySessionError::Nego { err: err })?
-            .map_pending(|pending| NegoEntry::Conn { pending: pending })
-            .flat_map_ok(|(stream, endpoint)|
-                         Self::authn(authn, endpoint, stream)
-                         .map_err(|err| NegoEntrySessionError::AuthN {
-                             err: err
-                         }))
-    }
-
-    fn authn<Stream, AuthN>(
-        authn: &AuthN,
-        endpoint: Endpoint,
-        stream: Stream
-    ) -> Result<
-        NegotiatorResult<
-            AuthNResult<(Self, AuthN::AuthNSession), Stream>,
-            Self
-        >,
-        SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
-    >
-    where
-        Stream: Session,
-        AuthN: SessionAuthN<Stream, Param = ()>
-            + Negotiator<AuthNResult<AuthN::AuthNSession, Stream>,
-                         Pending = AuthNPending>,
-        AuthN::NegotiateError: ScopedError,
-        AuthN::StartError: ScopedError {
-        Ok(SessionNegoEntry::authn(authn, endpoint, stream)?
-           .map_pending(|session| NegoEntry::Session { session: session })
-           .map(|res| res.map(|(session, authned)| (NegoEntry::Session {
-               session: session
-           }, authned))))
-    }
-
-    /// Create a `SessionNegoEntry` for shutdown negotiations.
-    fn shutdown<Stream, ShutdownNego>(
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        stream: Stream
-    ) -> Result<
-        NegotiatorResult<(), Self>,
-        ShutdownError<ShutdownNego::StartError,
-                      ShutdownNego::NegotiateError>
-    >
-    where
-        Stream: Session,
-        ShutdownNego: NegotiatorStart<(), Stream>
-            + Negotiator<(), Pending = ShutdownPending>,
-        ShutdownNego::NegotiateError: ScopedError,
-    {
-        Ok(SessionNegoEntry::shutdown(shutdown, param, stream)?
-           .map_pending(|session| NegoEntry::Session { session: session }))
-    }
-}
-
-impl<Conn, AuthN, ShutdownNego> SessionEntry<Conn, AuthN, ShutdownNego>
-where
-    Conn: NearConnector + NearChannelCreateWithEndpoint,
-    Conn::Conn: Session,
-    Conn::NegotiateError: ScopedError,
-    AuthN: SessionAuthN<Conn::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    ShutdownNego: NegotiatorStart<(), Conn::Conn>,
-    ShutdownNego::NegotiateError: ScopedError,
-{
-    #[inline]
-    fn create(
-        conn: Conn,
-        token: Token
-    ) -> Self {
-        ConnectorEntry {
-            token: token,
-            state: None,
-            nretries: 0,
-            when: Instant::now()
+                       (None, endpoint)
+                   }))
         }
     }
 
-    fn recv_session(
-        &mut self,
+    fn handle_shutdown_result<Addr>(
+        registry: &Registry,
+        res: NegotiatorResult<Channel::ShutdownValue, Self>,
+        endpoint: Addr
+    ) -> Result<Option<Self>, std::io::Error>
+    where Addr: Display {
+        match res {
+            NegotiatorResult::Complete(mut val) => {
+                info!(target: "session-nego-entry",
+                      "shutdown session with {}",
+                      endpoint);
+
+                val.deregister(registry);
+
+                Ok(None)
+            }
+            NegotiatorResult::Pending(pending) => {
+                debug!(target: "session-nego-entry",
+                       "continuing shutdown negotiation with {}",
+                       endpoint);
+
+                Ok(Some(pending))
+            }
+        }
+    }
+
+    /// Consume this `SessionNegoEntry` and step negotiations forward.
+    ///
+    /// This will advance negotiations as far as they can go, possibly
+    /// to the point of completion.  It will create a new
+    /// `SessionNegoEntry` if the session is still going.
+    ///
+    /// # Parameters
+    ///
+    /// - `endpoints`: A [HashSet] into which the endpoints for any
+    ///   active sessions will be placed.
+    ///
+    /// - `channel`: The [NearChannel] definition to use.
+    ///
+    /// - `authn`: The [SessionAuthN] to use for authentication.
+    ///
+    /// - `shutdown`: The [Negotiator] to use for shutting down sessions.
+    ///
+    /// - `param`: The parameter to use to begin shutdown.
+    ///
+    /// # Return Values
+    ///
+    /// - `Some(self, Some(session))`: If a session was successfully
+    ///   negotiated.
+    ///
+    /// - `Some(self, None)`: If the session still exists, but did not
+    ///   produce a new session.
+    ///
+    /// - `None`: If negotiations concluded, but did not yield a session.
+    fn step(
+        self,
+        endpoints: &mut HashSet<Channel::Endpoint>,
+        channel: &Channel,
         authn: &AuthN,
-        retry: &Retry,
-        conn: Conn::Conn
+        shutdown: &Channel::ShutdownNego,
     ) -> Result<
-        Option<AuthN::AuthNSession>,
-        SessionEntryAuthSessionError<
-            AuthN::StartError,
-            AuthN::NegotiateError,
+        Option<(Self, Option<AuthN::AuthNSession>)>,
+        SessionEntryStepError<
+            Channel::NegotiateError,
+            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+            ShutdownError<
+                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            >
         >
     > {
-        // Start authentication negotiations.
-        let state = authn
-            .start(&(), conn)
-            .map_err(|err| SessionEntryAuthSessionError::Start {
-                err: err
-            })?;
-
-        match authn.negotiate(state) {
-            // Negotiations completed immediately; set the state
-            // to active and return.
-            Ok(NegotiatorResult::Complete(AuthNResult::Accept(out))) => {
-                info!(target: "session-nego-state",
+        match self.do_step(endpoints, channel, authn, shutdown) {
+            // Negotiations completed and yielded a session.
+            Ok(NegotiatorResult::Complete(
+                (Some(AuthNResult::Accept((out, session))), endpoint)
+            )) => {
+                info!(target: "session-nego-entry",
                       "authenticated new session with {} over {}",
-                      out.prin(), self.conn.endpoint());
+                      session.prin(), endpoint);
 
-                self.state = Some(SessionState::Active);
-                self.nretries = 0;
-                self.when = Instant::now();
-
-                Ok(Some(out))
-            },
-            // Authentication failed.
-            Ok(NegotiatorResult::Complete(AuthNResult::Reject(_))) => {
-                info!(target: "session-nego-state",
+                Ok(Some((out, Some(session))))
+            }
+            // Negotiations completed and yielded an
+            // authentication failure.
+            Ok(NegotiatorResult::Complete(
+                (Some(AuthNResult::Reject(stream)), endpoint)
+            )) => {
+                info!(target: "session-nego-entry",
                       "authentication rejected for session with {}",
-                      self.conn.endpoint());
+                      endpoint);
 
-                let delay = retry.retry_delay(0);
+                let res = Self::do_shutdown(shutdown, &channel.shutdown_param(),
+                                            endpoint.clone(), stream)
+                    .map_err(|err| SessionEntryStepError::Shutdown {
+                        err: err
+                    })?;
+                let out = Self::handle_shutdown_result(res, endpoint);
 
-                debug!(target: "session-nego-state",
-                       "authentication rejected, delay for {}.{:03}s",
-                       delay.as_secs(), delay.subsec_millis());
-
-                self.state = None;
-                self.nretries += 1;
-                self.when = Instant::now() + delay;
-
-                Ok(None)
-            }
-            // Negotiations stopped in a pending state.
-            Ok(NegotiatorResult::Pending(pending)) => {
-                self.state = Some(SessionState::AuthN {
-                    pending: pending
-                });
+                Ok(out.map(|out| (out, None)))
+            },
+            // Negotiations completed and yielrded a session.
+            Ok(NegotiatorResult::Complete((None, endpoint))) => {
+                info!(target: "session-nego-entry",
+                      "shutdown session with {}",
+                      endpoint);
 
                 Ok(None)
             }
-            // Error occurred; check its scope.
+            Ok(NegotiatorResult::Pending(pending)) => Ok(Some((pending, None))),
             Err(err) => match err.scope() {
                 // Pass these errors through.
                 ErrorScope::Unrecoverable |
                 ErrorScope::Shutdown |
                 ErrorScope::External |
-                ErrorScope::System => Err(SessionEntryAuthSessionError::AuthN {
-                    err: err
-                }),
+                ErrorScope::System => match err {
+                    SessionEntryStepError::Session { err } =>
+                        Err(SessionEntryStepError::Session { err: err }),
+                    SessionEntryStepError::AuthN { err } =>
+                        Err(SessionEntryStepError::AuthN { err: err }),
+                    SessionEntryStepError::Shutdown { err } =>
+                        Err(SessionEntryStepError::Shutdown {
+                            err: ShutdownError::Negotiate {
+                                err: err
+                            }
+                        }),
+                    SessionEntryStepError::IO { err } =>
+                        Err(SessionEntryStepError::IO { err: err }),
+                }
                 // Retry after a delay
                 scope => {
                     if !matches![scope, ErrorScope::Session] {
-                        error!(target: "session-nego-state",
+                        error!(target: "session-nego-entry",
                                "shouldn't see error with scope {} here",
                                scope);
                     }
 
-                    info!(target: "session-nego-state",
-                          "session authn with {} failed: {}",
-                          self.conn.endpoint(), err);
+                    warn!(target: "session-nego-entry",
+                          "session negotiation failed: {}",
+                          err);
 
-                    let delay = retry.retry_delay(0);
+                    // See if we need to shut down the stream.
+                    let stream = match err {
+                        SessionEntryStepError::AuthN {
+                            err: SessionEntryAuthNError::Start { err }
+                        } => authn.start_err_stream(err),
+                        SessionEntryStepError::AuthN {
+                            err: SessionEntryAuthNError::AuthN { err }
+                        } => authn.err_stream(err),
+                        _ => None
+                    };
 
-                    debug!(target: "session-nego-state",
-                           "auth negotiation failed, delay for {}.{:03}s",
-                           delay.as_secs(), delay.subsec_millis());
+                    if let Some(stream) = stream {
+                        let endpoint = stream.peer_addr()
+                            .map_err(|err| SessionEntryStepError::IO {
+                                err: err
+                            })?;
+                        let res = Self::do_shutdown(shutdown,
+                                                    &channel.shutdown_param(),
+                                                    endpoint.clone(),
+                                                    stream)
+                            .map_err(|err| SessionEntryStepError::Shutdown {
+                                err: err
+                            })?;
+                        let out = Self::handle_shutdown_result(res, endpoint);
 
-                    self.state = None;
-                    self.nretries += 1;
-                    self.when = Instant::now() + delay;
-
-                    Ok(None)
+                        Ok(out.map(|out| (out, None)))
+                    } else {
+                        Ok(None)
+                    }
                 }
             }
         }
     }
 
-    fn negotiate_session(
-        &mut self,
+    /// Shut down an active session.
+    ///
+    /// This will consume the `SessionNegoEntry` and attempt shutdown
+    /// negotiations.  If negotiations cannot be concluded
+    /// immediately, a new `SessionNegoEntry` representing the pending
+    /// negotiations will be returned.
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: The [Negotiator] to use for shutdown.
+    ///
+    /// - `param`: The parameter to use to begin the shutdown.
+    ///
+    /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// - `Some(..)` if shutdown negotiations are still pending.
+    ///
+    /// - `None` if the session was shut down successfully.
+    fn shutdown(
+        self,
+        registry: &Registry,
+        shutdown: &Channel::ShutdownNego,
+        param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
+        stream: Channel::Conn,
+    ) -> Result<
+        Option<Self>,
+        SessionEntryShutdownError<
+            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+        >
+    > {
+        if let SessionNegoEntry::Active { endpoint } = self {
+            let res = SessionNegoEntry::do_shutdown(shutdown, param,
+                                                    endpoint.clone(),
+                                                    stream)
+                .map_err(|err| SessionEntryShutdownError::Shutdown {
+                    err: err
+                })?;
+
+            Ok(Self::handle_shutdown_result(res, endpoint))
+        } else {
+            Err(SessionEntryShutdownError::NotActive)
+        }
+    }
+}
+
+impl<Channel, AuthN> ConnectorEntry<Channel, AuthN>
+where
+    Channel: NearConnector,
+    Channel::Endpoint: Clone + Eq + Hash,
+    Channel::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError: ScopedError,
+    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+{
+    fn create(
+        registry: &Registry,
+        mut channel: Channel,
         authn: &AuthN,
         retry: &Retry,
-        state: Conn::State
+        token: Token
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
-        SessionEntryCreateSessionError<
-            Conn::StartError,
-            Conn::NegotiateError,
-            SessionEntryAuthSessionError<
-                AuthN::StartError,
-                AuthN::NegotiateError,
+        RetryResult<(Self, Option<AuthN::AuthNSession>)>,
+        ConnectorEntryCreateError<
+            Channel::StartError,
+            SessionCreateError<
+                NegoEntrySessionError<
+                    Channel::NegotiateError,
+                    SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+                >,
+                ShutdownError<
+                    <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                >
             >
         >
     > {
-        match self.conn.negotiate(state) {
-            // Session negotiations succeeded; launch authentication
-            // negotiations.
-            Ok(NegotiatorResult::Complete((conn, _))) => self
-                .recv_session(authn, retry, conn)
-                .map_err(|err| SessionEntryCreateSessionError::Auth {
-                    err: err
-                })
-                .map(RetryResult::Success),
-            // Negotiations stopped in a pending state.
-            Ok(NegotiatorResult::Pending(pending)) => {
-                self.state = Some(SessionState::Session {
-                    pending: pending
-                });
-
-                Ok(RetryResult::Success(None))
-            }
-            // Error occurred; check its scope.
-            Err(err) => match err.scope() {
-                // Pass these errors through.
-                ErrorScope::Unrecoverable |
-                ErrorScope::Shutdown |
-                ErrorScope::External |
-                ErrorScope::System =>
-                    Err(SessionEntryCreateSessionError::Session {
+        channel.start(registry, token)
+            .map_err(|err| ConnectorEntryCreateError::Start { err: err })?
+            .map_ok(|state| {
+                let shutdown = channel.shutdown_nego();
+                let mut entry = ConnectorEntry {
+                    channel: channel,
+                    shutdown: shutdown,
+                    state: None,
+                    nretries: 0,
+                    when: Instant::now()
+                };
+                let session = entry.do_connect(authn, retry, state)
+                    .map_err(|err| ConnectorEntryCreateError::Nego {
                         err: err
-                    }),
-                // Retry after a delay
-                scope => {
-                    if !matches![scope, ErrorScope::Session] {
-                        error!(target: "session-nego-state",
-                               "shouldn't see error with scope {} here",
-                               scope);
+                    })?;
+
+                Ok((entry, session))
+            })
+    }
+
+    fn step(
+        &mut self,
+        endpoints: &mut HashSet<Channel::Endpoint>,
+        registry: &Registry,
+        authn: &AuthN,
+        retry: &Retry,
+        token: Token
+    ) -> Result<
+        RetryResult<Option<AuthN::AuthNSession>>,
+        ConnectorEntryStepError<
+            Channel::StartError,
+            SessionCreateError<
+                NegoEntrySessionError<
+                    Channel::NegotiateError,
+                    SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+                >,
+                ShutdownError<
+                    <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                >
+            >,
+            SessionEntryStepError<
+                Channel::NegotiateError,
+                SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+                ShutdownError<
+                    <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                >
+            >
+        >
+    > {
+        let state = self.state.take();
+
+        match state {
+            Some(state) => self.do_step(endpoints, authn, retry, state)
+                .map_err(|err| ConnectorEntryStepError::Step { err: err })
+                .map(RetryResult::Success),
+            None => {
+                let now = Instant::now();
+
+                if self.when < now {
+                    match self.channel.start(registry, token)
+                        .map_err(|err| ConnectorEntryStepError::Start {
+                            err: err
+                        })? {
+                        RetryResult::Success(state) => self
+                            .do_connect(authn, retry, state)
+                            .map_err(|err| ConnectorEntryStepError::Connect {
+                                err: err
+                            })
+                            .map(RetryResult::Success),
+                        RetryResult::Retry(when) => {
+                            self.when = when;
+
+                            Ok(RetryResult::Retry(when))
+                        }
                     }
-
-                    info!(target: "session-nego-state",
-                          "session with {} failed: {}",
-                          self.conn.endpoint(), err);
-
-                    let delay = retry.retry_delay(self.nretries);
-
-                    debug!(target: "session-nego-state",
-                           "negotiation failed, delay for {}.{:03}s",
-                           delay.as_secs(), delay.subsec_millis());
-
-                    self.state = None;
-                    self.nretries += 1;
-                    self.when = Instant::now() + delay;
-
+                } else {
                     Ok(RetryResult::Retry(self.when))
                 }
             }
         }
     }
 
-    fn create_session(
+    fn shutdown(
         &mut self,
-        registry: &mut Registry,
-        authn: &AuthN,
-        retry: &Retry,
+        registry: &Registry,
+        stream: Channel::Conn,
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
-        SessionEntryCreateSessionError<
-            Conn::StartError,
-            Conn::NegotiateError,
-            SessionEntryAuthSessionError<
-                AuthN::StartError,
-                AuthN::NegotiateError,
-            >
+        bool,
+        SessionEntryShutdownError<
+            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
         >
     > {
-        // Check if we're still delayed.
-        let now = Instant::now();
+        let state = self.state.take()
+            .ok_or(SessionEntryShutdownError::NotActive)?;
+        let newstate = state
+            .shutdown(registry, &self.shutdown, &self.channel.shutdown_param(),
+                      stream)?;
+        let out = newstate.is_none();
 
-        if self.when < now {
-            self.conn.start(registry, self.token)
-                .map_err(|err| SessionEntryCreateSessionError::Start {
-                    err: err
-                })?
-                .flat_map_ok(|state|
-                             self.negotiate_session(authn, retry, state))
-        } else {
-            // Still delayed.
-            Ok(RetryResult::Retry(self.when))
-        }
+        self.state = newstate;
+
+        Ok(out)
     }
 
-    fn req_session(
+    fn do_shutdown(
         &mut self,
-        registry: &mut Registry,
-        authn: &AuthN,
-        retry: &Retry,
-    ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
-        SessionEntryCreateSessionError<
-            Conn::StartError,
-            Conn::NegotiateError,
-            SessionEntryAuthSessionError<
-                AuthN::StartError,
-                AuthN::NegotiateError,
-            >
-        >
-    > {
-        if let Some(state) = &self.state {
-            match state {
-                // The negotiations are still pending.
-                SessionState::Session { .. } |
-                SessionState::AuthN { .. } |
-                SessionState::Shutdown { .. } => Ok(RetryResult::Success(None)),
-                // The session is already negotiated and taken.
-                SessionState::Active =>
-                    Err(SessionEntryCreateSessionError::Active),
-            }
-        } else {
-            self.create_session(registry, authn, retry)
-        }
-    }
-
-    fn shutdown_session<Addr>(
-        &mut self,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        addr: Addr,
-        session: AuthN::AuthNSession
+        endpoint: Channel::Endpoint,
+        stream: Channel::Conn,
     ) -> Result<
         (),
-        SessionEntryShutdownError<ShutdownNego::StartError,
-                                  ShutdownNego::NegotiateError>
-    >
-    where Addr: Display
-    {
-        match &self.state {
-            // This is what we expect.
-            Some(SessionState::Active) => {
-                error!(target: "session-nego-state",
-                       "shutting down active session with {}",
-                       addr);
+        ShutdownError<
+            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+        >
+    > {
+        match SessionNegoEntry::do_shutdown(&self.shutdown,
+                                            &self.channel.shutdown_param(),
+                                            endpoint.clone(), stream)? {
+            NegotiatorResult::Complete(()) => {
+                info!(target: "connector-entry",
+                      "shutdown session with {}",
+                      endpoint);
 
-                let (_, session) = session.take();
-                let state = shutdown.start(param, session)
-                    .map_err(|err| SessionEntryShutdownError::Start {
+                self.state = None;
+            },
+            NegotiatorResult::Pending(pending) => {
+                debug!(target: "connector-entry",
+                       "continuing shutdown negotiation with {}",
+                       endpoint);
+
+                self.state = Some(pending)
+            }
+        }
+
+        Ok(())
+    }
+
+    fn do_connect(
+        &mut self,
+        authn: &AuthN,
+        retry: &Retry,
+        state: Channel::State,
+    ) -> Result<
+        Option<AuthN::AuthNSession>,
+        SessionCreateError<
+            NegoEntrySessionError<
+                Channel::NegotiateError,
+                SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+            >,
+            ShutdownError<
+                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            >
+        >
+    > {
+        match SessionNegoEntry::session(&self.channel, authn, state) {
+            Ok(NegotiatorResult::Complete((AuthNResult::Accept((out, session)),
+                                           endpoint))) => {
+                info!(target: "connector-entry",
+                      "authenticated new session with {} over {}",
+                      session.prin(), endpoint);
+
+                self.state = Some(out);
+
+                Ok(Some(session))
+            },
+            Ok(NegotiatorResult::Complete((AuthNResult::Reject(stream),
+                                           endpoint))) => {
+                info!(target: "connector-entry",
+                      "authentication rejected for session with {}",
+                      self.channel.endpoint());
+
+                let delay = retry.retry_delay(self.nretries);
+
+                self.when = Instant::now() + delay;
+                self.nretries += 1;
+
+                self.do_shutdown(endpoint, stream)
+                    .map_err(|err| SessionCreateError::Shutdown { err: err })?;
+
+                Ok(None)
+            },
+            Ok(NegotiatorResult::Pending(pending)) => {
+                self.state = Some(pending);
+
+                Ok(None)
+            }
+            Err(err) => match err.scope() {
+                // Pass these errors through.
+                ErrorScope::Unrecoverable |
+                ErrorScope::Shutdown |
+                ErrorScope::External |
+                ErrorScope::System =>
+                    Err(SessionCreateError::Session { err: err }),
+                // Retry after a delay
+                scope => {
+                    if !matches![scope, ErrorScope::Session] {
+                        error!(target: "connector-entry",
+                               "shouldn't see error with scope {} here",
+                               scope);
+                    }
+
+                    warn!(target: "connector-entry",
+                          "session authentication with {} failed: {}",
+                          self.channel.endpoint(), err);
+
+                    let delay = retry.retry_delay(0);
+
+                    debug!(target: "connector-entry",
+                           "negotiation failed, delay for {}.{:03}s",
+                           delay.as_secs(), delay.subsec_millis());
+
+                    self.nretries = self.nretries + 1;
+                    self.when = Instant::now() + delay;
+                    self.state = None;
+
+                    // See if we need to shut down the stream.
+                    let stream = match err {
+                        NegoEntrySessionError::AuthN {
+                            err: SessionEntryAuthNError::Start { err }
+                        } => authn.start_err_stream(err),
+                        NegoEntrySessionError::AuthN {
+                            err: SessionEntryAuthNError::AuthN { err }
+                        } => authn.err_stream(err),
+                        _ => None
+                    };
+
+                    if let Some(stream) = stream {
+                        let endpoint = stream.peer_addr()
+                            .map_err(|err| SessionCreateError::IO {
+                                err: err
+                            })?;
+
+                        self.do_shutdown(endpoint, stream)
+                            .map_err(|err| SessionCreateError::Shutdown {
+                                err: err
+                            })?;
+                    }
+
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    fn do_step(
+        &mut self,
+        endpoints: &mut HashSet<Channel::Endpoint>,
+        authn: &AuthN,
+        retry: &Retry,
+        state: SessionNegoEntry<Channel, AuthN>
+    ) -> Result<
+        Option<AuthN::AuthNSession>,
+        SessionEntryStepError<
+            Channel::NegotiateError,
+            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+            ShutdownError<
+                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            >
+        >
+    > {
+        match state.do_step(endpoints, &self.channel, authn, &self.shutdown) {
+            // Negotiations completed and yielded a session.
+            Ok(NegotiatorResult::Complete(
+                (Some(AuthNResult::Accept((out, session))), endpoint)
+            )) => {
+                info!(target: "connector-entry",
+                      "authenticated new session with {} over {}",
+                      session.prin(), endpoint);
+
+                self.state = Some(out);
+
+                Ok(Some(session))
+            }
+            // Negotiations completed and yielded an
+            // authentication failure.
+            Ok(NegotiatorResult::Complete(
+                (Some(AuthNResult::Reject(stream)), endpoint)
+            )) => {
+                info!(target: "connector-entry",
+                      "authentication rejected for session with {}",
+                      endpoint);
+
+                let delay = retry.retry_delay(self.nretries);
+
+                self.when = Instant::now() + delay;
+                self.nretries += 1;
+
+                self.do_shutdown(endpoint, stream)
+                    .map_err(|err| SessionEntryStepError::Shutdown {
                         err: err
                     })?;
 
-                match shutdown.negotiate(state)
-                    .map_err(|err| SessionEntryShutdownError::Nego {
-                        err: err
-                    })? {
-                    NegotiatorResult::Complete(()) => {
-                        info!(target: "session-nego-state",
-                              "shutdown session with {}",
-                              addr);
+                Ok(None)
+            },
+            // Negotiations completed and yielrded a session.
+            Ok(NegotiatorResult::Complete((None, endpoint))) => {
+                info!(target: "connector-entry",
+                      "shutdown session with {}",
+                      endpoint);
 
-                        self.state = None;
+                Ok(None)
+            }
+            Ok(NegotiatorResult::Pending(pending)) => {
+                self.state = Some(pending);
+
+                Ok(None)
+            }
+            Err(err) => match err.scope() {
+                // Pass these errors through.
+                ErrorScope::Unrecoverable |
+                ErrorScope::Shutdown |
+                ErrorScope::External |
+                ErrorScope::System => match err {
+                    SessionEntryStepError::Session { err } =>
+                        Err(SessionEntryStepError::Session { err: err }),
+                    SessionEntryStepError::AuthN { err } =>
+                        Err(SessionEntryStepError::AuthN { err: err }),
+                    SessionEntryStepError::Shutdown { err } =>
+                        Err(SessionEntryStepError::Shutdown {
+                            err: ShutdownError::Negotiate {
+                                err: err
+                            }
+                        }),
+                    SessionEntryStepError::IO { err } =>
+                        Err(SessionEntryStepError::IO { err: err }),
+                }
+                // Retry after a delay
+                scope => {
+                    if !matches![scope, ErrorScope::Session] {
+                        error!(target: "connector-entry",
+                               "shouldn't see error with scope {} here",
+                               scope);
                     }
-                    NegotiatorResult::Pending(pending) => {
-                        debug!(target: "session-nego-state",
-                               "continuing shutdown negotiation with {}",
-                               addr);
 
-                        self.state = Some(SessionState::Shutdown {
-                            pending: pending
-                        });
+                    warn!(target: "connector-entry",
+                          "session authentication with {} failed: {}",
+                          self.channel.endpoint(), err);
+
+                    let delay = retry.retry_delay(0);
+
+                    debug!(target: "connector-entry",
+                           "negotiation failed, delay for {}.{:03}s",
+                           delay.as_secs(), delay.subsec_millis());
+
+                    self.nretries = self.nretries + 1;
+                    self.when = Instant::now() + delay;
+                    self.state = None;
+
+                    // See if we need to shut down the stream.
+                    let stream = match err {
+                        SessionEntryStepError::AuthN {
+                            err: SessionEntryAuthNError::Start { err }
+                        } => authn.start_err_stream(err),
+                        SessionEntryStepError::AuthN {
+                            err: SessionEntryAuthNError::AuthN { err }
+                        } => authn.err_stream(err),
+                        _ => None
+                    };
+
+                    if let Some(stream) = stream {
+                        let endpoint = stream.peer_addr()
+                            .map_err(|err| SessionEntryStepError::IO {
+                                err: err
+                            })?;
+
+                        self.do_shutdown(endpoint, stream)
+                            .map_err(|err| SessionEntryStepError::Shutdown {
+                                err: err
+                            })?;
+                    }
+
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryReqError<Channel, Entry> {
+    /// Error creating the channel instance.
+    Channel {
+        /// Error that occurred creating the channel instance.
+        err: Channel
+    },
+    /// Error creating the [ConnectorEntry].
+    Entry {
+    /// The error that occurred creating the [ConnectorEntry].
+        err: Entry
+    },
+    /// The given endpoint was already requested.
+    Collision,
+    /// Token generator was exhausted.
+    NoTokens,
+    /// Trying to request a stream from an inbound-only channel.
+    Inbound
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryShutdownError<Shutdown, Endpoint> {
+    Shutdown {
+        err: Shutdown
+    },
+    IO {
+        err: std::io::Error
+    },
+    NotFound {
+        endpoint: Endpoint
+    },
+    Inconsistent,
+    Mismatch
+}
+
+impl<Accept, Conn, AcceptAuthN, ConnAuthN>
+    ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>
+where
+    Conn: NearConnector + NearChannelCreateWithEndpoint,
+    Conn::Endpoint: Clone + Eq + Hash,
+    Conn::Conn: Session,
+    Conn::Config: Clone,
+    Conn::NegotiateError: ScopedError,
+    <Conn::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
+    Accept: NearChannel + NearChannelCreate,
+    Accept::Endpoint: Clone + Eq + Hash,
+    Accept::Conn: Session,
+    Accept::NegotiateError: ScopedError,
+    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
+    ConnAuthN::NegotiateError: ScopedError,
+    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
+    AcceptAuthN::NegotiateError: ScopedError
+{
+    fn shutdown_conn(
+        &mut self,
+        registry: &Registry,
+        stream: Conn::Conn,
+    ) -> Result<
+        (),
+        ChannelEntryShutdownError<
+            ShutdownError<
+                <Conn::ShutdownNego as NegotiatorStart<(), Conn::Conn>>::StartError,
+                <Conn::ShutdownNego as Negotiator<()>>::NegotiateError
+            >,
+            Conn::Endpoint
+        >
+    > {
+        let endpoint = stream
+            .peer_addr()
+            .map_err(|err| ChannelEntryShutdownError::IO { err: err })?;
+
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                tokens, negos, ..
+            } => {
+                let token = tokens.get_mut(&endpoint)
+                    .ok_or(ChannelEntryShutdownError::NotFound {
+                        endpoint: endpoint
+                    })?;
+
+                if let DuplexValue::Conn { conn } = negos
+                    .get_mut(&token)
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)? {
+                    let delete = conn.shutdown(stream)
+                        .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                            err: err
+                        })?;
+
+                    if delete {
+                        if negos.remove(&token).is_none() {
+                            error!(target: "connector-entry",
+                                  "entry for token {:?} missing",
+                                  token);
+                        }
+
+                        if tokens.remove(&endpoint).is_none() {
+                            error!(target: "connector-entry",
+                                  "entry for endpoint {:?} missing",
+                                  token);
+                        }
+
+                        registry.deregister(token)
+                            .map_err(|err| ChannelEntryShutdownError::IO {
+                                err: err
+                            })?;
                     }
                 }
 
                 Ok(())
             }
-            // None of these should ever happen, but they're not
-            // fatal.
-            Some(SessionState::Session { .. }) =>
-                Err(SessionEntryShutdownError::Session),
-            Some(SessionState::AuthN { .. }) =>
-                Err(SessionEntryShutdownError::AuthN),
-            Some(SessionState::Shutdown { .. }) =>
-                Err(SessionEntryShutdownError::Shutdown),
-            None => Err(SessionEntryShutdownError::None)
-        }
-    }
-
-    /// Step the ongoing negotiations, if possible.
-    fn step<Addr>(
-        &mut self,
-        ext_endpoints: &mut HashSet<Addr>,
-        authn: &AuthN,
-        shutdown: &ShutdownNego,
-        retry: &Retry,
-        addr: Addr,
-    ) -> Result<
-        Option<AuthN::AuthNSession>,
-        SessionNegoStepError<
-            Conn::NegotiateError,
-            SessionEntryAuthSessionError<
-                AuthN::StartError,
-                AuthN::NegotiateError,
-            >,
-            ShutdownNego::NegotiateError
-        >
-    >
-    where Addr: Display + Eq + Hash
-    {
-        let state = self.state.take();
-
-        match state {
-            Some(SessionState::Session { pending }) => match self.conn
-                .complete_negotiate(pending) {
-                Ok(NegotiatorResult::Complete((conn, _))) => self
-                    .recv_session(authn, retry, conn)
-                    .map_err(|err| SessionNegoStepError::AuthN { err: err }),
-                // Negotiations stopped in a pending state.
-                Ok(NegotiatorResult::Pending(pending)) => {
-                    self.state = Some(SessionState::Session {
-                        pending: pending
-                    });
-
-                    Ok(None)
-                }
-                // Error occurred; check its scope.
-                Err(err) => match err.scope() {
-                    // Pass these errors through.
-                    ErrorScope::Unrecoverable |
-                    ErrorScope::Shutdown |
-                    ErrorScope::External |
-                    ErrorScope::System => Err(SessionNegoStepError::Session {
+            ChannelMode::Outbound {
+                tokens, negos, ..
+            } => {
+                let token = tokens.get_mut(&endpoint)
+                    .ok_or(ChannelEntryShutdownError::NotFound {
+                        endpoint: endpoint
+                    })?;
+                let conn = negos.get_mut(&token)
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
+                let delete = conn.shutdown(stream)
+                    .map_err(|err| ChannelEntryShutdownError::Shutdown {
                         err: err
-                    }),
-                    // Retry after a delay
-                    scope => {
-                        if !matches![scope, ErrorScope::Session] {
-                            error!(target: "session-nego-state",
-                                   "shouldn't see error with scope {} here",
-                                   scope);
-                        }
+                    })?;
 
-                        info!(target: "session-nego-state",
-                              "session with {} failed: {}",
-                              addr, err);
-
-                        let delay = retry.retry_delay(self.nretries);
-
-                        debug!(target: "session-nego-state",
-                               "negotiation failed, delay for {}.{:03}s",
-                               delay.as_secs(), delay.subsec_millis());
-
-                        self.state = None;
-                        self.nretries += 1;
-                        self.when = Instant::now() + delay;
-
-                        Ok(None)
+                if delete {
+                    if negos.remove(&token).is_none() {
+                        error!(target: "connector-entry",
+                               "entry for token {:?} missing",
+                               token);
                     }
-                }
-            }
-            // A pending authentication negotiation exists; step it.
-            Some(SessionState::AuthN { pending }) => match authn
-                .complete_negotiate(pending) {
-                // Negotiations completed immediately; set the state
-                // to active and return.
-                Ok(NegotiatorResult::Complete(AuthNResult::Accept(out))) => {
-                    info!(target: "session-nego-state",
-                          "authenticated new session with {} over {}",
-                          out.prin(), addr);
 
-                    self.state = Some(SessionState::Active);
-                    self.nretries = 0;
+                    if tokens.remove(&endpoint).is_none() {
+                        error!(target: "connector-entry",
+                               "entry for endpoint {:?} missing",
+                               token);
+                    }
 
-                    Ok(Some(out))
-                },
-                // Authentication failed.
-                Ok(NegotiatorResult::Complete(AuthNResult::Reject(_))) => {
-                    info!(target: "session-nego-state",
-                          "authentication rejected for session with {}",
-                          addr);
-
-                    let delay = retry.retry_delay(self.nretries);
-
-                    debug!(target: "session-nego-state",
-                           "authentication rejected, delay for {}.{:03}s",
-                           delay.as_secs(), delay.subsec_millis());
-
-                    self.state = None;
-                    self.nretries += 1;
-                    self.when = Instant::now() + delay;
-
-                    Ok(None)
-                }
-                // Negotiations stopped in a pending state.
-                Ok(NegotiatorResult::Pending(pending)) => {
-                    self.state = Some(SessionState::AuthN {
-                        pending: pending
-                    });
-
-                    Ok(None)
-                }
-                // Error occurred; check its scope.
-                Err(err) => match err.scope() {
-                    // Pass these errors through.
-                    ErrorScope::Unrecoverable |
-                    ErrorScope::Shutdown |
-                    ErrorScope::External |
-                    ErrorScope::System => Err(SessionNegoStepError::AuthN {
-                        err: SessionEntryAuthSessionError::AuthN {
+                    registry.deregister(token)
+                        .map_err(|err| ChannelEntryShutdownError::IO {
                             err: err
-                        }
-                    }),
-                    // Retry after a delay
-                    scope => {
-                        if !matches![scope, ErrorScope::Session] {
-                            error!(target: "session-nego-state",
-                                   "shouldn't see error with scope {} here",
-                                   scope);
-                        }
-
-                        info!(target: "session-nego-state",
-                              "session with {} failed: {}",
-                              addr, err);
-
-                        let delay = retry.retry_delay(self.nretries);
-
-                        debug!(target: "session-nego-state",
-                               "negotiation failed, delay for {}.{:03}s",
-                               delay.as_secs(), delay.subsec_millis());
-
-                        self.state = None;
-                        self.nretries += 1;
-                        self.when = Instant::now() + delay;
-
-                        Ok(None)
-                    }
+                        })?;
                 }
+
+                Ok(())
             }
-            // There's already an active session, but this isn't an error.
-            Some(SessionState::Active) => {
-                ext_endpoints.insert(addr);
-
-                Ok(None)
-            }
-            Some(SessionState::Shutdown { pending }) => match shutdown
-                .complete_negotiate(pending)
-                .map_err(|err| SessionNegoStepError::Shutdown { err: err })? {
-                NegotiatorResult::Complete(()) => {
-                    info!(target: "session-nego-state",
-                           "successfully shutdown session with {}",
-                          addr);
-
-                    Ok(None)
-                }
-                NegotiatorResult::Pending(pending) => {
-                    debug!(target: "session-nego-state",
-                           "continuing shutdown negotiation with {}",
-                           addr);
-
-                    self.state = Some(SessionState::Shutdown {
-                        pending: pending
-                    });
-
-                    Ok(None)
-                }
-            }
-            // No existing state at all; ignore this.
-            None => {
-                debug!(target: "session-nego-state",
-                      "attempting to step inactive session with {}",
-                      addr);
-
-                Ok(None)
-            }
+            ChannelMode::Inbound { .. } =>
+                Err(ChannelEntryShutdownError::Mismatch)
         }
     }
-}
-/*
-impl<Acceptor, Conn, AuthN, ShutdownNego>
-    ChannelEntry<Acceptor, Conn, AuthN, ShutdownNego>
-where
-    Conn: NearConnector + NearChannelCreateWithEndpoint,
-    Conn::Conn: Session,
-    Conn::NegotiateError: ScopedError,
-    ShutdownNego: NegotiatorStart<(), Conn::Conn>,
-    ShutdownNego::NegotiateError: ScopedError,
-    Acceptor: NearChannel<Conn = Conn::Conn, Endpoint = Conn::Endpoint>
-        + NearChannelCreate,
-    Acceptor::Endpoint: Clone + Eq + Hash,
-    AuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-{
-    fn create<Ctx>(
-        ctx: &mut Ctx,
-        config: NearChannelsEntryConfig<
-            Acceptor::Config,
-            Conn::Config,
-            AuthN::Config
-        >,
-        default_authn: AuthN::Config,
-        token: Token
-    ) -> Result<
-        Self,
-        NearChannelsEntryCreateError<
-            Acceptor::CreateError,
-            AuthN::CreateError
-        >
-    >
-    where
-        Ctx: NSNameCachesCtx
-    {
-        let (acceptor, conn, authn, retry, nsessions, backlog_size) =
-            config.take();
-        // XXX this is wrong.  Create the connectors statically.
-        let connectors = match nsessions {
-            Some(size) => HashMap::with_capacity(size),
-            None => HashMap::new()
-        };
-        let acceptor = Acceptor::create(ctx, acceptor)
-            .map_err(|err| NearChannelsEntryCreateError::Accept { err: err })?;
-        let authn = authn.unwrap_or(default_authn);
-        let authn = AuthN::create(authn)
-            .map_err(|err| NearChannelsEntryCreateError::AuthN { err: err })?;
-        let inbound = match nsessions {
-            Some(size) => HashMap::with_capacity(size),
-            None => HashMap::new()
-        };
 
-        Ok(ChannelEntry {
-            conn: PhantomData,
-            acceptor: acceptor,
-            connectors: connectors,
-            inbound: inbound,
-            config: conn,
-            authn: authn,
-            retry: retry,
-            token: token,
-            backlog_size: backlog_size,
-            retry_when: None
-        })
-    }
-
-    fn addrs(
-        &self,
-        buf: &mut Vec<Acceptor::Endpoint>
-    ) {
-        buf.extend(self.sessions.keys().cloned())
-    }
-
-    fn accept_session(
+    fn shutdown_conn(
         &mut self,
-        authn: &AuthN,
-        conn: Acceptor::Conn,
-        endpoint: Acceptor::Endpoint,
-        token: Token
+        registry: &Registry,
+        stream: Conn::Conn,
     ) -> Result<
-        Option<AuthN::AuthNSession>,
-        SessionEntryAuthSessionError<
-            AuthN::StartError,
-            AuthN::NegotiateError,
+        (),
+        ChannelEntryShutdownError<
+            ShutdownError<
+                <Conn::ShutdownNego as NegotiatorStart<(), Conn::Conn>>::StartError,
+                <Conn::ShutdownNego as Negotiator<()>>::NegotiateError
+            >,
+            Conn::Endpoint
         >
     > {
-        // Check if there's a connector entry.
-        if let Some(ent) = self.connectors.get_mut(&endpoint) {
-            // Deliver the session to the connector entry if there is one.
-            ent.recv_session(authn, &self.retry, conn)
-        } else {
-            // Start authentication negotiations.
-            let state = authn
-                .start(&(), conn)
-                .map_err(|err| SessionEntryAuthSessionError::Start {
-                    err: err
-                })?;
+        let endpoint = stream
+            .peer_addr()
+            .map_err(|err| ChannelEntryShutdownError::IO { err: err })?;
 
-            match authn.negotiate(state) {
-                // Negotiations completed immediately; set the state
-                // to active and return.
-                Ok(NegotiatorResult::Complete(AuthNResult::Accept(out))) => {
-                    info!(target: "near-channel-entry",
-                          "authenticated new inbound session with {} over {}",
-                          out.prin(), endpoint);
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                tokens, negos, ..
+            } => {
+                let token = tokens.get_mut(&endpoint)
+                    .ok_or(ChannelEntryShutdownError::NotFound {
+                        endpoint: endpoint
+                    })?;
 
-                    let state = SessionState::Active;
+                if let DuplexValue::Conn { conn } = negos
+                    .get_mut(&token)
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)? {
+                    let delete = conn.shutdown(stream)
+                        .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                            err: err
+                        })?;
 
-                    // Paranoid check.
-                    if self.inbound.insert(token, state).is_some() {
-                        error!(target: "near-channel-entry",
-                               "entry already existed for token {:?}",
+                    if delete {
+                        if negos.remove(&token).is_none() {
+                            error!(target: "connector-entry",
+                                  "entry for token {:?} missing",
+                                  token);
+                        }
+
+                        if tokens.remove(&endpoint).is_none() {
+                            error!(target: "connector-entry",
+                                  "entry for endpoint {:?} missing",
+                                  token);
+                        }
+
+                        registry.deregister(token)
+                            .map_err(|err| ChannelEntryShutdownError::IO {
+                                err: err
+                            })?;
+                    }
+                }
+
+                Ok(())
+            }
+            ChannelMode::Outbound {
+                tokens, negos, ..
+            } => {
+                let token = tokens.get_mut(&endpoint)
+                    .ok_or(ChannelEntryShutdownError::NotFound {
+                        endpoint: endpoint
+                    })?;
+                let conn = negos.get_mut(&token)
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
+                let delete = conn.shutdown(stream)
+                    .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                        err: err
+                    })?;
+
+                if delete {
+                    if negos.remove(&token).is_none() {
+                        error!(target: "connector-entry",
+                               "entry for token {:?} missing",
                                token);
                     }
 
-                    Ok(Some(out))
-                },
-                // Authentication failed.  We don't do anything here.
-                Ok(NegotiatorResult::Complete(AuthNResult::Reject(_))) => {
-                    info!(target: "session-nego-state",
-                          "authentication rejected for inbound session with {}",
-                          endpoint);
-
-                    Ok(None)
-                }
-                // Negotiations stopped in a pending state.
-                Ok(NegotiatorResult::Pending(pending)) => {
-                    let state = SessionState::AuthN {
-                        pending: pending
-                    };
-
-                    // Paranoid check.
-                    if self.inbound.insert(token, state).is_some() {
-                        error!(target: "near-channel-entry",
-                               "entry already existed for token {:?}",
+                    if tokens.remove(&endpoint).is_none() {
+                        error!(target: "connector-entry",
+                               "entry for endpoint {:?} missing",
                                token);
                     }
 
-                    Ok(None)
-                }
-                // Error occurred; check its scope.
-                Err(err) => match err.scope() {
-                    // Pass these errors through.
-                    ErrorScope::Unrecoverable |
-                    ErrorScope::Shutdown |
-                    ErrorScope::External |
-                    ErrorScope::System =>
-                        Err(SessionEntryAuthSessionError::AuthN {
+                    registry.deregister(token)
+                        .map_err(|err| ChannelEntryShutdownError::IO {
                             err: err
-                        }),
-                    // Log the failure, but we don't do anything here.
-                    scope => {
-                        if !matches![scope, ErrorScope::Session] {
-                            error!(target: "session-nego-state",
-                                   "shouldn't see error with scope {} here",
-                                   scope);
-                        }
-
-                        info!(target: "session-nego-state",
-                              "inbound session authn with {} failed: {}",
-                              endpoint, err);
-
-                        Ok(None)
-                    }
+                        })?;
                 }
+
+                Ok(())
             }
+            ChannelMode::Inbound { .. } =>
+                Err(ChannelEntryShutdownError::Mismatch)
         }
     }
 
-
-    fn do_listen<I>(
-        &mut self,
-        registry: &mut Registry,
-        gentok: &mut Peekable<I>,
-        ext_endpoints: &mut HashSet<Acceptor::Endpoint>,
-        sessions: &mut Vec<AuthN::AuthNSession>,
-        tokens: &HashSet<Token>,
-        authn: &AuthN,
-        shutdown: &ShutdownNego,
-    ) -> Result<
-        (),
-    >
-    where I: Iterator<Item = Token>
-    {
-        let mut states = Vec::new();
-
-        while {
-            let read = false;
-
-            // Collect all new sessions.
-            loop {
-                let token = *gentok.peek().ok_or()?;
-
-                match self.retry_when {
-                    Some(when) if Instant::now() < when => break,
-                    _ => match self.acceptor.start(registry, token) {
-                        Ok(RetryResult::Success(state)) => {
-                            // Normal listen result.
-                            read = true;
-
-                            // Paranoid checks.  This should never happen.
-                            if let Some(next) = gentok.next() {
-                                if next != token {
-                                    error!(target: "near-channel-entry",
-                                           "tokens don't match: {:?} != {:?}",
-                                           next, token);
-                                }
-                            } else {
-                                error!(target: "near-channel-entry",
-                                       "inconsistent iterator")
-                            }
-
-                            states.push((token, state))
-                        }
-                        Ok(RetryResult::Retry(when)) => {
-                            self.retry_when = Some(when);
-
-                            break;
-                        }
-                        // Error; see if it's WouldBlock.
-                        Err(err) => if err.scope() == ErrorScope::WouldBlock {
-                            // Non-blocking I/O exhausted.
-                            break;
-                        } else {
-                            // A real error occurred.
-                            return Err(SessionListenError::Flows {
-                                err: err
-                            });
-                        }
-                    }
-                }
-            }
-
-            for (token, state) in states.drain(..) {
-                match self.acceptor.negotiate(state) {
-                    // Session negotiations succeeded; launch authentication
-                    // negotiations.
-                    Ok(NegotiatorResult::Complete((conn, endpoint))) => self
-                        .accept_session(authn, conn, endpoint, token)
-                        .map_err(|err| SessionEntryCreateSessionError::Auth {
-                            err: err
-                        })
-                        .map(RetryResult::Success),
-                    // Negotiations stopped in a pending state.
-                    Ok(NegotiatorResult::Pending(pending)) => {
-                        let state = SessionState::Session {
-                            pending: pending
-                        };
-
-                        // Paranoid check.
-                        if self.inbound.insert(token, state).is_some() {
-                            error!(target: "near-channel-entry",
-                                   "entry already existed for token {:?}",
-                                   token);
-                        }
-                    }
-                    // Error occurred; check its scope.
-                    Err(err) => match err.scope() {
-                        // Pass these errors through.
-                        ErrorScope::Unrecoverable |
-                        ErrorScope::Shutdown |
-                        ErrorScope::External |
-                        ErrorScope::System =>
-                            Err(SessionEntryCreateSessionError::Session {
-                                err: err
-                            }),
-                        // Retry after a delay
-                        scope => {
-                            if !matches![scope, ErrorScope::Session] {
-                                error!(target: "session-nego-state",
-                                       "shouldn't see error with scope {} here",
-                                       scope);
-                            }
-
-                            info!(target: "session-nego-state",
-                                  "inbound session failed: {}",
-                                  self.conn.endpoint(), err);
-
-                            let delay = retry.retry_delay(self.nretries);
-
-                            debug!(target: "session-nego-state",
-                                   "negotiation failed, delay for {}.{:03}s",
-                                   delay.as_secs(), delay.subsec_millis());
-
-                            self.state = None;
-                            self.nretries += 1;
-                            self.when = Instant::now() + delay;
-
-                            Ok(RetryResult::Retry(self.when))
-                        }
-                    }
-                }
-            }
-
-
-            read
-        } {}
-
-        Ok(())
-    }
-
-    fn listen<I>(
-        &mut self,
-        registry: &mut Registry,
-        gentok: &mut Peekable<I>,
-        ext_endpoints: &mut HashSet<Acceptor::Endpoint>,
-        sessions: &mut Vec<AuthN::AuthNSession>,
-        tokens: &HashSet<Token>,
-        authn: &AuthN,
-        shutdown: &ShutdownNego,
-    ) -> Result<
-        (),
-    >
-    where I: Iterator<Item = Token>
-    {
-        if tokens.contains(&self.token) {
-            self.do_listen(registry, gentok, ext_endpoints,
-                           sessions, tokens, authn, shutdown)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn req_session<Ctx, I>(
+    fn req_stream<Ctx, I>(
         &mut self,
         ctx: &mut Ctx,
-        registry: &mut Registry,
-        tokens: &mut I,
-        authn: &AuthN,
-        retry: &Retry,
-        endpoint: Acceptor::Endpoint,
+        gentok: &mut Peekable<I>,
+        registry: &Registry,
+        endpoint: Conn::Endpoint,
         verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
-        NearChannelsEntrySessionError<
+        RetryResult<Option<ConnAuthN::AuthNSession>>,
+        ChannelEntryReqError<
             Conn::CreateError,
-            SessionEntryCreateSessionError<
+            ConnectorEntryCreateError<
                 Conn::StartError,
-                Conn::NegotiateError,
-                SessionEntryAuthSessionError<
-                    AuthN::StartError,
-                    AuthN::NegotiateError,
+                SessionCreateError<
+                    NegoEntrySessionError<
+                        Conn::NegotiateError,
+                        SessionEntryAuthNError<ConnAuthN::StartError, ConnAuthN::NegotiateError>
+                    >,
+                    ShutdownError<
+                        <Conn::ShutdownNego as NegotiatorStart<(), Conn::Conn>>::StartError,
+                        <Conn::ShutdownNego as Negotiator<()>>::NegotiateError
+                    >
                 >
             >
         >
     >
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token>
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx
     {
-        match self.sessions.entry(endpoint.clone()) {
-            // Entry already exists, but there are several possible outcomes.
-            Entry::Occupied(mut ent) => ent
-                .get_mut()
-                .req_session(registry, authn, retry)
-                .map_err(|err| NearChannelsEntrySessionError::Req {
-                    err: err
-                }),
-            Entry::Vacant(ent) => {
-                let conn = Conn::create_with_endpoint(ctx, self.config,
-                                                      endpoint,
-                                                      verify_endpoint)
-                    .map_err(|err| NearChannelsEntrySessionError::Conn {
-                        err: err
-                    })?;
-                let token = tokens.next()
-                    .ok_or(NearChannelsEntrySessionError::NoTokens)?;
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                config, tokens, negos, out_authn, ..
+            } => if !tokens.contains_key(&endpoint) {
+                let token = gentok.peek()
+                    .ok_or(ChannelEntryReqError::NoTokens)?;
+                let conn = Conn::create_with_endpoint(ctx, config.clone(),
+                                                      endpoint, verify_endpoint)
+                    .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
-                ent.insert(ConnectorEntry::create(conn, token))
-                    .req_session(registry, authn, retry)
-                    .map_err(|err| NearChannelsEntrySessionError::Req {
-                        err: err
-                    })
+                Ok(ConnectorEntry::create(registry, conn, out_authn,
+                                          &self.retry, *token)
+                   .map_err(|err| ChannelEntryReqError::Entry { err: err })?
+                   .map(|(ent, out)| {
+                       let ent = DuplexValue::Conn { conn: ent };
+                       let _ = gentok.next();
+
+                       if tokens.insert(endpoint, *token).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       if negos.insert(*token, ent).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       out
+                   }))
+            } else {
+                Err(ChannelEntryReqError::Collision)
             }
+            ChannelMode::Outbound {
+                config, tokens, negos, authn, ..
+            } => if !tokens.contains_key(&endpoint) {
+                let token = gentok.peek()
+                    .ok_or(ChannelEntryReqError::NoTokens)?;
+                let conn = Conn::create_with_endpoint(ctx, config.clone(),
+                                                      endpoint, verify_endpoint)
+                    .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
+
+                Ok(ConnectorEntry::create(registry, conn, authn,
+                                          &self.retry, *token)
+                   .map_err(|err| ChannelEntryReqError::Entry { err: err })?
+                   .map(|(ent, out)| {
+                       let _ = gentok.next();
+
+                       if tokens.insert(endpoint, *token).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       if negos.insert(*token, ent).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       out
+                   }))
+            }
+            ChannelMode::Inbound { .. } => Err(ChannelEntryReqError::Inbound)
         }
     }
 }
-*/
+
+impl<Accept, Conn> Read for DuplexValue<Accept, Conn>
+where Conn: Read,
+      Accept: Read {
+    fn read(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<usize, std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.read(buf),
+            DuplexValue::Accept { accept } => accept.read(buf),
+        }
+    }
+
+    fn read_vectored(
+        &mut self,
+        buf: &mut [IoSliceMut<'_>]
+    ) -> Result<usize, std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.read_vectored(buf),
+            DuplexValue::Accept { accept } => accept.read_vectored(buf),
+        }
+    }
+
+    fn read_exact(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<(), std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.read_exact(buf),
+            DuplexValue::Accept { accept } => accept.read_exact(buf),
+        }
+    }
+}
+
+impl<Accept, Conn> Write for DuplexValue<Accept, Conn>
+where Conn: Write,
+      Accept: Write {
+    fn write(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<usize, std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.write(buf),
+            DuplexValue::Accept { accept } => accept.write(buf),
+        }
+    }
+
+    fn flush(
+        &mut self,
+    ) -> Result<(), std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.flush(),
+            DuplexValue::Accept { accept } => accept.flush()
+        }
+    }
+
+    fn write_vectored(
+        &mut self,
+        buf: &[IoSlice<'_>]
+    ) -> Result<usize, std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.write_vectored(buf),
+            DuplexValue::Accept { accept } => accept.write_vectored(buf),
+        }
+    }
+
+    fn write_all(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<(), std::io::Error> {
+        match self {
+            DuplexValue::Conn { conn } => conn.write_all(buf),
+            DuplexValue::Accept { accept } => accept.write_all(buf),
+        }
+    }
+}
+
+impl<Start, Auth> ScopedError for SessionEntryAuthNError<Start, Auth>
+where Start: ScopedError,
+      Auth: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SessionEntryAuthNError::Start { err } => err.scope(),
+            SessionEntryAuthNError::AuthN { err } => err.scope(),
+        }
+    }
+}
+
+impl<Nego, AuthN> ScopedError for NegoEntrySessionError<Nego, AuthN>
+where Nego: ScopedError,
+      AuthN: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            NegoEntrySessionError::Nego { err } => err.scope(),
+            NegoEntrySessionError::AuthN { err } => err.scope(),
+        }
+    }
+}
+
+impl<Session, AuthN, Shutdown> ScopedError
+    for SessionEntryStepError<Session, AuthN, Shutdown>
+where Session: ScopedError,
+      AuthN: ScopedError,
+      Shutdown: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SessionEntryStepError::Session { err } => err.scope(),
+            SessionEntryStepError::AuthN { err } => err.scope(),
+            SessionEntryStepError::Shutdown { err } => err.scope(),
+            SessionEntryStepError::IO { err } => err.scope()
+        }
+    }
+}
+
 impl Display for NearChannelID {
     fn fmt(
         &self,
@@ -1452,7 +1768,7 @@ impl Display for NearChannelID {
     }
 }
 
-impl<Accept, AuthN> NearChannelsEntryCreateError<Accept, AuthN>
+impl<Accept, AuthN> Display for NearChannelsEntryCreateError<Accept, AuthN>
 where Accept: Display,
       AuthN: Display {
     fn fmt(
@@ -1466,7 +1782,7 @@ where Accept: Display,
     }
 }
 
-impl<Conn, Req> NearChannelsEntrySessionError<Conn, Req>
+impl<Conn, Req> Display for NearChannelsEntrySessionError<Conn, Req>
 where Conn: Display,
       Req: Display {
     fn fmt(
@@ -1482,39 +1798,25 @@ where Conn: Display,
     }
 }
 
-impl<Start, Session, Auth> SessionEntryCreateSessionError<Start, Session, Auth>
-where Start: Display,
-      Session: Display,
-      Auth: Display {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>
-    ) -> Result<(), Error> {
-        match self {
-            SessionEntryCreateSessionError::Start { err } => err.fmt(f),
-            SessionEntryCreateSessionError::Session { err } => err.fmt(f),
-            SessionEntryCreateSessionError::Auth { err } => err.fmt(f),
-            SessionEntryCreateSessionError::Active =>
-                write!(f, "session is already taken")
-        }
-    }
-}
-
-impl<AuthN, Shutdown> SessionEntryStepError<AuthN, Shutdown>
-where AuthN: Display,
+impl<Session, AuthN, Shutdown> Display
+    for SessionEntryStepError<Session, AuthN, Shutdown>
+where Session: Display,
+      AuthN: Display,
       Shutdown: Display {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
-            SessionEntryStepError::Shutdown { err } => err.fmt(f),
+            SessionEntryStepError::Session { err } => err.fmt(f),
             SessionEntryStepError::AuthN { err } => err.fmt(f),
+            SessionEntryStepError::Shutdown { err } => err.fmt(f),
+            SessionEntryStepError::IO { err } => err.fmt(f)
         }
     }
 }
 
-impl<Start, Auth> SessionEntryAuthNError<Start, Auth>
+impl<Start, Auth> Display for SessionEntryAuthNError<Start, Auth>
 where Start: Display,
       Auth: Display {
     fn fmt(
@@ -1528,7 +1830,38 @@ where Start: Display,
     }
 }
 
-impl<Nego, AuthN> NegoEntrySessionError<Nego, AuthN>
+impl<Session, Shutdown> Display for SessionEntryCreateError<Session, Shutdown>
+where Session: Display,
+      Shutdown: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            SessionEntryCreateError::IO { err } => err.fmt(f),
+            SessionEntryCreateError::Session { err } => err.fmt(f),
+            SessionEntryCreateError::Shutdown { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Start, Shutdown> Display for SessionEntryShutdownError<Start, Shutdown>
+where Start: Display,
+      Shutdown: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            SessionEntryShutdownError::Shutdown { err } => err.fmt(f),
+            SessionEntryShutdownError::NotActive =>
+                write!(f, "session is not active")
+        }
+    }
+}
+
+impl<Nego, AuthN> Display for NegoEntrySessionError<Nego, AuthN>
 where Nego: Display,
       AuthN: Display {
     fn fmt(
@@ -1542,43 +1875,68 @@ where Nego: Display,
     }
 }
 
-impl<Start, Nego> SessionEntryShutdownError<Start, Nego>
-where Start: Display,
-      Nego: Display,
+impl<Session, Shutdown> Display for SessionCreateError<Session, Shutdown>
+where Session: Display,
+      Shutdown: Display
 {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
-            SessionEntryShutdownError::Start { err } => err.fmt(f),
-            SessionEntryShutdownError::Nego { err } => err.fmt(f),
-            SessionEntryShutdownError::Shutdown =>
-                write!(f, "session has shutdown state"),
-            SessionEntryShutdownError::Session =>
-                write!(f, "session has pending session negotiation"),
-            SessionEntryShutdownError::AuthN =>
-                write!(f, "session has pending authentication negotiation"),
-            SessionEntryShutdownError::None =>
-                write!(f, "session has no active")
+            SessionCreateError::IO { err } => err.fmt(f),
+            SessionCreateError::Session { err } => err.fmt(f),
+            SessionCreateError::Shutdown { err } => err.fmt(f),
         }
     }
 }
 
-impl<Session, AuthN, Shutdown> SessionNegoStepError<Session, AuthN, Shutdown>
-where Session: Display,
-      AuthN: Display,
-      Shutdown: Display,
+impl<Create, Nego> Display for ConnectorEntryCreateError<Create, Nego>
+where
+    Create: Display,
+    Nego: Display
 {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
-            SessionNegoStepError::Session { err } => err.fmt(f),
-            SessionNegoStepError::AuthN { err } => err.fmt(f),
-            SessionNegoStepError::Shutdown { err } => err.fmt(f),
-            SessionNegoStepError::IO { err } => err.fmt(f),
+            ConnectorEntryCreateError::Start { err } => err.fmt(f),
+            ConnectorEntryCreateError::Nego { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Start, Connect, Step> Display
+    for ConnectorEntryStepError<Start, Connect, Step>
+where
+    Start: Display,
+    Connect: Display,
+    Step: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ConnectorEntryStepError::Start { err } => err.fmt(f),
+            ConnectorEntryStepError::Connect { err } => err.fmt(f),
+            ConnectorEntryStepError::Step { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Shutdown> Display for ChannelEntryShutdownError<Shutdown>
+where Shutdown: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ChannelEntryShutdownError::Shutdown { err } => err.fmt(f),
+            ChannelEntryShutdownError::IO { err } => err.fmt(f),
+            ChannelEntryShutdownError::Mismatch =>
+                write!(f, "wrong type of stream for this channel entry")
         }
     }
 }

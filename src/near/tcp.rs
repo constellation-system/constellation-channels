@@ -47,7 +47,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
-use constellation_common::net::TrivialNegotiator;
+use constellation_common::net::PassthruNegotiator;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
@@ -415,7 +415,8 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
 impl NearChannel for TCPNearAcceptor {
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
-    type ShutdownNego = TrivialNegotiator;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = TCPStream;
     type StartError = Error;
 
     #[inline]
@@ -440,7 +441,14 @@ impl NearChannel for TCPNearAcceptor {
     fn shutdown_nego(
         &self
     ) -> Self::ShutdownNego {
-        TrivialNegotiator
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> () {
+        ()
     }
 
     #[inline]
@@ -515,7 +523,8 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPResolvingNearConnector {
 impl NearChannel for TCPResolvingNearConnector {
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
-    type ShutdownNego = TrivialNegotiator;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = TCPStream;
     type StartError = Error;
 
     #[inline]
@@ -587,7 +596,14 @@ impl NearChannel for TCPResolvingNearConnector {
     fn shutdown_nego(
         &self
     ) -> Self::ShutdownNego {
-        TrivialNegotiator
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> () {
+        ()
     }
 
     #[inline]
@@ -712,7 +728,8 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
 impl NearChannel for TCPNearConnector {
     type Endpoint = SocketAddr;
     type Conn = TCPStream;
-    type ShutdownNego = TrivialNegotiator;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = TCPStream;
     type StartError = Error;
 
     #[inline]
@@ -741,7 +758,14 @@ impl NearChannel for TCPNearConnector {
     fn shutdown_nego(
         &self
     ) -> Self::ShutdownNego {
-        TrivialNegotiator
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> () {
+        ()
     }
 
     #[inline]

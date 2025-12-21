@@ -35,16 +35,30 @@ use constellation_common::retry::Retry;
 use log::debug;
 use log::info;
 use log::trace;
+use mio::event::Source;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
 use openssl::ssl::Error;
 use openssl::ssl::ErrorCode;
 use openssl::ssl::ShutdownResult;
 use openssl::ssl::SslStream;
 
+#[derive(Debug)]
+pub struct SSLStream<S> {
+    ssl: SslStream<S>
+}
+
+pub struct DTLSShutdownNegotiator<Stream, Inner> {
+    tls: TLSShutdownNegotiator<Stream, Inner, ()>
+}
+
 /// [Negotiator] state for shutting down sessions for
 /// [TLSNearChannel].
 #[derive(Clone)]
-pub struct TLSShutdownNegotiator<Stream, Inner> {
+pub struct TLSShutdownNegotiator<Stream, Inner, Value> {
     stream: PhantomData<Stream>,
+    value: PhantomData<Value>,
     /// Total maximum duration.
     timeout: Duration,
     /// Retry configuration for sending shutdown messages.
@@ -108,10 +122,10 @@ pub enum TLSStartError<Inner, TLS> {
     }
 }
 
-impl <Stream, Inner> TLSShutdownNegotiator<Stream, Inner>
+impl <Stream, Inner, Value> TLSShutdownNegotiator<Stream, Inner, Value>
 where
     Stream: Credentials + Session + Read + Write,
-    Inner: Negotiator<()>
+    Inner: Negotiator<Value>
 {
     #[inline]
     pub fn new(
@@ -121,6 +135,7 @@ where
     ) -> Self {
         TLSShutdownNegotiator {
             stream: PhantomData,
+            value: PhantomData,
             timeout: timeout,
             retry: retry,
             inner: inner
@@ -128,10 +143,11 @@ where
     }
 }
 
-impl <Stream, Inner> Negotiator<()> for TLSShutdownNegotiator<Stream, Inner>
+impl <Stream, Inner, Value> Negotiator<SSLStream<Stream>>
+    for TLSShutdownNegotiator<Stream, Inner, Value>
 where
     Stream: Credentials + Session + Read + Write,
-    Inner: Negotiator<()>
+    Inner: Negotiator<Value>
 {
     type State = TLSShutdownNegotiatorState<Stream, Inner::State>;
     type Pending = TLSShutdownNegoPending<Stream, Inner::Pending>;
@@ -140,7 +156,10 @@ where
     fn negotiate(
         &self,
         mut state: Self::State
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<SSLStream<Stream>, Self::Pending>,
+        Self::NegotiateError
+    > {
         let addr = state.ssl.get_ref().peer_addr()
             .map_err(|err| TLSShutdownError::IO { err: err })?;
 
@@ -178,7 +197,7 @@ where
                 //        pending: inner
                 //    }))
 
-                Ok(NegotiatorResult::Complete(()))
+                Ok(NegotiatorResult::Complete(SSLStream { ssl: state.ssl }))
             }
             Err(err) => match err.code() {
                 ErrorCode::WANT_READ | ErrorCode::WANT_WRITE => {
@@ -209,7 +228,10 @@ where
     fn complete_negotiate(
         &self,
         pending: TLSShutdownNegoPending<Stream, Inner::Pending>
-    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<SSLStream<Stream>, Self::Pending>,
+        Self::NegotiateError
+    > {
         let now = Instant::now();
 
         match pending {
@@ -246,7 +268,7 @@ where
                     //        pending: inner
                     //    }))
 
-                    Ok(NegotiatorResult::Complete(()))
+                    Ok(NegotiatorResult::Complete(SSLStream { ssl: ssl }))
                 }
                 Err(err) => match err.code() {
                     ErrorCode::WANT_READ | ErrorCode::WANT_WRITE => {
@@ -276,11 +298,12 @@ where
     }
 }
 
-
-impl <Stream, Inner> NegotiatorStart<(), SslStream<Stream>>
-    for TLSShutdownNegotiator<Stream, Inner>
+impl <Stream, Inner, Value, Wrapped>
+    NegotiatorStart<SSLStream<Stream>, Wrapped>
+    for TLSShutdownNegotiator<Stream, Inner, Value>
 where
-    Inner: NegotiatorStart<(), Stream>,
+    Wrapped: Into<SslStream<Stream>>,
+    Inner: NegotiatorStart<Value, Stream>,
     Stream: Credentials + Session + Read + Write,
 {
     type Param = ();
@@ -290,12 +313,116 @@ where
     fn start(
         &self,
         _param: &(),
-        stream: SslStream<Stream>
+        stream: Wrapped
     ) -> Result<Self::State, Self::StartError> {
         Ok(TLSShutdownNegotiatorState {
             inner: PhantomData,
-            ssl: stream,
+            ssl: stream.into(),
         })
+    }
+}
+
+impl <Stream, Inner> Negotiator<()>
+    for DTLSShutdownNegotiator<Stream, Inner>
+where
+    Stream: Credentials + Session + Read + Write,
+    Inner: Negotiator<()>
+{
+    type State = TLSShutdownNegotiatorState<Stream, Inner::State>;
+    type Pending = TLSShutdownNegoPending<Stream, Inner::Pending>;
+    type NegotiateError = TLSShutdownError<Inner::NegotiateError>;
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<(), Self::Pending>,
+        Self::NegotiateError
+    > {
+        self.tls.negotiate(state)
+            .map(|res| res.map(|_| ()))
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: TLSShutdownNegoPending<Stream, Inner::Pending>
+    ) -> Result<
+        NegotiatorResult<(), Self::Pending>,
+        Self::NegotiateError
+    > {
+        self.tls.complete_negotiate(pending)
+            .map(|res| res.map(|_| ()))
+    }
+}
+
+
+impl <Wrapped, Stream, Inner> NegotiatorStart<(), Wrapped>
+    for DTLSShutdownNegotiator<Stream, Inner>
+where
+    Wrapped: Into<SslStream<Stream>>,
+    Inner: NegotiatorStart<(), Stream>,
+    Stream: Credentials + Session + Read + Write,
+{
+    type Param = ();
+    type StartError = Inner::StartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &(),
+        stream: Wrapped
+    ) -> Result<Self::State, Self::StartError> {
+        self.tls.start(param, stream.into())
+    }
+}
+
+impl <Stream, Inner> DTLSShutdownNegotiator<Stream, Inner>
+where
+    Stream: Credentials + Session + Read + Write,
+    Inner: Negotiator<()>
+{
+    #[inline]
+    pub fn new(
+        inner: Inner,
+        retry: Retry,
+        timeout: Duration
+    ) -> Self {
+        DTLSShutdownNegotiator {
+            tls: TLSShutdownNegotiator::new(inner, retry, timeout)
+        }
+    }
+}
+
+impl<S> Source for SSLStream<S>
+where
+    S: Source,
+{
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), std::io::Error> {
+        self.ssl.get_mut().register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), std::io::Error> {
+        self.ssl.get_mut().reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), std::io::Error> {
+        self.ssl.get_mut().deregister(registry)
     }
 }
 
