@@ -28,7 +28,6 @@ use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::iter::Peekable;
-use std::marker::PhantomData;
 use std::time::Instant;
 
 use constellation_auth::authn::AuthNed;
@@ -152,11 +151,12 @@ where
         /// Retry delay for acceptor.
         retry_when: Option<Instant>,
         /// Session information for each endpoint.
-        tokens: HashMap<Conn::Endpoint, Token>,
+        accept_tokens: HashMap<Accept::Endpoint, Token>,
+        conn_tokens: HashMap<Conn::Endpoint, Token>,
         negos: HashMap<
             Token,
             DuplexValue<
-                SessionNegoEntry<Accept, AcceptAuthN>,
+                Option<SessionNegoEntry<Accept, AcceptAuthN>>,
                 ConnectorEntry<Conn, ConnAuthN>
             >
         >
@@ -183,10 +183,10 @@ where
         /// Retry delay for acceptor.
         retry_when: Option<Instant>,
         /// Session information for each endpoint.
-        sessions: HashMap<Accept::Endpoint, Token>,
+        tokens: HashMap<Accept::Endpoint, Token>,
         negos: HashMap<
             Token,
-            SessionNegoEntry<Accept, AcceptAuthN>,
+            Option<SessionNegoEntry<Accept, AcceptAuthN>>,
         >
     }
 }
@@ -321,6 +321,9 @@ pub enum SessionEntryShutdownError<Start, Shutdown> {
     Shutdown {
         err: ShutdownError<Start, Shutdown>
     },
+    IO {
+        err: std::io::Error
+    },
     NotActive
 }
 
@@ -398,6 +401,7 @@ where
     ///
     /// - `None`: If negotiations concluded, but did not yield a session.
     fn create(
+        registry: &Registry,
         channel: &Channel,
         authn: &AuthN,
         shutdown: &Channel::ShutdownNego,
@@ -435,7 +439,8 @@ where
                     .map_err(|err| SessionEntryCreateError::Shutdown {
                         err: err
                     })?;
-                let out = Self::handle_shutdown_result(res, endpoint);
+                let out = Self::handle_shutdown_result(registry, res, endpoint)
+                    .map_err(|err| SessionEntryCreateError::IO { err: err })?;
 
                 Ok(out.map(|out| (out, None)))
             },
@@ -482,7 +487,11 @@ where
                             .map_err(|err| SessionEntryCreateError::Shutdown {
                                 err: err
                             })?;
-                        let out = Self::handle_shutdown_result(res, endpoint);
+                        let out = Self::handle_shutdown_result(registry, res,
+                                                               endpoint)
+                            .map_err(|err| SessionEntryCreateError::IO {
+                                err: err
+                            })?;
 
                         Ok(out.map(|out| (out, None)))
                     } else {
@@ -568,13 +577,12 @@ where
 
     /// Create a `SessionNegoEntry` for shutdown negotiations.
     fn do_shutdown(
-        registry: &Registry,
         shutdown: &Channel::ShutdownNego,
         param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
         endpoint: Channel::Endpoint,
         stream: Channel::Conn,
     ) -> Result<
-        NegotiatorResult<(), Self>,
+        NegotiatorResult<Channel::ShutdownValue, Self>,
         ShutdownError<
             <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
             <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
@@ -590,9 +598,6 @@ where
            .map_pending(|pending| SessionNegoEntry::Shutdown {
                endpoint: endpoint,
                pending: pending
-           })
-           .map(|mut val| {
-               val.deregister(registry);
            }))
     }
 
@@ -660,6 +665,10 @@ where
                        pending: pending
                    })
                    .map(|mut val| {
+                       info!(target: "session-nego-entry",
+                             "shutdown session with {}",
+                             endpoint);
+
                        val.deregister(registry);
 
                        (None, endpoint)
@@ -724,6 +733,7 @@ where
     fn step(
         self,
         endpoints: &mut HashSet<Channel::Endpoint>,
+        registry: &Registry,
         channel: &Channel,
         authn: &AuthN,
         shutdown: &Channel::ShutdownNego,
@@ -738,7 +748,7 @@ where
             >
         >
     > {
-        match self.do_step(endpoints, channel, authn, shutdown) {
+        match self.do_step(endpoints, registry, channel, authn, shutdown) {
             // Negotiations completed and yielded a session.
             Ok(NegotiatorResult::Complete(
                 (Some(AuthNResult::Accept((out, session))), endpoint)
@@ -763,7 +773,8 @@ where
                     .map_err(|err| SessionEntryStepError::Shutdown {
                         err: err
                     })?;
-                let out = Self::handle_shutdown_result(res, endpoint);
+                let out = Self::handle_shutdown_result(registry, res, endpoint)
+                    .map_err(|err| SessionEntryStepError::IO { err: err })?;
 
                 Ok(out.map(|out| (out, None)))
             },
@@ -830,7 +841,11 @@ where
                             .map_err(|err| SessionEntryStepError::Shutdown {
                                 err: err
                             })?;
-                        let out = Self::handle_shutdown_result(res, endpoint);
+                        let out = Self::handle_shutdown_result(registry, res,
+                                                               endpoint)
+                            .map_err(|err| SessionEntryStepError::IO {
+                                err: err
+                            })?;
 
                         Ok(out.map(|out| (out, None)))
                     } else {
@@ -876,13 +891,13 @@ where
     > {
         if let SessionNegoEntry::Active { endpoint } = self {
             let res = SessionNegoEntry::do_shutdown(shutdown, param,
-                                                    endpoint.clone(),
-                                                    stream)
+                                                    endpoint.clone(), stream)
                 .map_err(|err| SessionEntryShutdownError::Shutdown {
                     err: err
                 })?;
 
-            Ok(Self::handle_shutdown_result(res, endpoint))
+            Self::handle_shutdown_result(registry, res, endpoint)
+                .map_err(|err| SessionEntryShutdownError::IO { err: err })
         } else {
             Err(SessionEntryShutdownError::NotActive)
         }
@@ -913,7 +928,7 @@ where
                     Channel::NegotiateError,
                     SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
                 >,
-                ShutdownError<
+                SessionEntryShutdownError<
                     <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
                     <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
                 >
@@ -931,7 +946,7 @@ where
                     nretries: 0,
                     when: Instant::now()
                 };
-                let session = entry.do_connect(authn, retry, state)
+                let session = entry.do_connect(registry, authn, retry, state)
                     .map_err(|err| ConnectorEntryCreateError::Nego {
                         err: err
                     })?;
@@ -956,7 +971,7 @@ where
                     Channel::NegotiateError,
                     SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
                 >,
-                ShutdownError<
+                SessionEntryShutdownError<
                     <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
                     <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
                 >
@@ -964,7 +979,7 @@ where
             SessionEntryStepError<
                 Channel::NegotiateError,
                 SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
-                ShutdownError<
+                SessionEntryShutdownError<
                     <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
                     <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
                 >
@@ -974,7 +989,8 @@ where
         let state = self.state.take();
 
         match state {
-            Some(state) => self.do_step(endpoints, authn, retry, state)
+            Some(state) => self.do_step(endpoints, registry,
+                                        authn, retry, state)
                 .map_err(|err| ConnectorEntryStepError::Step { err: err })
                 .map(RetryResult::Success),
             None => {
@@ -986,7 +1002,7 @@ where
                             err: err
                         })? {
                         RetryResult::Success(state) => self
-                            .do_connect(authn, retry, state)
+                            .do_connect(registry, authn, retry, state)
                             .map_err(|err| ConnectorEntryStepError::Connect {
                                 err: err
                             })
@@ -1029,39 +1045,31 @@ where
 
     fn do_shutdown(
         &mut self,
+        registry: &Registry,
         endpoint: Channel::Endpoint,
         stream: Channel::Conn,
     ) -> Result<
         (),
-        ShutdownError<
+        SessionEntryShutdownError<
             <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
             <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
         >
     > {
-        match SessionNegoEntry::do_shutdown(&self.shutdown,
-                                            &self.channel.shutdown_param(),
-                                            endpoint.clone(), stream)? {
-            NegotiatorResult::Complete(()) => {
-                info!(target: "connector-entry",
-                      "shutdown session with {}",
-                      endpoint);
+        let res = SessionNegoEntry::do_shutdown(&self.shutdown,
+                                                &self.channel.shutdown_param(),
+                                                endpoint.clone(), stream)
+            .map_err(|err| SessionEntryShutdownError::Shutdown { err: err })?;
 
-                self.state = None;
-            },
-            NegotiatorResult::Pending(pending) => {
-                debug!(target: "connector-entry",
-                       "continuing shutdown negotiation with {}",
-                       endpoint);
-
-                self.state = Some(pending)
-            }
-        }
+        self.state = SessionNegoEntry::handle_shutdown_result(registry, res,
+                                                              endpoint)
+            .map_err(|err| SessionEntryShutdownError::IO { err: err })?;
 
         Ok(())
     }
 
     fn do_connect(
         &mut self,
+        registry: &Registry,
         authn: &AuthN,
         retry: &Retry,
         state: Channel::State,
@@ -1072,7 +1080,7 @@ where
                 Channel::NegotiateError,
                 SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
             >,
-            ShutdownError<
+            SessionEntryShutdownError<
                 <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
                 <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
             >
@@ -1100,7 +1108,7 @@ where
                 self.when = Instant::now() + delay;
                 self.nretries += 1;
 
-                self.do_shutdown(endpoint, stream)
+                self.do_shutdown(registry, endpoint, stream)
                     .map_err(|err| SessionCreateError::Shutdown { err: err })?;
 
                 Ok(None)
@@ -1156,7 +1164,7 @@ where
                                 err: err
                             })?;
 
-                        self.do_shutdown(endpoint, stream)
+                        self.do_shutdown(registry, endpoint, stream)
                             .map_err(|err| SessionCreateError::Shutdown {
                                 err: err
                             })?;
@@ -1171,6 +1179,7 @@ where
     fn do_step(
         &mut self,
         endpoints: &mut HashSet<Channel::Endpoint>,
+        registry: &Registry,
         authn: &AuthN,
         retry: &Retry,
         state: SessionNegoEntry<Channel, AuthN>
@@ -1179,13 +1188,14 @@ where
         SessionEntryStepError<
             Channel::NegotiateError,
             SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
-            ShutdownError<
+            SessionEntryShutdownError<
                 <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
                 <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
             >
         >
     > {
-        match state.do_step(endpoints, &self.channel, authn, &self.shutdown) {
+        match state.do_step(endpoints, registry, &self.channel,
+                            authn, &self.shutdown) {
             // Negotiations completed and yielded a session.
             Ok(NegotiatorResult::Complete(
                 (Some(AuthNResult::Accept((out, session))), endpoint)
@@ -1212,7 +1222,7 @@ where
                 self.when = Instant::now() + delay;
                 self.nretries += 1;
 
-                self.do_shutdown(endpoint, stream)
+                self.do_shutdown(registry, endpoint, stream)
                     .map_err(|err| SessionEntryStepError::Shutdown {
                         err: err
                     })?;
@@ -1244,8 +1254,10 @@ where
                         Err(SessionEntryStepError::AuthN { err: err }),
                     SessionEntryStepError::Shutdown { err } =>
                         Err(SessionEntryStepError::Shutdown {
-                            err: ShutdownError::Negotiate {
-                                err: err
+                            err: SessionEntryShutdownError::Shutdown {
+                                err: ShutdownError::Negotiate {
+                                    err: err
+                                }
                             }
                         }),
                     SessionEntryStepError::IO { err } =>
@@ -1290,7 +1302,7 @@ where
                                 err: err
                             })?;
 
-                        self.do_shutdown(endpoint, stream)
+                        self.do_shutdown(registry, endpoint, stream)
                             .map_err(|err| SessionEntryStepError::Shutdown {
                                 err: err
                             })?;
@@ -1346,11 +1358,12 @@ where
     Conn::Conn: Session,
     Conn::Config: Clone,
     Conn::NegotiateError: ScopedError,
-    <Conn::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
+    <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError: ScopedError,
     Accept: NearChannel + NearChannelCreate,
     Accept::Endpoint: Clone + Eq + Hash,
     Accept::Conn: Session,
     Accept::NegotiateError: ScopedError,
+    <Accept::ShutdownNego as Negotiator<Accept::ShutdownValue>>::NegotiateError: ScopedError,
     ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
     ConnAuthN::NegotiateError: ScopedError,
     AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
@@ -1363,9 +1376,9 @@ where
     ) -> Result<
         (),
         ChannelEntryShutdownError<
-            ShutdownError<
-                <Conn::ShutdownNego as NegotiatorStart<(), Conn::Conn>>::StartError,
-                <Conn::ShutdownNego as Negotiator<()>>::NegotiateError
+            SessionEntryShutdownError<
+                <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::StartError,
+                <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError
             >,
             Conn::Endpoint
         >
@@ -1376,95 +1389,79 @@ where
 
         match &mut self.mode {
             ChannelMode::Duplex {
-                tokens, negos, ..
-            } => {
-                let token = tokens.get_mut(&endpoint)
-                    .ok_or(ChannelEntryShutdownError::NotFound {
-                        endpoint: endpoint
-                    })?;
-
+                conn_tokens, negos, ..
+            } => if let Entry::Occupied(ent) =
+                conn_tokens.entry(endpoint.clone()) {
                 if let DuplexValue::Conn { conn } = negos
-                    .get_mut(&token)
+                    .get_mut(ent.get())
                     .ok_or(ChannelEntryShutdownError::Inconsistent)? {
-                    let delete = conn.shutdown(stream)
+                    let delete = conn.shutdown(registry, stream)
                         .map_err(|err| ChannelEntryShutdownError::Shutdown {
                             err: err
                         })?;
 
                     if delete {
-                        if negos.remove(&token).is_none() {
+                        if negos.remove(ent.get()).is_none() {
                             error!(target: "connector-entry",
-                                  "entry for token {:?} missing",
-                                  token);
+                                   "entry for token {:?} missing",
+                                   ent.get());
                         }
 
-                        if tokens.remove(&endpoint).is_none() {
-                            error!(target: "connector-entry",
-                                  "entry for endpoint {:?} missing",
-                                  token);
-                        }
-
-                        registry.deregister(token)
-                            .map_err(|err| ChannelEntryShutdownError::IO {
-                                err: err
-                            })?;
+                        ent.remove();
                     }
-                }
 
-                Ok(())
+                    Ok(())
+                } else {
+                    Err(ChannelEntryShutdownError::Mismatch)
+                }
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
             }
             ChannelMode::Outbound {
                 tokens, negos, ..
-            } => {
-                let token = tokens.get_mut(&endpoint)
-                    .ok_or(ChannelEntryShutdownError::NotFound {
-                        endpoint: endpoint
-                    })?;
-                let conn = negos.get_mut(&token)
+            } =>  if let Entry::Occupied(ent) = tokens.entry(endpoint.clone()) {
+                let conn = negos.get_mut(ent.get())
                     .ok_or(ChannelEntryShutdownError::Inconsistent)?;
-                let delete = conn.shutdown(stream)
+                let delete = conn.shutdown(registry, stream)
                     .map_err(|err| ChannelEntryShutdownError::Shutdown {
                         err: err
                     })?;
 
                 if delete {
-                    if negos.remove(&token).is_none() {
+                    if negos.remove(ent.get()).is_none() {
                         error!(target: "connector-entry",
                                "entry for token {:?} missing",
-                               token);
+                               ent.get());
                     }
 
-                    if tokens.remove(&endpoint).is_none() {
-                        error!(target: "connector-entry",
-                               "entry for endpoint {:?} missing",
-                               token);
-                    }
-
-                    registry.deregister(token)
-                        .map_err(|err| ChannelEntryShutdownError::IO {
-                            err: err
-                        })?;
+                    ent.remove();
                 }
 
                 Ok(())
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
             }
             ChannelMode::Inbound { .. } =>
                 Err(ChannelEntryShutdownError::Mismatch)
         }
     }
 
-    fn shutdown_conn(
+    fn shutdown_accept(
         &mut self,
         registry: &Registry,
-        stream: Conn::Conn,
+        stream: Accept::Conn,
     ) -> Result<
         (),
         ChannelEntryShutdownError<
-            ShutdownError<
-                <Conn::ShutdownNego as NegotiatorStart<(), Conn::Conn>>::StartError,
-                <Conn::ShutdownNego as Negotiator<()>>::NegotiateError
+            SessionEntryShutdownError<
+                <Accept::ShutdownNego as NegotiatorStart<Accept::ShutdownValue, Accept::Conn>>::StartError,
+                <Accept::ShutdownNego as Negotiator<Accept::ShutdownValue>>::NegotiateError
             >,
-            Conn::Endpoint
+            Accept::Endpoint
         >
     > {
         let endpoint = stream
@@ -1473,79 +1470,81 @@ where
 
         match &mut self.mode {
             ChannelMode::Duplex {
-                tokens, negos, ..
-            } => {
-                let token = tokens.get_mut(&endpoint)
-                    .ok_or(ChannelEntryShutdownError::NotFound {
-                        endpoint: endpoint
-                    })?;
-
-                if let DuplexValue::Conn { conn } = negos
-                    .get_mut(&token)
+                accept_tokens, negos, shutdown, acceptor, ..
+            } => if let Entry::Occupied(ent) = accept_tokens
+                .entry(endpoint.clone()) {
+                if let DuplexValue::Accept { accept } = negos
+                    .get_mut(ent.get())
                     .ok_or(ChannelEntryShutdownError::Inconsistent)? {
-                    let delete = conn.shutdown(stream)
+                    let newaccept = accept.take()
+                        .ok_or(ChannelEntryShutdownError::NotFound {
+                            endpoint: endpoint
+                        })?
+                        .shutdown(
+                            registry, shutdown, &acceptor.shutdown_param(),
+                            stream
+                        )
                         .map_err(|err| ChannelEntryShutdownError::Shutdown {
                             err: err
                         })?;
 
-                    if delete {
-                        if negos.remove(&token).is_none() {
+                    if newaccept.is_some() {
+                        *accept = newaccept
+                    } else {
+                        if negos.remove(ent.get()).is_none() {
                             error!(target: "connector-entry",
-                                  "entry for token {:?} missing",
-                                  token);
+                                   "entry for token {:?} missing",
+                                   ent.get());
                         }
 
-                        if tokens.remove(&endpoint).is_none() {
-                            error!(target: "connector-entry",
-                                  "entry for endpoint {:?} missing",
-                                  token);
-                        }
-
-                        registry.deregister(token)
-                            .map_err(|err| ChannelEntryShutdownError::IO {
-                                err: err
-                            })?;
+                        ent.remove();
                     }
-                }
 
-                Ok(())
+                    Ok(())
+                } else {
+                    Err(ChannelEntryShutdownError::Mismatch)
+                }
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
             }
-            ChannelMode::Outbound {
-                tokens, negos, ..
-            } => {
-                let token = tokens.get_mut(&endpoint)
+            ChannelMode::Inbound {
+                tokens, negos, shutdown, acceptor, ..
+            } =>  if let Entry::Occupied(ent) = tokens.entry(endpoint.clone()) {
+                let accept = negos.get_mut(ent.get())
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
+                let newaccept = accept.take()
                     .ok_or(ChannelEntryShutdownError::NotFound {
                         endpoint: endpoint
-                    })?;
-                let conn = negos.get_mut(&token)
-                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
-                let delete = conn.shutdown(stream)
+                    })?
+                    .shutdown(
+                        registry, shutdown, &acceptor.shutdown_param(),
+                        stream
+                    )
                     .map_err(|err| ChannelEntryShutdownError::Shutdown {
                         err: err
                     })?;
 
-                if delete {
-                    if negos.remove(&token).is_none() {
+                if newaccept.is_some() {
+                    *accept = newaccept
+                } else {
+                    if negos.remove(ent.get()).is_none() {
                         error!(target: "connector-entry",
                                "entry for token {:?} missing",
-                               token);
+                               ent.get());
                     }
 
-                    if tokens.remove(&endpoint).is_none() {
-                        error!(target: "connector-entry",
-                               "entry for endpoint {:?} missing",
-                               token);
-                    }
-
-                    registry.deregister(token)
-                        .map_err(|err| ChannelEntryShutdownError::IO {
-                            err: err
-                        })?;
+                    ent.remove();
                 }
 
                 Ok(())
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
             }
-            ChannelMode::Inbound { .. } =>
+            ChannelMode::Outbound { .. } =>
                 Err(ChannelEntryShutdownError::Mismatch)
         }
     }
@@ -1569,8 +1568,8 @@ where
                         SessionEntryAuthNError<ConnAuthN::StartError, ConnAuthN::NegotiateError>
                     >,
                     ShutdownError<
-                        <Conn::ShutdownNego as NegotiatorStart<(), Conn::Conn>>::StartError,
-                        <Conn::ShutdownNego as Negotiator<()>>::NegotiateError
+                        <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::StartError,
+                        <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError
                     >
                 >
             >
@@ -1582,8 +1581,8 @@ where
     {
         match &mut self.mode {
             ChannelMode::Duplex {
-                config, tokens, negos, out_authn, ..
-            } => if !tokens.contains_key(&endpoint) {
+                config, conn_tokens, negos, out_authn, ..
+            } => if !conn_tokens.contains_key(&endpoint) {
                 let token = gentok.peek()
                     .ok_or(ChannelEntryReqError::NoTokens)?;
                 let conn = Conn::create_with_endpoint(ctx, config.clone(),
@@ -1597,7 +1596,7 @@ where
                        let ent = DuplexValue::Conn { conn: ent };
                        let _ = gentok.next();
 
-                       if tokens.insert(endpoint, *token).is_some() {
+                       if conn_tokens.insert(endpoint, *token).is_some() {
                            error!(target: "channel-entry",
                                   "tokens table should not contain an entry");
                        }
@@ -1639,6 +1638,8 @@ where
 
                        out
                    }))
+            } else {
+                Err(ChannelEntryReqError::Collision)
             }
             ChannelMode::Inbound { .. } => Err(ChannelEntryReqError::Inbound)
         }
@@ -1855,6 +1856,7 @@ where Start: Display,
     ) -> Result<(), Error> {
         match self {
             SessionEntryShutdownError::Shutdown { err } => err.fmt(f),
+            SessionEntryShutdownError::IO { err } => err.fmt(f),
             SessionEntryShutdownError::NotActive =>
                 write!(f, "session is not active")
         }
@@ -1926,8 +1928,10 @@ where
     }
 }
 
-impl<Shutdown> Display for ChannelEntryShutdownError<Shutdown>
-where Shutdown: Display {
+impl<Shutdown, Endpoint> Display
+    for ChannelEntryShutdownError<Shutdown, Endpoint>
+where Shutdown: Display,
+      Endpoint: Display {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
@@ -1935,6 +1939,10 @@ where Shutdown: Display {
         match self {
             ChannelEntryShutdownError::Shutdown { err } => err.fmt(f),
             ChannelEntryShutdownError::IO { err } => err.fmt(f),
+            ChannelEntryShutdownError::NotFound { endpoint } =>
+                write!(f, "no entry for {}", endpoint),
+            ChannelEntryShutdownError::Inconsistent =>
+                write!(f, "inconsistent token and session tables"),
             ChannelEntryShutdownError::Mismatch =>
                 write!(f, "wrong type of stream for this channel entry")
         }
