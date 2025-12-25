@@ -1385,6 +1385,7 @@ where
         while {
             let mut read = false;
 
+            // Pick up all incoming flows.
             loop {
                 match self.flows.listen(param) {
                     Ok(res) => {
