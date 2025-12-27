@@ -354,16 +354,20 @@ where
     Channel: FarChannel
 {
     type Acquired = Channel::Acquired;
-    type State = Channel::State;
+    type AcquireState = Channel::AcquireState;
     type NegotiatePending = Channel::NegotiatePending;
     type AcquireError = Channel::AcquireError;
     type NegotiateError = Channel::NegotiateError;
+    type ShutdownState = Channel::ShutdownState;
+    type ShutdownPending = Channel::ShutdownPending;
+    type ShutdownError = Channel::ShutdownError;
+    type ShutdownNegotiateError = Channel::ShutdownNegotiateError;
 
     #[inline]
     fn acquire(
         &mut self,
         registry: &Registry
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         self.inner.acquire(registry)
     }
 
@@ -379,7 +383,7 @@ where
     #[inline]
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         self.inner.negotiate(state)
@@ -392,6 +396,34 @@ where
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         self.inner.complete_negotiate(err)
+    }
+
+    #[inline]
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        self.inner.shutdown(acquired)
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        self.inner.shutdown_negotiate(registry, state)
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        self.inner.complete_shutdown_negotiate(registry, err)
     }
 }
 

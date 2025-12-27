@@ -328,12 +328,17 @@ pub trait FarChannel: Sized {
     /// create one or more [Param](FarChannelSocket::Param)s.
     type Acquired;
     /// Type of negotiation state.
-    type State;
+    type AcquireState;
+    type NegotiatePending;
+    type ShutdownState;
+    type ShutdownPending;
     /// Type of errors that can occur in the acquisition phase.
     type AcquireError: Display + ScopedError;
     /// Errors that can occur during negotiations.
     type NegotiateError: Debug + Display;
-    type NegotiatePending;
+    type ShutdownError: Debug + Display;
+    /// Errors that can occur during shutdown negotiations.
+    type ShutdownNegotiateError: Debug + Display;
 
     /// Perform the acquisition phase of establishing the channel.
     ///
@@ -356,12 +361,12 @@ pub trait FarChannel: Sized {
     fn acquire(
         &mut self,
         registry: &Registry,
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError>;
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError>;
 
     /// Perform negotiations.
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError>;
 
@@ -371,6 +376,27 @@ pub trait FarChannel: Sized {
         err: Self::NegotiatePending
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError>;
+
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError>;
+
+    /// Perform negotiations.
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError>;
+
+    /// Complete a failed negotiation.
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError>;
 
     #[cfg(feature = "socks5")]
     /// Obtain the address to use in the SOCKS5 target field.

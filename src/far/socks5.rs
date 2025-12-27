@@ -148,6 +148,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Socket;
@@ -162,6 +163,7 @@ use constellation_streams::addrs::AddrsCreate;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
 use log::info;
+use mio::event::Source;
 use mio::Registry;
 use mio::Token;
 
@@ -292,6 +294,8 @@ where
     session: Rc<RefCell<Option<SOCKS5UDPInfo>>>,
     /// The authentication configuration for connecting to the proxy.
     auth: SOCKS5AuthNConfig,
+    shutdown_nego: Proxy::ShutdownNego,
+    shutdown_param: <Proxy::ShutdownNego as NegotiatorStart<Proxy::ShutdownValue, Proxy::Conn>>::Param,
     /// The [FarChannel] that will be used to forward UDP traffic.
     datagram: Datagram,
     /// The [NearConnector] that will be used to connect to the proxy.
@@ -309,12 +313,29 @@ pub struct SOCKS5SessionNegotiation<Proxy, Datagram> {
 
 /// Type of results from [acquire](FarChannel::acquire) for
 /// [SOCKS5FarChannel].
-pub struct SOCKS5Acquired<Acquired, PeerAddr> {
+pub struct SOCKS5Acquired<Acquired, Proxy, PeerAddr> {
     addr: PhantomData<PeerAddr>,
+    /// Proxy connection, must be maintained.
+    conn: Proxy,
     /// Datagram socket address.
     datagram: Acquired,
     /// Proxy address.
     proxy: IPEndpoint
+}
+
+pub struct SOCKS5AcquiredShutdownState<Proxy, Datagram> {
+    datagram: Datagram,
+    proxy: Proxy
+}
+
+pub enum SOCKS5AcquiredShutdownPending<Proxy, DatagramState, Datagram> {
+    Proxy {
+        proxy: Proxy,
+        datagram: DatagramState
+    },
+    Datagram {
+        datagram: Datagram
+    }
 }
 
 /// Errors that can occur when creating a [SOCKS5FarChannel].
@@ -410,6 +431,39 @@ pub enum SOCKS5NegotiatePending<Datagram, DatagramState, DatagramPending,
     }
 }
 
+#[derive(Debug)]
+pub enum SOCKS5ShutdownError<Shutdown> {
+    Shutdown {
+        err: Shutdown
+    },
+    IO {
+        err: Error
+    }
+}
+
+#[derive(Debug)]
+pub enum SOCKS5AcquiredShutdownError<Proxy, Datagram> {
+    Datagram {
+        err: Datagram
+    },
+    Proxy {
+        err: Proxy
+    },
+}
+
+#[derive(Debug)]
+pub enum SOCKS5AcquiredShutdownNegoError<Proxy, Datagram> {
+    Datagram {
+        err: Datagram
+    },
+    Proxy {
+        err: Proxy
+    },
+    IO {
+        err: Error
+    }
+}
+
 impl<Datagram, Proxy> ScopedError
     for SOCKS5NegotiateError<Datagram, Proxy>
 where Datagram: ScopedError,
@@ -493,8 +547,38 @@ where
     }
 }
 
-impl<Acquired, PeerAddr> FarChannelAcquired
-    for SOCKS5Acquired<Acquired, PeerAddr>
+
+impl<Proxy, Datagram> ScopedError
+    for SOCKS5AcquiredShutdownError<Proxy, Datagram>
+where
+    Datagram: ScopedError,
+    Proxy: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SOCKS5AcquiredShutdownError::Datagram { err } => err.scope(),
+            SOCKS5AcquiredShutdownError::Proxy { err } => err.scope(),
+        }
+    }
+}
+
+impl<Proxy, Datagram> ScopedError
+    for SOCKS5AcquiredShutdownNegoError<Proxy, Datagram>
+where
+    Datagram: ScopedError,
+    Proxy: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SOCKS5AcquiredShutdownNegoError::Datagram { err } => err.scope(),
+            SOCKS5AcquiredShutdownNegoError::Proxy { err } => err.scope(),
+            SOCKS5AcquiredShutdownNegoError::IO { err } => err.scope()
+        }
+    }
+}
+
+impl<Acquired, Proxy, PeerAddr> FarChannelAcquired
+    for SOCKS5Acquired<Acquired, Proxy, PeerAddr>
 where
     Acquired: FarChannelAcquired,
     PeerAddr: From<IPEndpoint>
@@ -514,8 +598,8 @@ where
     }
 }
 
-impl<Acquired, PeerAddr> FarChannelAcquiredResolve
-    for SOCKS5Acquired<Acquired, PeerAddr>
+impl<Acquired, Proxy, PeerAddr> FarChannelAcquiredResolve
+    for SOCKS5Acquired<Acquired, Proxy, PeerAddr>
 where
     Acquired: FarChannelAcquiredResolve,
     PeerAddr: From<IPEndpoint>
@@ -576,10 +660,10 @@ where
         target: IPEndpoint
     ) -> Result<
         NegotiatorResult<
-            SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+            SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>,
             SOCKS5NegotiatePending<
                 Datagram::Acquired,
-                Datagram::State,
+                Datagram::AcquireState,
                 Datagram::NegotiatePending,
                 Proxy::Conn,
                 Proxy::Pending
@@ -625,6 +709,7 @@ where
 
                 Ok(NegotiatorResult::Complete(SOCKS5Acquired {
                     addr: PhantomData,
+                    conn: stream,
                     datagram: datagram,
                     proxy: endpoint
                 }))
@@ -652,10 +737,10 @@ where
         datagram: Datagram::Acquired
     ) -> Result<
         NegotiatorResult<
-            SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+            SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>,
             SOCKS5NegotiatePending<
                 Datagram::Acquired,
-                Datagram::State,
+                Datagram::AcquireState,
                 Datagram::NegotiatePending,
                 Proxy::Conn,
                 Proxy::Pending
@@ -677,13 +762,13 @@ where
     fn negotiate_datagram(
         &self,
         stream: Proxy::Conn,
-        datagram: Datagram::State
+        datagram: Datagram::AcquireState
     ) -> Result<
         NegotiatorResult<
-            SOCKS5Acquired<Datagram::Acquired, IPEndpoint>,
+            SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>,
             SOCKS5NegotiatePending<
                 Datagram::Acquired,
-                Datagram::State,
+                Datagram::AcquireState,
                 Datagram::NegotiatePending,
                 Proxy::Conn,
                 Proxy::Pending
@@ -715,14 +800,17 @@ where
     Datagram::Socket: Socket,
     <Datagram::Socket as Socket>::Addr: TryFrom<SocketAddr>,
 {
-    type State = SOCKS5SessionNegotiation<Proxy::State, Datagram::State>;
+    type AcquireState = SOCKS5SessionNegotiation<
+        Proxy::State,
+        Datagram::AcquireState
+    >;
     type NegotiateError = SOCKS5NegotiateError<
         Datagram::NegotiateError,
         Proxy::NegotiateError,
     >;
     type NegotiatePending = SOCKS5NegotiatePending<
         Datagram::Acquired,
-        Datagram::State,
+        Datagram::AcquireState,
         Datagram::NegotiatePending,
         Proxy::Conn,
         Proxy::Pending
@@ -731,7 +819,24 @@ where
         Proxy::StartError,
         Datagram::AcquireError
     >;
-    type Acquired = SOCKS5Acquired<Datagram::Acquired, IPEndpoint>;
+    type Acquired = SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>;
+    type ShutdownState = SOCKS5AcquiredShutdownState<
+        <Proxy::ShutdownNego as Negotiator<Proxy::ShutdownValue>>::State,
+        Datagram::ShutdownState
+    >;
+    type ShutdownPending = SOCKS5AcquiredShutdownPending<
+        <Proxy::ShutdownNego as Negotiator<Proxy::ShutdownValue>>::Pending,
+        Datagram::ShutdownState,
+        Datagram::ShutdownPending,
+    >;
+    type ShutdownError = SOCKS5AcquiredShutdownError<
+        <Proxy::ShutdownNego as NegotiatorStart<Proxy::ShutdownValue, Proxy::Conn>>::StartError,
+        Datagram::ShutdownError
+    >;
+    type ShutdownNegotiateError = SOCKS5AcquiredShutdownNegoError<
+        <Proxy::ShutdownNego as Negotiator<Proxy::ShutdownValue>>::NegotiateError,
+        Datagram::ShutdownNegotiateError
+    >;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -745,7 +850,7 @@ where
     fn acquire(
         &mut self,
         registry: &Registry
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         self
             .proxy
             .start(registry, self.token.clone())
@@ -764,7 +869,7 @@ where
 
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         match self.proxy.negotiate(state.proxy)
@@ -828,6 +933,7 @@ where
 
                         Ok(NegotiatorResult::Complete(SOCKS5Acquired {
                             addr: PhantomData,
+                            conn: proxy,
                             datagram: datagram,
                             proxy: endpoint
                         }))
@@ -858,6 +964,109 @@ where
         }
     }
 
+    #[inline]
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        let proxy = self.shutdown_nego
+            .start(&self.shutdown_param, acquired.conn)
+            .map_err(|err| SOCKS5AcquiredShutdownError::Proxy { err: err })?;
+        let datagram = self.datagram.shutdown(acquired.datagram)
+            .map_err(|err| SOCKS5AcquiredShutdownError::Datagram { err: err })?;
+
+        Ok(SOCKS5AcquiredShutdownState {
+            datagram: datagram,
+            proxy: proxy
+        })
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        let SOCKS5AcquiredShutdownState { proxy, datagram } = state;
+
+        match self.shutdown_nego.negotiate(proxy)
+            .map_err(|err| SOCKS5AcquiredShutdownNegoError::Proxy {
+                err: err
+            })? {
+            NegotiatorResult::Complete(mut val) => {
+                val.deregister(registry)
+                    .map_err(|err| SOCKS5AcquiredShutdownNegoError::IO {
+                        err: err
+                    })?;
+
+                Ok(self.datagram.shutdown_negotiate(registry, datagram)
+                   .map_err(|err| SOCKS5AcquiredShutdownNegoError::Datagram {
+                       err: err
+                   })?
+                   .map_pending(|pending|
+                                SOCKS5AcquiredShutdownPending::Datagram {
+                                    datagram: pending
+                                }))
+            }
+            NegotiatorResult::Pending(pending) => Ok(NegotiatorResult::Pending(
+                SOCKS5AcquiredShutdownPending::Proxy {
+                    datagram: datagram,
+                    proxy: pending
+                }
+            )),
+        }
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        match err {
+            SOCKS5AcquiredShutdownPending::Proxy {
+                datagram, proxy
+            } => match self.shutdown_nego.complete_negotiate(proxy)
+                .map_err(|err| SOCKS5AcquiredShutdownNegoError::Proxy {
+                    err: err
+                })? {
+                NegotiatorResult::Complete(mut val) => {
+                    val.deregister(registry)
+                        .map_err(|err| SOCKS5AcquiredShutdownNegoError::IO {
+                            err: err
+                        })?;
+
+                    Ok(self.datagram.shutdown_negotiate(registry, datagram)
+                       .map_err(|err|
+                                SOCKS5AcquiredShutdownNegoError::Datagram {
+                                    err: err
+                                })?
+                       .map_pending(|pending|
+                                    SOCKS5AcquiredShutdownPending::Datagram {
+                                        datagram: pending
+                                    }))
+                }
+                NegotiatorResult::Pending(pending) =>
+                    Ok(NegotiatorResult::Pending(
+                        SOCKS5AcquiredShutdownPending::Proxy {
+                            datagram: datagram,
+                            proxy: pending
+                        }
+                    )),
+            }
+            SOCKS5AcquiredShutdownPending::Datagram { datagram } =>
+                Ok(self.datagram.complete_shutdown_negotiate(registry, datagram)
+                   .map_err(|err| SOCKS5AcquiredShutdownNegoError::Datagram {
+                       err: err
+                   })?
+                   .map_pending(|pending|
+                                SOCKS5AcquiredShutdownPending::Datagram {
+                                    datagram: pending
+                                }))
+        }
+    }
 }
 
 impl<Proxy, Datagram, PeerAddr> FarChannelSocket
@@ -953,9 +1162,11 @@ where
             .map_err(|e| SOCKS5CreateError::Datagram { datagram: e })?;
         let proxy = Proxy::create(caches, proxy)
             .map_err(|e| SOCKS5CreateError::Proxy { proxy: e })?;
+        let shutdown_nego = proxy.shutdown_nego();
 
         Ok(SOCKS5FarChannel {
             peer_addr: PhantomData,
+            shutdown_nego: shutdown_nego,
             session: Rc::new(RefCell::new(None)),
             auth: auth,
             proxy: proxy,
@@ -1121,6 +1332,55 @@ where
             SOCKS5AcquiredResolveError::NoValidAddrs => {
                 write!(f, "no valid addresses supplied")
             }
+        }
+    }
+}
+
+impl<Shutdown> Display for SOCKS5ShutdownError<Shutdown>
+where
+    Shutdown: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5ShutdownError::Shutdown { err } => err.fmt(f),
+            SOCKS5ShutdownError::IO { err } => write!(f, "{}", err)
+        }
+    }
+}
+
+impl<Proxy, Datagram> Display for SOCKS5AcquiredShutdownError<Proxy, Datagram>
+where
+    Datagram: Display,
+    Proxy: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5AcquiredShutdownError::Datagram { err } => err.fmt(f),
+            SOCKS5AcquiredShutdownError::Proxy { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Proxy, Datagram> Display
+    for SOCKS5AcquiredShutdownNegoError<Proxy, Datagram>
+where
+    Datagram: Display,
+    Proxy: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            SOCKS5AcquiredShutdownNegoError::Datagram { err } => err.fmt(f),
+            SOCKS5AcquiredShutdownNegoError::Proxy { err } => err.fmt(f),
+            SOCKS5AcquiredShutdownNegoError::IO { err } => write!(f, "{}", err)
         }
     }
 }

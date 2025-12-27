@@ -99,6 +99,14 @@ use crate::far::flows::BufferedFlow;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquireError;
 #[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5AcquiredShutdownError;
+#[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5AcquiredShutdownNegoError;
+#[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5AcquiredShutdownPending;
+#[cfg(feature = "socks5")]
+use crate::far::socks5::SOCKS5AcquiredShutdownState;
+#[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5Acquired;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquiredResolveError;
@@ -136,6 +144,8 @@ use crate::near::compound::CompoundNearConnectorCreateError;
 use crate::near::compound::CompoundNearConnectorStartError;
 use crate::near::compound::CompoundNearConnectorNegotiateError;
 use crate::near::compound::CompoundNearConnectorNegotiatePending;
+use crate::near::compound::CompoundNearShutdownNegotiatorPending;
+use crate::near::compound::CompoundNearShutdownNegotiatorState;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolution;
 use crate::tls::TLSShutdownError;
@@ -272,7 +282,9 @@ pub enum CompoundFarIPChannelAcquired {
     },
     #[cfg(feature = "socks5")]
     SOCKS5 {
-        socks5: Box<SOCKS5Acquired<CompoundFarIPChannelAcquired, IPEndpoint>>
+        socks5: Box<SOCKS5Acquired<CompoundFarIPChannelAcquired,
+                                   CompoundNearClientConn,
+                                   IPEndpoint>>
     }
 }
 
@@ -451,6 +463,50 @@ pub enum CompoundFarChannelCreateNegoError {
     }
 }
 
+#[derive(Debug)]
+pub enum CompoundFarIPChannelShutdownAcquiredError {
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        err: Box<
+            SOCKS5AcquiredShutdownError<
+                crate::near::compound::CompoundNegotiatorStartError,
+                CompoundFarIPChannelShutdownAcquiredError
+            >
+        >
+    },
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum CompoundFarChannelShutdownAcquiredError {
+    IP {
+        err: CompoundFarIPChannelShutdownAcquiredError
+    },
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum CompoundFarIPChannelShutdownAcquiredNegoError {
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        err: Box<
+            SOCKS5AcquiredShutdownNegoError<
+                crate::near::compound::CompoundShutdownError,
+                CompoundFarIPChannelShutdownAcquiredNegoError
+            >
+        >
+    },
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum CompoundFarChannelShutdownAcquiredNegoError {
+    IP {
+        err: CompoundFarIPChannelShutdownAcquiredNegoError
+    },
+    Mismatch
+}
+
 /// Multiplexer for [Socket](FarChannelSocket::Socket)s for
 /// [CompoundFarIPChannel].
 pub enum CompoundFarIPChannelSocket {
@@ -626,6 +682,33 @@ where
     }
 }
 
+/// [Negotiator] instance for shutting down acquired channels for
+/// [CompoundFarChannel]s.
+pub enum CompoundAcquiredShutdownNegotiateState {
+    Basic,
+    IP {
+        ip: CompoundIPAcquiredShutdownNegotiateState
+    },
+    SOCKS5 {
+        socks5: Box<SOCKS5AcquiredShutdownState<
+            CompoundNearShutdownNegotiatorState<CompoundNearClientConn>,
+            CompoundAcquiredShutdownNegotiateState
+        >>
+    }
+}
+
+/// [Negotiator] instance for shutting down acquired channels for
+/// [CompoundFarChannel]s.
+pub enum CompoundIPAcquiredShutdownNegotiateState {
+    Basic,
+    SOCKS5 {
+        socks5: Box<SOCKS5AcquiredShutdownState<
+            CompoundNearShutdownNegotiatorState<CompoundNearClientConn>,
+            CompoundIPAcquiredShutdownNegotiateState
+        >>
+    }
+}
+
 pub enum CompoundInboundNegotiatorState<Unix, UDP>
 where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
@@ -788,6 +871,35 @@ where
         dtls: Box<TLSShutdownNegoPending<
             CompoundIPFlow<UDP>,
             CompoundIPShutdownNegotiatorPending<UDP>,
+        >>
+    }
+}
+
+/// [Negotiator] instance for shutting down acquired channels for
+/// [CompoundFarChannel]s.
+pub enum CompoundAcquiredShutdownNegotiatePending {
+    Basic,
+    IP {
+        ip: CompoundIPAcquiredShutdownNegotiatePending
+    },
+    SOCKS5 {
+        socks5: Box<SOCKS5AcquiredShutdownPending<
+            CompoundNearShutdownNegotiatorPending<CompoundNearClientConn>,
+            CompoundAcquiredShutdownNegotiateState,
+            CompoundAcquiredShutdownNegotiatePending
+        >>
+    }
+}
+
+/// [Negotiator] instance for shutting down acquired channels for
+/// [CompoundFarChannel]s.
+pub enum CompoundIPAcquiredShutdownNegotiatePending {
+    Basic,
+    SOCKS5 {
+        socks5: Box<SOCKS5AcquiredShutdownPending<
+            CompoundNearShutdownNegotiatorPending<CompoundNearClientConn>,
+            CompoundIPAcquiredShutdownNegotiateState,
+            CompoundIPAcquiredShutdownNegotiatePending
         >>
     }
 }
@@ -2177,17 +2289,65 @@ impl ScopedError for CompoundFarChannelAcquireNegoError {
     }
 }
 
+impl ScopedError for CompoundFarIPChannelShutdownAcquiredError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarIPChannelShutdownAcquiredError::SOCKS5 { err } =>
+                err.scope(),
+            CompoundFarIPChannelShutdownAcquiredError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl ScopedError for CompoundFarChannelShutdownAcquiredError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarChannelShutdownAcquiredError::IP { err } =>
+                err.scope(),
+            CompoundFarChannelShutdownAcquiredError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl ScopedError for CompoundFarIPChannelShutdownAcquiredNegoError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarIPChannelShutdownAcquiredNegoError::SOCKS5 { err } =>
+                err.as_ref().scope(),
+            CompoundFarIPChannelShutdownAcquiredNegoError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl ScopedError for CompoundFarChannelShutdownAcquiredNegoError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarChannelShutdownAcquiredNegoError::IP { err } =>
+                err.scope(),
+            CompoundFarChannelShutdownAcquiredNegoError::Mismatch =>
+                ErrorScope::Unrecoverable
+        }
+    }
+}
+
 impl FarChannel for CompoundFarIPChannel {
     type AcquireError = CompoundFarIPChannelAcquireError;
     type Acquired = CompoundFarIPChannelAcquired;
-    type State = CompoundFarIPChannelAcquireState;
+    type AcquireState = CompoundFarIPChannelAcquireState;
     type NegotiateError = CompoundFarIPChannelAcquireNegoError;
     type NegotiatePending = CompoundFarIPChannelAcquireNegoPending;
+    type ShutdownState = CompoundIPAcquiredShutdownNegotiateState;
+    type ShutdownPending = CompoundIPAcquiredShutdownNegotiatePending;
+    type ShutdownError = CompoundFarIPChannelShutdownAcquiredError;
+    type ShutdownNegotiateError = CompoundFarIPChannelShutdownAcquiredNegoError;
 
     fn acquire(
         &mut self,
         registry: &Registry
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         match self {
             CompoundFarIPChannel::UDP { udp } => {
                 let Ok(udp) = udp.acquire(registry);
@@ -2214,7 +2374,7 @@ impl FarChannel for CompoundFarIPChannel {
 
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         match (self, state) {
@@ -2274,6 +2434,102 @@ impl FarChannel for CompoundFarIPChannel {
                 Ok(socks5)
             }
             _ => Err(CompoundFarIPChannelAcquireNegoError::Mismatch)
+        }
+    }
+
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        match (self, acquired) {
+            (CompoundFarIPChannel::UDP { udp },
+             CompoundFarIPChannelAcquired::UDP { udp: acquired }) => {
+                let Ok(()) = udp.shutdown(acquired);
+
+                Ok(CompoundIPAcquiredShutdownNegotiateState::Basic)
+            }
+            (CompoundFarIPChannel::DTLS { dtls }, acquired) => {
+                dtls.shutdown(acquired)
+            }
+            (CompoundFarIPChannel::SOCKS5 { socks5 },
+             CompoundFarIPChannelAcquired::SOCKS5 { socks5: acquired }) => {
+                let state = socks5.shutdown(*acquired)
+                    .map_err(|err|
+                             CompoundFarIPChannelShutdownAcquiredError::SOCKS5 {
+                                 err: Box::new(err)
+                             })?;
+
+                Ok(CompoundIPAcquiredShutdownNegotiateState::SOCKS5 {
+                    socks5: Box::new(state)
+                })
+            }
+            _ => Err(CompoundFarIPChannelShutdownAcquiredError::Mismatch)
+        }
+    }
+
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        match (self, state) {
+            (CompoundFarIPChannel::UDP { .. },
+             CompoundIPAcquiredShutdownNegotiateState::Basic) =>
+                Ok(NegotiatorResult::Complete(())),
+            (CompoundFarIPChannel::DTLS { dtls }, acquired) => {
+                dtls.shutdown_negotiate(registry, acquired)
+            }
+            (CompoundFarIPChannel::SOCKS5 { socks5 },
+             CompoundIPAcquiredShutdownNegotiateState::SOCKS5 {
+                 socks5: state
+             }) =>
+                Ok(socks5
+                   .shutdown_negotiate(registry, *state)
+                   .map_err(|err| {
+                       CompoundFarIPChannelShutdownAcquiredNegoError::SOCKS5 {
+                           err: Box::new(err)
+                       }
+                   })?
+                   .map_pending(|pending| {
+                       CompoundIPAcquiredShutdownNegotiatePending::SOCKS5 {
+                           socks5: Box::new(pending)
+                       }
+                   })),
+            _ => Err(CompoundFarIPChannelShutdownAcquiredNegoError::Mismatch)
+        }
+    }
+
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        match (self, err) {
+            (CompoundFarIPChannel::UDP { .. },
+             CompoundIPAcquiredShutdownNegotiatePending::Basic) =>
+                Ok(NegotiatorResult::Complete(())),
+            (CompoundFarIPChannel::DTLS { dtls }, acquired) => {
+                dtls.complete_shutdown_negotiate(registry, acquired)
+            }
+            (CompoundFarIPChannel::SOCKS5 { socks5 },
+             CompoundIPAcquiredShutdownNegotiatePending::SOCKS5 {
+                 socks5: state
+             }) =>
+                Ok(socks5
+                   .complete_shutdown_negotiate(registry, *state)
+                   .map_err(|err| {
+                       CompoundFarIPChannelShutdownAcquiredNegoError::SOCKS5 {
+                           err: Box::new(err)
+                       }
+                   })?
+                   .map_pending(|pending| {
+                       CompoundIPAcquiredShutdownNegotiatePending::SOCKS5 {
+                           socks5: Box::new(pending)
+                       }
+                   })),
+            _ => Err(CompoundFarIPChannelShutdownAcquiredNegoError::Mismatch)
         }
     }
 
@@ -2414,14 +2670,18 @@ impl FarChannelCreate for CompoundFarIPChannel {
 impl FarChannel for CompoundFarChannel {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarChannelAcquired;
-    type State = CompoundFarChannelAcquireState;
+    type AcquireState = CompoundFarChannelAcquireState;
     type NegotiateError = CompoundFarChannelAcquireNegoError;
     type NegotiatePending = CompoundFarChannelAcquireNegoPending;
+    type ShutdownState = CompoundAcquiredShutdownNegotiateState;
+    type ShutdownPending = CompoundAcquiredShutdownNegotiatePending;
+    type ShutdownError = CompoundFarChannelShutdownAcquiredError;
+    type ShutdownNegotiateError = CompoundFarChannelShutdownAcquiredNegoError;
 
     fn acquire(
         &mut self,
         registry: &Registry
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         match self {
             CompoundFarChannel::Unix { unix } => {
                 let Ok(unix) = unix.acquire(registry);
@@ -2443,7 +2703,7 @@ impl FarChannel for CompoundFarChannel {
 
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         match (self, state) {
@@ -2499,6 +2759,97 @@ impl FarChannel for CompoundFarChannel {
                    .map(|ip| CompoundFarChannelAcquired::IP { ip: ip }))
             }
             _ => Err(CompoundFarChannelAcquireNegoError::Mismatch)
+        }
+    }
+
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        match (self, acquired) {
+            (CompoundFarChannel::Unix { unix },
+             CompoundFarChannelAcquired::Unix { unix: acquired }) => {
+                let Ok(()) = unix.shutdown(acquired);
+
+                Ok(CompoundAcquiredShutdownNegotiateState::Basic)
+            }
+            (CompoundFarChannel::IP { ip },
+             CompoundFarChannelAcquired::IP { ip: acquired }) => ip
+                .shutdown(acquired)
+                .map_err(|err| CompoundFarChannelShutdownAcquiredError::IP {
+                    err: err
+                })
+                .map(|state| {
+                    CompoundAcquiredShutdownNegotiateState::IP {
+                           ip: state
+                       }
+                }),
+            (CompoundFarChannel::DTLS { dtls }, acquired) => {
+                dtls.shutdown(acquired)
+            }
+            _ => Err(CompoundFarChannelShutdownAcquiredError::Mismatch)
+        }
+    }
+
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        match (self, state) {
+            (CompoundFarChannel::Unix { .. },
+             CompoundAcquiredShutdownNegotiateState::Basic) =>
+                Ok(NegotiatorResult::Complete(())),
+            (CompoundFarChannel::DTLS { dtls }, acquired) => {
+                dtls.shutdown_negotiate(registry, acquired)
+            }
+            (CompoundFarChannel::IP { ip },
+             CompoundAcquiredShutdownNegotiateState::IP { ip: state }) =>
+                Ok(ip
+                   .shutdown_negotiate(registry, state)
+                   .map_err(|err| {
+                       CompoundFarChannelShutdownAcquiredNegoError::IP {
+                           err: err
+                       }
+                   })?
+                   .map_pending(|pending| {
+                       CompoundAcquiredShutdownNegotiatePending::IP {
+                           ip: pending
+                       }
+                   })),
+            _ => Err(CompoundFarChannelShutdownAcquiredNegoError::Mismatch)
+        }
+    }
+
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        match (self, err) {
+            (CompoundFarChannel::Unix { .. },
+             CompoundAcquiredShutdownNegotiatePending::Basic) =>
+                Ok(NegotiatorResult::Complete(())),
+            (CompoundFarChannel::DTLS { dtls }, acquired) => {
+                dtls.complete_shutdown_negotiate(registry, acquired)
+            }
+            (CompoundFarChannel::IP { ip },
+             CompoundAcquiredShutdownNegotiatePending::IP { ip: pending }) =>
+                Ok(ip
+                   .complete_shutdown_negotiate(registry, pending)
+                   .map_err(|err| {
+                       CompoundFarChannelShutdownAcquiredNegoError::IP {
+                           err: err
+                       }
+                   })?
+                   .map_pending(|pending| {
+                       CompoundAcquiredShutdownNegotiatePending::IP {
+                           ip: pending
+                       }
+                   })),
+            _ => Err(CompoundFarChannelShutdownAcquiredNegoError::Mismatch)
         }
     }
 
@@ -2661,22 +3012,26 @@ impl FarChannelCreate for CompoundFarChannel {
 impl FarChannel for Box<CompoundFarIPChannel> {
     type AcquireError = CompoundFarIPChannelAcquireError;
     type Acquired = CompoundFarIPChannelAcquired;
-    type State = CompoundFarIPChannelAcquireState;
+    type AcquireState = CompoundFarIPChannelAcquireState;
     type NegotiateError = CompoundFarIPChannelAcquireNegoError;
     type NegotiatePending = CompoundFarIPChannelAcquireNegoPending;
+    type ShutdownState = CompoundIPAcquiredShutdownNegotiateState;
+    type ShutdownPending = CompoundIPAcquiredShutdownNegotiatePending;
+    type ShutdownError = CompoundFarIPChannelShutdownAcquiredError;
+    type ShutdownNegotiateError = CompoundFarIPChannelShutdownAcquiredNegoError;
 
     #[inline]
     fn acquire(
         &mut self,
         registry: &Registry
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         self.as_mut().acquire(registry)
     }
 
     #[inline]
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         self.as_ref().negotiate(state)
@@ -2689,6 +3044,34 @@ impl FarChannel for Box<CompoundFarIPChannel> {
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         self.as_ref().complete_negotiate(pending)
+    }
+
+    #[inline]
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        self.as_mut().shutdown(acquired)
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        self.as_ref().shutdown_negotiate(registry, state)
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        self.as_ref().complete_shutdown_negotiate(registry, err)
     }
 
     #[cfg(feature = "socks5")]
@@ -2736,22 +3119,26 @@ impl FarChannelCreate for Box<CompoundFarIPChannel> {
 impl FarChannel for Box<CompoundFarChannel> {
     type AcquireError = CompoundFarChannelAcquireError;
     type Acquired = CompoundFarChannelAcquired;
-    type State = CompoundFarChannelAcquireState;
+    type AcquireState = CompoundFarChannelAcquireState;
     type NegotiateError = CompoundFarChannelAcquireNegoError;
     type NegotiatePending = CompoundFarChannelAcquireNegoPending;
+    type ShutdownState = CompoundAcquiredShutdownNegotiateState;
+    type ShutdownPending = CompoundAcquiredShutdownNegotiatePending;
+    type ShutdownError = CompoundFarChannelShutdownAcquiredError;
+    type ShutdownNegotiateError = CompoundFarChannelShutdownAcquiredNegoError;
 
     #[inline]
     fn acquire(
         &mut self,
         registry: &Registry
-    ) -> Result<RetryResult<Self::State>, Self::AcquireError> {
+    ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         self.as_mut().acquire(registry)
     }
 
     #[inline]
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         self.as_ref().negotiate(state)
@@ -2764,6 +3151,34 @@ impl FarChannel for Box<CompoundFarChannel> {
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         self.as_ref().complete_negotiate(pending)
+    }
+
+    #[inline]
+    fn shutdown(
+        &mut self,
+        acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        self.as_mut().shutdown(acquired)
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        self.as_ref().shutdown_negotiate(registry, state)
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        registry: &Registry,
+        err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        self.as_ref().complete_shutdown_negotiate(registry, err)
     }
 
     #[cfg(feature = "socks5")]
@@ -5052,6 +5467,62 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             CompoundFarChannelSessionCredError::Basic { error } => error.fmt(f)
+        }
+    }
+}
+
+impl Display for CompoundFarIPChannelShutdownAcquiredError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarIPChannelShutdownAcquiredError::SOCKS5 { err } =>
+                write!(f, "{}", err),
+            CompoundFarIPChannelShutdownAcquiredError::Mismatch =>
+                write!(f, "channel and acquired type mismatch")
+        }
+    }
+}
+
+impl Display for CompoundFarChannelShutdownAcquiredError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarChannelShutdownAcquiredError::IP { err } =>
+                write!(f, "{}", err),
+            CompoundFarChannelShutdownAcquiredError::Mismatch =>
+                write!(f, "channel and acquired type mismatch")
+        }
+    }
+}
+
+impl Display for CompoundFarIPChannelShutdownAcquiredNegoError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarIPChannelShutdownAcquiredNegoError::SOCKS5 { err } =>
+                write!(f, "{}", err),
+            CompoundFarIPChannelShutdownAcquiredNegoError::Mismatch =>
+                write!(f, "channel and acquired type mismatch")
+        }
+    }
+}
+
+impl Display for CompoundFarChannelShutdownAcquiredNegoError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarChannelShutdownAcquiredNegoError::IP { err } =>
+                write!(f, "{}", err),
+            CompoundFarChannelShutdownAcquiredNegoError::Mismatch =>
+                write!(f, "channel and acquired type mismatch")
         }
     }
 }

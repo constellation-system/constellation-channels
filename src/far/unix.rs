@@ -244,10 +244,14 @@ where UnixSocketPath: TryFrom<Addr>,
 
 impl FarChannel for UnixFarChannel {
     type Acquired = UnixSocketPath;
-    type State = UnixSocketPath;
+    type AcquireState = UnixSocketPath;
     type NegotiatePending = Infallible;
     type AcquireError = Infallible;
     type NegotiateError = Infallible;
+    type ShutdownState = ();
+    type ShutdownPending = Infallible;
+    type ShutdownError = Infallible;
+    type ShutdownNegotiateError = Infallible;
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -269,7 +273,7 @@ impl FarChannel for UnixFarChannel {
     #[inline]
     fn negotiate(
         &self,
-        state: Self::State
+        state: Self::AcquireState
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
         Ok(NegotiatorResult::Complete(state))
@@ -281,6 +285,34 @@ impl FarChannel for UnixFarChannel {
         _err: Infallible
     ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
                 Self::NegotiateError> {
+        panic!("This should never be called!")
+    }
+
+    #[inline]
+    fn shutdown(
+        &mut self,
+        _acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        _registry: &Registry,
+        _state: Self::ShutdownState
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
+        Ok(NegotiatorResult::Complete(()))
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        _registry: &Registry,
+        _err: Self::ShutdownPending
+    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
+                Self::ShutdownNegotiateError> {
         panic!("This should never be called!")
     }
 }

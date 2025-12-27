@@ -240,7 +240,8 @@ where
     /// Session negotiation is pending.
     Pending {
         /// The pending negotiation state.
-        pending: Channel::State
+        state: Channel::State,
+        pending: HashSet<Xfrm::PeerAddr>
     },
     /// A session has already been established.
     Acquired {
@@ -2351,6 +2352,32 @@ where
                 Some(out) => (out, refresh_when)
             }))
     }
+
+}
+
+impl<Channel, AuthN, Xfrm, InnerXfrm>
+    AcquireState<Channel, AuthN, Xfrm, InnerXfrm>
+where
+    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
+    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
+    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
+        Display,
+    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
+    AuthN: Clone + SessionAuthN<Channel::Flow, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    AuthN::StartError: ScopedError,
+    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
+    Xfrm::CreateParam: Clone + Default,
+    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
+    Xfrm::PeerAddr: From<<Channel::Flow as Session>::PeerAddr>,
+    Xfrm::Error: ScopedError,
+    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
+    InnerXfrm::CreateParam: Clone,
+    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
+    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+
 
 }
 /*

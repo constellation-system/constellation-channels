@@ -216,6 +216,8 @@ where
     inbuf: Rc<RefCell<MsgBuf>>,
 }
 
+pub struct FlowsShutdownNegotiator;
+
 /// Results that can occur when listening.
 ///
 /// See [Flows::listen].
