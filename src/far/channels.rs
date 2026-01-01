@@ -47,6 +47,8 @@ use constellation_common::net::Socket;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
+use constellation_common::retry::RetryWhen;
+use constellation_common::retry::WithRetryWhen;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
 use log::debug;
@@ -67,6 +69,7 @@ use crate::channels::WithShutdownError;
 use crate::config::AddrsConfig;
 use crate::config::AddrKind;
 use crate::config::FlowsConfig;
+use crate::config::ResolverConfig;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
@@ -90,6 +93,7 @@ pub struct FarChannelID(usize);
 /// This is used to store current negotiation states, and advance
 /// them.  This differs slightly from the near channel version,
 /// because session negotiations happen internally in [Flows].
+// XXX Collapse this into SessionState
 enum SessionNegoState<AuthPending> {
     /// Session negotiation is pending.
     ///
@@ -129,24 +133,30 @@ where Stream: Session,
 }
 
 /// Retry information for a given possible [Flows] instance.
+// XXX Move this out to common.
 struct FlowsRetry {
+    /// Current number of failures.
     nfailures: usize,
+    /// When to retry next.
     retry_when: Instant
 }
 
+/// Negotiation state for an individual flow.
 struct FlowNegoState<Flow, AuthN, ShutdownNego>
 where Flow: Session,
       AuthN: SessionAuthN<Flow>,
       ShutdownNego: NegotiatorStart<(), Flow>,
       ShutdownNego::NegotiateError: ScopedError
 {
+    /// Current session negotiation state, if there are active
+    /// negotiations.
     state: Option<SessionState<Flow, AuthN, ShutdownNego>>,
-     /// Number of retries.
-    nretries: usize,
-    /// When to retry next.
-    when: Instant,
+    /// Retry information for establishing this flow.
+    retry: FlowsRetry
 }
 
+/// Representation of a [Flows], and all of its [Flow] sessions and
+/// negotiations.
 struct FlowsEntry<Flow, Sock, InboundNego, OutboundNego,
                   ShutdownNego, AuthN, Xfrm>
 where
@@ -167,11 +177,19 @@ where
     Xfrm::LocalAddr: From<Sock::Addr>,
     Xfrm::Error: ScopedError
 {
+    /// All sessions either active or in negotiation.
     sessions: HashMap<Xfrm::PeerAddr, FlowNegoState<Flow, AuthN, ShutdownNego>>,
+    /// The [Flows] to which all sessions correspond.
     flows: Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
+    /// Retry information for listening for new sessions.
     retry: FlowsRetry
 }
 
+/// Entry associated with an acquired value on a channel.
+///
+/// This will hold all [FlowsEntry]s corresponding to the channel
+/// parameters associated with the acquired value.  It will
+/// periodically refresh these values and update states as necessary.
 struct AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
@@ -211,12 +229,19 @@ where
         FlowsEntry<Channel::Flow, Channel::Socket, Channel::InboundNego,
                    Channel::OutboundNego, Channel::ShutdownNego, AuthN, Xfrm>
     >,
+    /// Configuration information used to create new [Flows].
     flows_config: FlowsConfig,
+    /// Parameter used to create new [DatagramXfrm]s.
     xfrm_param: InnerXfrm::CreateParam,
-    nflows_hint: Option<usize>,
-    retry: Retry
+    /// Size hint for the number of flows.
+    nflows_hint: Option<usize>
 }
 
+/// Acquisition negotiation information.
+///
+/// This will ultimately create an [AcquiredEntry] when negotiations
+/// succeed, and will manage any shutdown associated with the
+/// underlying channel.
 enum AcquireState<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
@@ -240,24 +265,34 @@ where
     /// Session negotiation is pending.
     Pending {
         /// The pending negotiation state.
-        state: Channel::State,
-        pending: HashSet<Xfrm::PeerAddr>
+        state: Channel::AcquirePending,
+    },
+    /// The acquisition negotiations are complete, but resolution was
+    /// delayed.
+    Acquired {
+        /// The acquired value.
+        acquired: Channel::Acquired,
+        /// When to retry.
+        when: Instant,
     },
     /// A session has already been established.
-    Acquired {
+    Active {
+        /// The associated
         acquired: AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
+    },
+    /// Shutdown negotiations are pending.
+    Shutdown {
+        /// State of pending shutdown negotiations.
+        pending: Channel::ShutdownPending
     }
 }
 
-struct ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
+pub(crate) struct ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
     <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
     AuthN: Clone + SessionAuthN<Channel::Flow>,
     AuthN::NegotiateError: ScopedError,
     AuthN::StartError: ScopedError,
@@ -267,16 +302,36 @@ where
     Xfrm::Error: ScopedError,
     InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Channel::Param: Clone + Display + Eq + Hash + PartialEq,
+    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
+    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
+{
+    /// Authenticator to use for session authentication.
+    authn: AuthN,
     /// Base [FarChannel](crate::far::FarChannel) object.
     channel: Channel,
+    /// Shutdown negotiator for channels.
+    shutdown: Channel::ShutdownNego,
+    /// Shutdown negotiator parameter.
+    shutdown_param: <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
+    /// Configuration used to create [Flows].
+    flows_config: FlowsConfig,
+    /// Configuration used to create [Resolver]s.
+    resolve_config: ResolverConfig,
+    /// Address policy.
+    addr_policy: SocketAddrPolicy,
+    /// Parameter used to create the basic [DatagramXfrm].
+    xfrm_param: InnerXfrm::CreateParam,
+    /// Retry configuration.
+    retry: Retry,
+    /// Size hint for flows tables.
+    nflows_hint: Option<usize>,
     /// Acquired value and flows, if a value has been acquired.
     ///
     /// This is used to store when to retry, if
     /// [Retry](RetryResult::Retry) is present.
-    acquired: RetryResult<AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>>,
-    /// Retry configuration.
-    retry: Retry,
+    acquired: Option<RetryResult<AcquireState<Channel, AuthN, Xfrm, InnerXfrm>>>,
 }
 
 pub struct FarChannels<Channel, AuthN, Xfrm, InnerXfrm>
@@ -298,9 +353,6 @@ where
     InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq {
-    /// Authenticator to use for session authentication.
-    authn: AuthN,
-    policy: SocketAddrPolicy,
     /// Map from names to [FarChannelID]s.
     ids: HashMap<String, FarChannelID>,
     /// Reverse map from [FarChannelID]s to names.
@@ -557,28 +609,124 @@ pub enum AcquiredEntryShutdownError<Flows, Wrap> {
     Inconsistent
 }
 
-
 #[derive(Debug)]
-pub enum AcquireStateCreateError<Acquire, Nego, Flows> {
+pub enum ChannelEntryAcquireError<Acquire, Nego, Entry> {
     Acquire {
         err: Acquire
     },
     Nego {
         err: Nego
     },
-    Flows {
-        err: Flows
+    Entry {
+        err: Entry
     }
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryCreateError<Acquire, Shutdown, Nego, Entry> {
+    Acquire {
+        err: ChannelEntryAcquireError<Acquire, Nego, Entry>
+    },
+    /// Error occurred creating the shutdown [Negotiator].
+    Shutdown {
+        /// The error that occurred creating the shutdown
+        /// [Negotiator].
+        err: Shutdown
+    },
+}
+
+/// Errors that can occur shutting down a flow on an `AcquireState`.
+#[derive(Debug)]
+pub enum ChannelEntryShutdownFlowError<Flow> {
+    /// Error occurred while shutting down the flow.
+    Flow {
+        /// Error that occurred while shutting down the flow.
+        err: Flow
+    },
+    IO {
+        err: Error
+    },
+    /// Acquire negotiations are still pending.
+    Pending,
+    /// The `AcquireState` is in shutdown negotiations.
+    Shutdown,
+    /// There is no acquire state.
+    None
+}
+
+/// Errors that can occur obtaining addresses on an `AcquireState`.
+#[derive(Debug)]
+pub enum ChannelEntryAddrsError<Flow> {
+    Flow {
+        err: Flow
+    },
+    /// Acquire negotiations are still pending.
+    Pending,
+    /// The `AcquireState` is in shutdown negotiations.
+    Shutdown,
+    /// There is no acquire state.
+    None
+}
+
+/// Errors that can occur requesting a flow on an `AcquireState`.
+#[derive(Debug)]
+pub enum ChannelEntryReqFlowError<Flow> {
+    Flow {
+        err: Flow
+    },
+    /// Acquire negotiations are still pending.
+    Pending,
+    /// The `AcquireState` is in shutdown negotiations.
+    Shutdown,
+    /// There is no current `AcquireState`.
+    None
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryListenError<Listen, Entry, Nego, Shutdown> {
+    Listen {
+        err: Listen
+    },
+    Entry {
+        err: Entry
+    },
+    Nego {
+        err: Nego
+    },
+    Shutdown {
+        err: Shutdown
+    },
+    None
 }
 
 impl<AuthPending> SessionNegoState<AuthPending> {
     /// Create a state denoting session negotiations.
+    ///
+    /// This will not perform any negotiations.
     #[inline]
     fn session() -> Self {
         SessionNegoState::Session
     }
 
     /// Create a state denoting authentication negotiations.
+    ///
+    /// This will attempt to step the authentication negotiations.  If
+    /// they succeed, then an authenticated session will be returned
+    /// immediately, otherwise, a state will be returned.
+    ///
+    /// # Parameters
+    ///
+    /// - `authn`: Authenticator to use.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// # Return Value
+    ///
+    /// - `NegotiatorResult::Complete(session)`: If authentication
+    ///   succeeded immediately
+    ///
+    /// - `NegotiationResult::Pending(self)`: If negotiations are
+    ///   still pending.
     fn auth<Flow, AuthN>(
         authn: &AuthN,
         flow: Flow,
@@ -612,7 +760,25 @@ impl<AuthPending> SessionNegoState<AuthPending> {
             }))
     }
 
-    /// Go into the authentication phase.
+    /// Transition into the authentication phase.
+    ///
+    /// This will attempt to step the authentication negotiations.  If
+    /// they succeed, then an authenticated session will be returned
+    /// immediately, otherwise, a state will be returned.
+    ///
+    /// # Parameters
+    ///
+    /// - `authn`: Authenticator to use.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// # Return Value
+    ///
+    /// - `NegotiatorResult::Complete(session)`: If authentication
+    ///   succeeded immediately
+    ///
+    /// - `NegotiationResult::Pending(self)`: If negotiations are
+    ///   still pending.
     fn to_auth<Flow, AuthN>(
         self,
         authn: &AuthN,
@@ -652,6 +818,23 @@ impl<AuthPending> SessionNegoState<AuthPending> {
     }
 
     /// Step negotitions forward in the authentication phase.
+    ///
+    /// If they succeed, then an authenticated session will be
+    /// returned immediately, otherwise, a state will be returned.
+    ///
+    /// # Parameters
+    ///
+    /// - `authn`: Authenticator to use.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// # Return Value
+    ///
+    /// - `NegotiatorResult::Complete(session)`: If authentication
+    ///   succeeded immediately
+    ///
+    /// - `NegotiationResult::Pending(self)`: If negotiations are
+    ///   still pending.
     fn step_auth<Flow, AuthN>(
         self,
         authn: &AuthN
@@ -688,6 +871,38 @@ where
 {
     /// Take an incoming negotiated session and create a state in the
     /// authentication phase.
+    ///
+    /// This will attempt to step authentication negotiations forward.
+    /// If they succeed, then the authenticated session will be
+    /// returned as well.  If they fail, then the [Flow] will be shut
+    /// down, and retried later.  Regardless, the `FlowNegoState` will
+    /// be returned.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// - `peer`: Counterparty's address, used for logging.
+    ///
+    /// # Return Value
+    ///
+    /// - `(self, Some(session))`: If authentication negotiations succeeded.
+    ///
+    /// - `(self, None)`: If authentication negotiations are pending,
+    ///   or failed and will be retried later.
     fn create<Addr>(
         shutdown: &ShutdownNego,
         param: &ShutdownNego::Param,
@@ -710,19 +925,51 @@ where
     {
         let mut new = FlowNegoState {
             state: None,
-            when: Instant::now(),
-            nretries: 0
+            retry: FlowsRetry::new()
         };
         let res = new.recv_flow(shutdown, param, authn, retry, flow, peer)?;
 
         Ok((new, res))
     }
 
+    /// Check if this session is shut down.
     #[inline]
     fn is_shutdown(&self) -> bool {
         self.state.is_none()
     }
 
+    /// Step the state forward as indicated by an authentication result.
+    ///
+    /// This will return an authenticated session if the authenticated
+    /// result produces one.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// - `Err`: Type of errors in the authentication result.
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    ///
+    /// - `res`: Authentication negotiation result to process.
+    ///
+    /// - `err_stream`: Function to possibly recover a [Flow] from an
+    ///   error in `res`.
+    ///
+    /// # Return Value
+    ///
+    /// - `Some(session)`: If the result denotes an authentication success.
+    ///
+    /// - `None`: If the result does not produce an authenticated session.
     fn handle_to_auth_result<Addr, Err, F>(
         &mut self,
         shutdown: &ShutdownNego,
@@ -754,7 +1001,7 @@ where
                       out.prin(), addr);
 
                 self.state = Some(SessionState::Active);
-                self.nretries = 0;
+                self.retry.nfailures = 0;
 
                 Ok(Some(out))
             },
@@ -764,15 +1011,15 @@ where
                       "authentication rejected for session with {}",
                       addr);
 
-                let delay = retry.retry_delay(self.nretries);
+                let delay = retry.retry_delay(self.retry.nfailures);
 
                 debug!(target: "flows-nego-state",
                        "authentication failed, delay for {}.{:03}s",
                        delay.as_secs(), delay.subsec_millis());
 
                 self.state = None;
-                self.nretries = self.nretries + 1;
-                self.when = Instant::now() + delay;
+                self.retry.nfailures = self.retry.nfailures + 1;
+                self.retry.retry_when = Instant::now() + delay;
 
                 self.do_shutdown_session(shutdown, param, addr, flow)
                     .map_err(|err| WithShutdownError::Shutdown { err: err })?;
@@ -807,14 +1054,14 @@ where
                           "session authentication with {} failed: {}",
                           addr, err);
 
-                    let delay = retry.retry_delay(self.nretries);
+                    let delay = retry.retry_delay(self.retry.nfailures);
 
                     debug!(target: "flows-nego-state",
                            "negotiation failed, delay for {}.{:03}s",
                            delay.as_secs(), delay.subsec_millis());
 
-                    self.nretries = self.nretries + 1;
-                    self.when = Instant::now() + delay;
+                    self.retry.nfailures = self.retry.nfailures + 1;
+                    self.retry.retry_when = Instant::now() + delay;
                     self.state = None;
 
                     if let Some(flow) = err_stream(err) {
@@ -830,6 +1077,17 @@ where
         }
     }
 
+    /// Step the state forward as indicated by a shutdown result.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    ///
+    /// - `res`: Shutdown negotiation result to process.
     fn handle_shutdown_result<Addr>(
         &mut self,
         addr: Addr,
@@ -857,6 +1115,41 @@ where
         }
     }
 
+    /// Try to start a new session.
+    ///
+    /// This will attempt to step session and authentication
+    /// negotiations forward as far as possible.  If they succeed,
+    /// then the authenticated session will be returned as well.  If
+    /// they fail, then the [Flow] will be shut down, and retried
+    /// later.  Regardless, the `FlowNegoState` will be returned.
+    ///
+    /// This should never be called if a session already exists.
+    ///
+    /// # Parameters
+    ///
+    /// - `flows`: [Flows] to use to obtain the new session.
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `param`: Parameter used by the outbound negotiator.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    ///
+    /// # Return Value
+    ///
+    /// - `Some(session)`: If authentication negotiations succeeded.
+    ///
+    /// - `None`: If authentication negotiations are pending, or
+    ///   failed and will be retried later.
     fn create_flow<Sock, InboundNego, OutboundNego, Xfrm>(
         &mut self,
         flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
@@ -890,7 +1183,7 @@ where
         // Check if we're still delayed
         let now = Instant::now();
 
-        if self.when < now {
+        if self.retry.retry_when <= now {
             // Good to go. Try creating a flow
             if let Some(flow) = flows.flow(param, addr.clone())
                 .map_err(|err| FlowStateGetFlowError::Flow { err: err })? {
@@ -926,10 +1219,48 @@ where
             }
         } else {
             // Still delayed.
-            Ok(RetryResult::Retry(self.when))
+            Ok(RetryResult::Retry(self.retry.retry_when))
         }
     }
 
+    /// Try to start a new session.
+    ///
+    /// This will attempt to step session and authentication
+    /// negotiations forward as far as possible.  If they succeed,
+    /// then the authenticated session will be returned as well.  If
+    /// they fail, then the [Flow] will be shut down, and retried
+    /// later.  Regardless, the `FlowNegoState` will be returned.
+    ///
+    /// This is a safe wrapper around
+    /// [create_flow](FlowNegoState::create_flow) that can be called
+    /// whether or not a state already exists, and will return an
+    /// error if one does.
+    ///
+    /// # Parameters
+    ///
+    /// - `flows`: [Flows] to use to obtain the new session.
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `param`: Parameter used by the outbound negotiator.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    ///
+    /// # Return Value
+    ///
+    /// - `Some(session)`: If authentication negotiations succeeded.
+    ///
+    /// - `None`: If authentication negotiations are pending, or
+    ///   failed and will be retried later.
     fn get_flow<Sock, InboundNego, OutboundNego, Xfrm>(
         &mut self,
         flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
@@ -977,6 +1308,37 @@ where
 
     /// Take an incoming negotiated session and transition this state
     /// into the authentication phase.
+    ///
+    /// This will attempt to step authentication negotiations forward.
+    /// If they succeed, then the authenticated session will be
+    /// returned as well.  If they fail, then the [Flow] will be shut
+    /// down, and retried later.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `flow`: Negotiated session to use.
+    ///
+    /// - `peer`: Counterparty's address, used for logging.
+    ///
+    /// # Return Value
+    ///
+    /// - `Some(session)`: If authentication negotiations succeeded.
+    ///
+    /// - `None`: If authentication negotiations are pending, or
+    ///   failed and will be retried later.
     fn recv_flow<Addr>(
         &mut self,
         shutdown: &ShutdownNego,
@@ -1048,6 +1410,31 @@ where
         }
     }
 
+    /// Try to shut down a session and update state accordingly.
+    ///
+    /// This will attempt to step shutdown negotiations forward as far
+    /// as possible.
+    ///
+    /// This must never be called with a [Flow] other than the current
+    /// active session.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    ///
+    /// - `session`: The session to shut down.  This must be the same
+    ///   authenticated session returned by
+    ///   [create](FlowNegoState::create),
+    ///   [get_flow](FlowNegoState::get_flow), or
+    ///   [step](FlowNegoState::step).
     fn do_shutdown_session<Addr>(
         &mut self,
         shutdown: &ShutdownNego,
@@ -1073,6 +1460,31 @@ where
         Ok(())
     }
 
+    /// Try to shut down a session and update state accordingly.
+    ///
+    /// This will attempt to step shutdown negotiations forward as far
+    /// as possible.
+    ///
+    /// This is a wrapper around [do_shutdown_session] that will
+    /// return an error if there is not a current session.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    ///
+    /// - `session`: The session to shut down.  This must be the same
+    ///   authenticated session returned by
+    ///   [create](FlowNegoState::create),
+    ///   [get_flow](FlowNegoState::get_flow), or
+    ///   [step](FlowNegoState::step).
     fn shutdown_session<Addr>(
         &mut self,
         shutdown: &ShutdownNego,
@@ -1110,7 +1522,95 @@ where
         }
     }
 
-    /// Step the ongoing negotiations, if possible.
+    /// Step shutdown negotiations forward as far as possible.
+    ///
+    /// This should never be called except in the shutdown state.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `addr`: Counterparty's address, used for logging.
+    fn shutdown_step<Addr>(
+        &mut self,
+        shutdown: &ShutdownNego,
+        addr: Addr,
+    ) -> Result<
+        (),
+        ShutdownError<ShutdownNego::StartError, ShutdownNego::NegotiateError>
+    >
+    where Addr: Display + Eq + Hash
+    {
+        let state = self.state.take();
+
+        match state {
+            Some(SessionState::Shutdown { pending }) => {
+                let res = shutdown
+                    .complete_negotiate(pending)
+                    .map_err(|err| ShutdownError::Negotiate {
+                        err: err
+                    })?;
+
+                self.handle_shutdown_result(addr, res);
+            }
+            // We shouldn't see any other state than shutdown.
+            Some(SessionState::Pending { .. }) => {
+                error!(target: "flows-nego-state",
+                      "should not see pending session with {}",
+                      addr);
+            }
+            Some(SessionState::Active) => {
+                error!(target: "flows-nego-state",
+                      "should not see active session with {}",
+                      addr);
+            }
+            None => {
+                debug!(target: "flows-nego-state",
+                      "attempting to step inactive session with {}",
+                      addr);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Step the ongoing negotiations forward as far as possible.
+    ///
+    /// If the session is currently active and negotiations succeed,
+    /// then the authenticated session will be returned as well.  If
+    /// they fail, then the [Flow] will be shut down, and retried
+    /// later.
+    ///
+    /// If the session is already fully-authenticated and active, then
+    /// this will deliver any pending messages, and add `addr` to
+    /// `ext_endpoints`.
+    ///
+    /// This will not attempt to restart inactive negotiations.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Addr`: Type of counterparty addresses (used for logging only).
+    ///
+    /// # Parameters
+    ///
+    /// - `ext_endpoints`: Set of endpoints that have received
+    ///   messages.  If the session is fully-authenticated and receives
+    ///   messages, then `addr` will be added to this.
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `addr`: Counterparty's address.
     fn step<Addr>(
         &mut self,
         ext_endpoints: &mut HashSet<Addr>,
@@ -1177,53 +1677,10 @@ where
             }
         }
     }
-
-    /// Step the ongoing negotiations, if possible.
-    fn shutdown_step<Addr>(
-        &mut self,
-        shutdown: &ShutdownNego,
-        addr: Addr,
-    ) -> Result<
-        (),
-        ShutdownError<ShutdownNego::StartError, ShutdownNego::NegotiateError>
-    >
-    where Addr: Display + Eq + Hash
-    {
-        let state = self.state.take();
-
-        match state {
-            Some(SessionState::Shutdown { pending }) => {
-                let res = shutdown
-                    .complete_negotiate(pending)
-                    .map_err(|err| ShutdownError::Negotiate {
-                        err: err
-                    })?;
-
-                self.handle_shutdown_result(addr, res);
-            }
-            // We shouldn't see any other state than shutdown.
-            Some(SessionState::Pending { .. }) => {
-                error!(target: "flows-nego-state",
-                      "should not see pending session with {}",
-                      addr);
-            }
-            Some(SessionState::Active) => {
-                error!(target: "flows-nego-state",
-                      "should not see active session with {}",
-                      addr);
-            }
-            None => {
-                debug!(target: "flows-nego-state",
-                      "attempting to step inactive session with {}",
-                      addr);
-            }
-        }
-
-        Ok(())
-    }
 }
 
 impl FlowsRetry {
+    /// Create a new `FlowsRetry`.
     #[inline]
     fn new() -> Self {
         FlowsRetry {
@@ -1254,15 +1711,37 @@ where
     Xfrm::PeerAddr: From<Flow::PeerAddr>,
     Xfrm::Error: ScopedError
 {
+    /// Create a new `FlowsEntry` from a [Flows].
+    ///
+    /// # Parameters
+    ///
+    /// - `flows`: The [Flows] to use.
     #[inline]
     fn new(
         flows: Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
-        nsessions: Option<usize>
     ) -> Self {
-        let sessions = match nsessions {
-            Some(nsessions) => HashMap::with_capacity(nsessions),
-            None => HashMap::new()
-        };
+        let sessions = HashMap::new();
+
+        FlowsEntry {
+            retry: FlowsRetry::new(),
+            sessions: sessions,
+            flows: flows,
+        }
+    }
+
+    /// Create a new `FlowsEntry` from a [Flows] with a size hint.
+    ///
+    /// # Parameters
+    ///
+    /// - `flows`: The [Flows] to use.
+    ///
+    /// - `nsessions`: Size hint for the sessions table.
+    #[inline]
+    fn with_capacity(
+        flows: Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
+        nsessions: usize
+    ) -> Self {
+        let sessions = HashMap::with_capacity(nsessions);
 
         FlowsEntry {
             retry: FlowsRetry::new(),
@@ -1272,11 +1751,49 @@ where
     }
 
     /// Check if this `FlowsEntry` is safe to shut down.
+    ///
+    /// This checks whether there are any remaining sessions.
     #[inline]
     fn is_shutdown_safe(&self) -> bool {
         self.sessions.is_empty()
     }
 
+    /// Request a flow for a given endpoint.
+    ///
+    /// This will attempt to negotiate and authenticate a session with
+    /// the given endpoint.  If negotiations can be concluded
+    /// immediately, then the authenticated session will be returned.
+    /// Otherwise, the request will remain active and will eventually
+    /// be returned by [listen](FlowsEntry::listen).  Subsequent calls
+    /// to this function with the same `endpoint` will return an
+    /// error.
+    ///
+    /// If a session is obtained from a call to this function, it must
+    /// be shut down with [shutdown_flow](FlowsEntry::shutdown_flow)
+    /// to properly handle shutdown negotiations and cleanup.
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `out_param`: Parameter used by the outbound negotiator.
+    ///
+    /// - `endpoint`: The counterparty's address.
+    ///
+    /// # Return Value
+    ///
+    /// - `RetryResult::Success(Some(session))`: If authentication
+    ///   negotiations succeeded.
+    ///
+    /// - `RetryResult::Success(None)`: If authentication negotiations
+    ///   are pending, or failed and will be retried later.
     fn req_flow(
         &mut self,
         shutdown: &ShutdownNego,
@@ -1304,21 +1821,20 @@ where
             Entry::Occupied(mut ent) => {
                 let ent = ent.get_mut();
 
-                if ent.when <= now {
+                if ent.retry.retry_when <= now {
                     let out = ent.get_flow(&mut self.flows,
                                            shutdown, shutdown_param,
                                            authn, retry, out_param, endpoint)?;
 
                     Ok(out)
                 } else {
-                    Ok(RetryResult::Retry(ent.when))
+                    Ok(RetryResult::Retry(ent.retry.retry_when))
                 }
             },
             Entry::Vacant(ent) => {
                 let ent = ent.insert(FlowNegoState {
                     state: None,
-                    nretries: 0,
-                    when: now
+                    retry: FlowsRetry::new()
                 });
 
                 let out = ent.get_flow(&mut self.flows,
@@ -1330,6 +1846,21 @@ where
         }
     }
 
+    /// Return a session obtained from this `FlowsEntry` and shut it
+    /// down.
+    ///
+    /// This will perform shutdown negotiations on `session` and
+    /// handle any cleanup.
+    ///
+    /// # Parameters
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `session`: The session to shut down.
+    ///
+    /// - `endpoint`: The counterparty's address.
     fn shutdown_flow(
         &mut self,
         shutdown: &ShutdownNego,
@@ -1359,6 +1890,35 @@ where
         }
     }
 
+    /// Listen for incoming traffic and new sessions for the [Flows]
+    /// for this `FlowsEntry`.
+    ///
+    /// This will fully exhaust all incoming traffic corresponding to
+    /// any [Token] in `tokens`.  All pending negotiations will be
+    /// updated, and any new sessions will be reported.  If any new
+    /// [Flow]s are obtained, then negotiations will begin for them.
+    ///
+    /// New authenticated sessions will be reported in `sessions`.
+    /// Traffic on existing active sessions will be reported in
+    /// `ext_endpoints`.
+    ///
+    /// # Parameters
+    ///
+    /// - `ext_endpoints`: Set of all endpoints that have pending
+    ///   traffic.
+    ///
+    /// - `sessions`: Buffer for new authenticated sessions.
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `param`: Parameter used by the inbound negotiator.
     fn listen(
         &mut self,
         ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
@@ -1711,21 +2271,69 @@ where
     InnerXfrm::CreateParam: Clone,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq {
-
-    /// Create a new entry where one does not already exist.
-    fn create<NameCtx, I>(
+    /// Create a new `AcquiredEntry`.
+    ///
+    /// This creates a new `AcquiredEntry` from its configurations,
+    /// and the `acquired` value.  The `acquired` value will be used
+    /// to create a resolver.  The resolver will then immediately
+    /// attempt to obtain a set of addresses, which will be used to
+    /// create [Flows] and corresponding entries.
+    ///
+    /// The time to the next refresh will be returned along with the
+    /// `AcquiredEntry`, if there is one.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution
+    ///   caches.
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokgen`: Generator for [Token]s.
+    ///
+    /// - `caches`: Context from which to obtain name resolution caches.
+    ///
+    /// - `channel`: [FarChannel] that provided `acquired`.
+    ///
+    /// - `flows_config`: Configuration object to use to create a [Flows].
+    ///
+    /// - `resolve_config`: Configuration object for the resolver.
+    ///
+    /// - `policy`: Address policy to filter resolved names.
+    ///
+    /// - `xfrm_param`: Configuration object to use to create the
+    ///   [DatagramXfrm].
+    ///
+    /// - `acquired`: The acquired value to use to create the resolver.
+    ///
+    /// - `retry`: Retry configuration for name resolution.
+    ///
+    /// - `nflows_hint`: Size hint for the number of [Flows].
+    ///
+    /// # Return Value
+    ///
+    /// - `RetryResult::Success((self, Some(when)))`: Resolution was
+    ///   successful, and will need to be refreshed again at `when`.`
+    ///
+    /// - `RetryResult::Success((self, None))`: Resolution was
+    ///   successful, and will not ever need to be refreshed.
+    ///
+    /// - `RetryResult::Retry(when)`: Resolution was delayed, and can
+    ///   be retried at `when`.
+    fn create<Ctx, I>(
         tokgen: &mut I,
-        caches: &mut NameCtx,
+        caches: &mut Ctx,
         channel: &mut Channel,
         flows_config: &FlowsConfig,
-        resolve_config: &AddrsConfig,
+        resolve_config: &ResolverConfig,
         policy: &SocketAddrPolicy,
         xfrm_param: &InnerXfrm::CreateParam,
         acquired: Channel::Acquired,
-        retry: Retry,
         nflows_hint: Option<usize>,
     ) -> Result<
-        RetryResult<(Self, Option<Instant>)>,
+        RetryResult<(Self, Option<Instant>), WithRetryWhen<Channel::Acquired>>,
         AcquiredEntryCreateError<
             <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
             FarChannelFlowsError<
@@ -1739,32 +2347,10 @@ where
     >
     where
         I: Iterator<Item = Token>,
-        NameCtx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx {
         let mut resolver = acquired
-            .resolver(caches, policy, resolve_config.resolver())
+            .resolver(caches, policy, resolve_config)
             .map_err(|err| AcquiredEntryCreateError::Resolve { err: err })?;
-
-        // Decide what kinds of addresses to keep.
-        let mut keep_ipv4 = false;
-        let mut keep_ipv6 = false;
-
-        for kind in resolve_config.addr_policy().iter() {
-            match kind {
-                AddrKind::IPv6 => {
-                    trace!(target: "far-channel-registry",
-                           "retaining IPv6 addresses");
-
-                    keep_ipv6 = true;
-                }
-                AddrKind::IPv4 => {
-                    trace!(target: "far-channel-registry",
-                           "retaining IPv4 addresses");
-
-                    keep_ipv4 = true;
-                }
-            }
-        }
-
         let res = match &mut resolver {
             // This is the only nontrivial case.  First thing, check
             // the addresses.
@@ -1782,9 +2368,7 @@ where
 
                     // Filter out all the addresses we're keeping.
                     for (addr, _, _) in resolved {
-                        if (addr.is_ipv6() && keep_ipv6) ||
-                            (addr.is_ipv4() || keep_ipv4)
-                        {
+                        if policy.check_ip(&addr.ip()) {
                             trace!(target: "far-channel-registry",
                                    "keeping address: {}",
                                    addr);
@@ -1805,7 +2389,11 @@ where
                                 .map_err(|err| AcquiredEntryCreateError::Flows {
                                     err: err
                                 })?;
-                            let ent = FlowsEntry::new(session, nflows_hint);
+                            let ent = match nflows_hint {
+                                Some(hint) => FlowsEntry::with_capacity(session,
+                                                                        hint),
+                                None => FlowsEntry::new(session)
+                            };
                             let token = tokgen.next()
                                 .ok_or(AcquiredEntryCreateError::NoTokens)?;
 
@@ -1843,7 +2431,10 @@ where
                         .map_err(|err| AcquiredEntryCreateError::Flows {
                             err: err
                         })?;
-                    let ent = FlowsEntry::new(session, nflows_hint);
+                    let ent = match nflows_hint {
+                        Some(hint) => FlowsEntry::with_capacity(session, hint),
+                        None => FlowsEntry::new(session)
+                    };
                     let token = tokgen.next()
                         .ok_or(AcquiredEntryCreateError::NoTokens)?;
 
@@ -1867,9 +2458,12 @@ where
                     .map_err(|err| AcquiredEntryCreateError::Flows {
                         err: err
                     })?;
-                let ent = FlowsEntry::new(session, nflows_hint);
-                    let token = tokgen.next()
-                        .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                let ent = match nflows_hint {
+                    Some(hint) => FlowsEntry::with_capacity(session, hint),
+                    None => FlowsEntry::new(session)
+                };
+                let token = tokgen.next()
+                    .ok_or(AcquiredEntryCreateError::NoTokens)?;
 
                 tokens.insert(param.clone(), token.clone());
                 flows.insert(token, ent);
@@ -1878,9 +2472,9 @@ where
             }
         }?;
 
-        Ok(res.map(|(tokens, flows, time)| {
-            (
-                AcquiredEntry {
+        match res {
+            RetryResult::Success((tokens, flows, time)) => {
+                let ent = AcquiredEntry {
                     xfrm: PhantomData,
                     auth: PhantomData,
                     flows_config: flows_config.clone(),
@@ -1890,11 +2484,23 @@ where
                     resolver: resolver,
                     tokens: tokens,
                     flows: flows,
-                    retry: retry
-                },
-                time
-            )
-        }))
+                };
+
+                Ok(RetryResult::Success((ent, time)))
+            }
+            RetryResult::Retry(when) => {
+                let out = WithRetryWhen::new(acquired, when);
+
+                Ok(RetryResult::Retry(out))
+            }
+        }
+    }
+
+    /// Check if this `AcquiredEntry` is safe to shut down.
+    ///
+    /// This checks whether there are any remaining sessions.
+    fn is_shutdown_safe(&self) -> bool {
+        self.flows.values().all(|ent| ent.is_shutdown_safe())
     }
 
     /// Check to see if a refresh is needed.
@@ -1906,6 +2512,13 @@ where
         }
     }
 
+    /// Indicate when the next refresh is needed, if ever.
+    ///
+    /// # Return Value
+    ///
+    /// - `Some(when)`: The next refresh is needed at `when`.
+    ///
+    /// - `None`: This entry never needs a refresh.
     fn next_refresh(&self) -> Option<Instant> {
         if let AcquiredResolver::Resolve { resolver } = &self.resolver {
             resolver.refresh_when()
@@ -1914,132 +2527,148 @@ where
         }
     }
 
-    fn update_refreshed<I, T>(
+    /// Request a flow for a given endpoint.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then attempt to negotiate and authenticate a
+    /// session with the given endpoint.  If negotiations can be
+    /// concluded immediately, then the authenticated session will be
+    /// returned.  Otherwise, the request will remain active and will
+    /// eventually be returned by [listen](FlowsEntry::listen).
+    /// Subsequent calls to this function with the same `endpoint`
+    /// will return an error.
+    ///
+    /// If a session is obtained from a call to this function, it must
+    /// be shut down with [shutdown_flow](FlowsEntry::shutdown_flow)
+    /// to properly handle shutdown negotiations and cleanup.
+    /// Information from the call to `refresh` will also be returned.
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokens`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel`: [FarChannel] to use to create [Flows].
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `policy`: Address policy to filter resolved names.
+    ///
+    /// - `channel_param`: Channel parameter indicating the specific
+    ///   [Flows] from which `session` was obtained.
+    ///
+    /// - `nego_param`: Parameter used by the outbound negotiator.
+    ///
+    /// - `endpoint`: The counterparty'ss address.
+    fn req_flow<I>(
         &mut self,
-        tokens: &mut T,
+        tokens: &mut I,
         registry: &Registry,
         channel: &Channel,
+        shutdown: &Channel::ShutdownNego,
+        shutdown_param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
+        authn: &AuthN,
         policy: &SocketAddrPolicy,
-        resolved: I,
+        retry: &Retry,
+        channel_param: &Channel::Param,
+        nego_param: &<Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
+        endpoint: &Xfrm::PeerAddr,
     ) -> Result<
-        Vec<Channel::Param>,
-        FarChannelsRefreshError<
+        RetryResult<(
+            Option<AuthN::AuthNSession>,
+            Option<Vec<Channel::Param>>,
+            Option<Instant>
+        )>,
+        AcquiredEntryFlowError<
             FarChannelFlowsError<
                 Channel::SocketError,
                 Channel::XfrmError,
                 Channel::InboundNegoError,
                 Channel::OutboundNegoError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
+            <Channel::Acquired as FarChannelAcquired>::WrapError,
+            FlowStateGetFlowError<
+                AuthN::NegotiateError,
+                AuthN::StartError,
+                FlowsFlowError<
+                    <Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
+                    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                >,
+                ShutdownError<
+                    <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
+                    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                >
+            >
         >
     >
-    where
-        I: Iterator<Item = (SocketAddr, IPEndpoint, Instant)>,
-        T: Iterator<Item = Token>
+    where I: Iterator<Item = Token>
     {
-        let mut new_tokens = HashMap::with_capacity(self.flows.len());
-        let mut new_flows = HashMap::with_capacity(self.flows.len());
-        let mut retained = HashSet::with_capacity(self.flows.len());
-
-        for (addr, _, _) in resolved {
-            if policy.check(&addr) {
-                trace!(target: "far-channel-registry",
-                       "keeping address: {}",
-                       addr);
-
-                let addr = self.acquired.wrap(addr).map_err(
-                    |err| FarChannelsRefreshError::Wrap {
-                        err: err
-                    }
-                )?;
-
-                // Only create a new flows if there
-                // isn't one already in existence.
-                match self.tokens.remove(&addr) {
-                    Some(token) => {
-                        trace!(target: "far-channel-registry",
-                               "retaining flows for {}",
-                               addr);
-
-                        let flows = self.flows.remove(&token)
-                            .ok_or(FarChannelsRefreshError::Inconsistent)?;
-
-                        retained.insert(token.clone());
-                        new_flows.insert(token.clone(), flows);
-                        new_tokens.insert(addr, token);
-                    }
-                    None => {
-                        debug!(target: "far-channel-registry",
-                               "establishing flows for {}",
-                               addr);
-
-                        let token = tokens.next()
-                            .ok_or(FarChannelsRefreshError::NoTokens)?;
-                        let xfrm = InnerXfrm::create(&addr, &self.xfrm_param);
-                        let flows = channel
-                            .flows(self.flows_config.clone(),
-                                   addr.clone(),
-                                   xfrm)
-                            .map_err(|err| {
-                                FarChannelsRefreshError::Flows {
-                                    err: err
-                                }
-                            })?;
-                        let ent = FlowsEntry::new(flows, self.nflows_hint);
-
-                        new_flows.insert(token.clone(), ent);
-                        new_tokens.insert(addr, token);
-                    }
-                };
-            } else {
-                debug!(target: "far-channel-registry",
-                       "discarding address {} of unknown type",
-                       addr);
-            }
-        }
-
-        if new_tokens.is_empty() {
-            Err(FarChannelsRefreshError::NoValidAddrs)
-        } else {
-            let out = new_tokens.keys().cloned().collect();
-
-            // Replace the flows.
-            new_tokens.shrink_to_fit();
-            new_flows.shrink_to_fit();
-            self.tokens = new_tokens;
-            self.flows = new_flows;
-
-            // Filter out the flows that weren't retained.
-            let deletes: Vec<Token> = self.flows.keys().cloned()
-                .filter(|tok| !retained.contains(tok))
-                .collect();
-
-            for tok in deletes {
-                if let Some(mut flows) = self.flows.remove(&tok) {
-                    let addr = flows.flows.local_addr()
-                        .map_err(|err| FarChannelsRefreshError::IO {
-                            err: err
-                        })?;
-
-                    debug!(target: "far-channel-registry",
-                           "deregistering flows for {}, token {}",
-                           addr, tok.0);
-
-                    flows.flows.deregister(registry)
-                        .map_err(|err| FarChannelsRefreshError::IO {
-                            err: err
-                        })?;
-                } else {
-                    error!(target: "far-channel-registry",
-                           "entry should not be missing for token {}",
-                           tok.0);
-                }
-            }
-
-            Ok(out)
-        }
+        self.flows(tokens, registry, channel, policy, channel_param)
+            .map_err(|err| AcquiredEntryFlowError::Flows { err: err })?
+            .flat_map_ok(|(ent, addrs, refresh_when)| {
+                Ok(ent.req_flow(shutdown, shutdown_param, authn,
+                                &retry, nego_param, endpoint)
+                   .map_err(|err| AcquiredEntryFlowError::Flow { err: err })?
+                   .map(|session| (session, addrs, refresh_when)))
+            })
     }
 
+    /// Refresh name resolution on this `AcquiredEntry` and
+    /// reconstitute the downstream entries.
+    ///
+    /// This will obtain a new set of channel parameters, which may
+    /// delete some of the old [Flows] and/or create new ones.
+    ///
+    /// There is in general no way to cleanly shut down any sessions
+    /// on a [Flows] that is deleted in this way as they are presumed
+    /// to be out of contact.  However, these session do not have
+    /// separate I/O objects, so only the socket corresponding to the
+    /// [Flows] needs to be unregistered.
+    ///
+    /// If the set of [Flows] changes, then the new set will be
+    /// reported.  The time of the next refresh will also be reported.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokens`:  Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel`: [FarChannel] to use to create [Flows].
+    ///
+    /// - `policy`: Address policy to filter resolved names.
+    ///
+    /// # Return Value
+    ///
+    /// - `RetryResult::Success((Some(params), Some(when)))`: The set
+    ///   of [Flows] changed to `params`, and the channel needs to be
+    ///   refreshed at `when`
+    ///
+    /// - `RetryResult::Success((None, Some(when)))`: The set of
+    ///   [Flows] is unchanged, and the channel needs to be refreshed at
+    ///   `when`
+    ///
+    /// - `RetryResult::Success((Some(params), None))`: This case
+    ///   should never happen.
+    ///
+    /// - `RetryResult::Success((None, None))`: Should be returned by
+    ///   any entry with a static address set.
+    ///
+    /// - `RetryResult::Retry(when)`: A refresh is needed, but was
+    ///   delayed until `when`.
+    // XXX change the return type to eliminate the impossible case.
     fn refresh<I>(
         &mut self,
         tokens: &mut I,
@@ -2087,22 +2716,203 @@ where
         }
     }
 
-    /// Listen and respond on all [Flows] with available I/O.
+    /// Shut down a session obtained from this `AcquriedEntry`.
     ///
-    /// This will listen and respond on all flows whose tokens are in
-    /// `tokens`, until I/O yields
-    /// [WouldBlock](ErrorScope::WouldBlock).
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then perform shutdown negotiations on
+    /// `session` and handle any cleanup.
+    ///
+    /// Previous calls to `refresh` (including the one performed by
+    /// this call) may result in `session` becoming stale.  No error
+    /// is returned in this case.
+    ///
+    /// The return value is the same as for the call to `refresh`.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
     ///
     /// # Parameters
     ///
-    /// - `authn`: Session authenticator to use.
-    /// - `retry`: [Retry] configuration to use.
-    /// - `param`: Parameter to use for starting inbound negotiations.
-    /// - `tokens`: Tokens with available I/O.
-    /// - `ext_endpoints`: [HashSet] into which to insert all
-    ///   [PeerAddr](DatagramXfrm::PeerAddr)s for flows that had new
-    ///   messages delivered.
-    /// - `sessions`: [Vec] into which to place any new sessions.
+    /// - `tokens`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel`: [FarChannel] to use to create [Flows].
+    ///
+    /// - `policy`: Address policy to filter resolved names.
+    ///
+    /// - `channel_param`: Channel parameter indicating the specific
+    ///   [Flows] from which `session` was obtained.
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `session`: The session to shut down.
+    ///
+    /// - `peer`: The counterparty'ss address.
+    ///
+    /// # Return Value
+    ///
+    /// Same as for a call to [refresh](AcquiredEntry::refresh).
+    fn shutdown_flow<I>(
+        &mut self,
+        tokens: &mut I,
+        registry: &Registry,
+        channel: &Channel,
+        policy: &SocketAddrPolicy,
+        shutdown: &Channel::ShutdownNego,
+        param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
+        channel_param: &Channel::Param,
+        session: AuthN::AuthNSession,
+        peer: <Channel::Flow as Session>::PeerAddr
+    ) -> Result<
+        RetryResult<(
+            Option<Vec<Channel::Param>>,
+            Option<Instant>
+        )>,
+        AcquiredEntryShutdownError<
+            FarChannelFlowsError<
+                Channel::SocketError,
+                Channel::XfrmError,
+                Channel::InboundNegoError,
+                Channel::OutboundNegoError,
+            >,
+            <Channel::Acquired as FarChannelAcquired>::WrapError,
+        >
+    >
+    where I: Iterator<Item = Token>
+    {
+        self.refresh(tokens, registry, channel, policy)
+            .map_err(|err| AcquiredEntryShutdownError::Refresh { err: err })?
+            .map_ok(move |(addrs, refresh_when)| {
+                // The token might have gotten deleted in the refresh;
+                // don't throw a hard error here.
+                if let Some(token) = self
+                    .tokens
+                    .get(channel_param) {
+                    // The flows tables should always be consistent.
+                    let flows = self
+                        .flows
+                        .get_mut(&token)
+                        .ok_or(AcquiredEntryShutdownError::Inconsistent)?;
+
+                    // Try to shut down the flow.  Errors here aren't
+                    // fatal, and should not be reported.
+                    if let Err(err) = flows
+                        .shutdown_flow(shutdown, param, session, peer) {
+                        warn!(target: "",
+                              "error shutting down channel {}: {}",
+                              channel_param, err)
+                    }
+                }
+
+                Ok((addrs, refresh_when))
+            })
+    }
+
+    /// Obtain a snapshot of the current set of addresses.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then return the same value as the last
+    /// `refresh`.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokens`:  Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel`: [FarChannel] to use to create [Flows].
+    ///
+    /// - `policy`: Address policy to filter resolved names.
+    ///
+    /// # Return Value
+    ///
+    /// Same as for a call to [refresh](AcquiredEntry::refresh).
+    fn addrs<I>(
+        &mut self,
+        tokens: &mut I,
+        registry: &Registry,
+        channel: &Channel,
+        policy: &SocketAddrPolicy
+    ) -> Result<
+        RetryResult<(Vec<Channel::Param>, Option<Instant>)>,
+        FarChannelsRefreshError<
+            FarChannelFlowsError<
+                Channel::SocketError,
+                Channel::XfrmError,
+                Channel::InboundNegoError,
+                Channel::OutboundNegoError
+            >,
+            <Channel::Acquired as FarChannelAcquired>::WrapError
+        >
+    >
+    where I: Iterator<Item = Token>
+    {
+        Ok(self
+           .refresh(
+               tokens,
+               registry,
+               channel,
+               policy,
+            )?
+            .map(|(out, refresh_when)| match out {
+                // No refresh was necessary, generate the addresses directly.
+                None => (self.tokens.keys().cloned().collect(), refresh_when),
+                // The refresh generated the address list for us.
+                Some(out) => (out, refresh_when)
+            }))
+    }
+
+    /// Listen for incoming traffic and new sessions for all [Flows]
+    /// for this `AcquiredEntry`.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then fully exhaust all incoming traffic
+    /// corresponding to any [Token] in `tokens`.  All pending
+    /// negotiations will be updated, and any new sessions will be
+    /// reported.  If any new [Flow]s are obtained, then negotiations
+    /// will begin for them.
+    ///
+    /// New authenticated sessions will be reported in `sessions`.
+    /// Traffic on existing active sessions will be reported in
+    /// `ext_endpoints`.
+    ///
+    /// The return value is the same as for the call to `refresh`.
+    ///
+    /// # Parameters
+    ///
+    /// - `ext_endpoints`: Set of all endpoints that have pending
+    ///   traffic.
+    ///
+    /// - `sessions`: Buffer for new authenticated sessions.
+    ///
+    /// - `tokgen`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to register nonblocking I/O.
+    ///
+    /// - `channel`: [FarChannel] to use to create [Flows].
+    ///
+    /// - `policy`: Address policy to filter resolved names.
+    ///
+    /// - `shutdown`: [Negotiator] to use to shut down sessions.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `authn`: [SessionAuthN] instance to use for authentication.
+    ///
+    /// - `retry`: [Retry] information to use if negotiations need to
+    ///   be retried later.
+    ///
+    /// - `param`: Parameter used by the inbound negotiator.
+    ///
+    /// - `tokens`: All [Token]s that have pending read traffic.
+    ///
+    /// # Return Value
+    ///
+    /// Same as for a call to [refresh](AcquiredEntry::refresh).
     fn listen<I>(
         &mut self,
         ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
@@ -2162,6 +2972,136 @@ where
             })
     }
 
+    fn update_refreshed<I, T>(
+        &mut self,
+        tokens: &mut T,
+        registry: &Registry,
+        channel: &Channel,
+        policy: &SocketAddrPolicy,
+        resolved: I,
+    ) -> Result<
+        Vec<Channel::Param>,
+        FarChannelsRefreshError<
+            FarChannelFlowsError<
+                Channel::SocketError,
+                Channel::XfrmError,
+                Channel::InboundNegoError,
+                Channel::OutboundNegoError
+            >,
+            <Channel::Acquired as FarChannelAcquired>::WrapError
+        >
+    >
+    where
+        I: Iterator<Item = (SocketAddr, IPEndpoint, Instant)>,
+        T: Iterator<Item = Token>
+    {
+        let mut new_tokens = HashMap::with_capacity(self.flows.len());
+        let mut new_flows = HashMap::with_capacity(self.flows.len());
+        let mut retained = HashSet::with_capacity(self.flows.len());
+
+        for (addr, _, _) in resolved {
+            if policy.check(&addr) {
+                trace!(target: "far-channel-registry",
+                       "keeping address: {}",
+                       addr);
+
+                let addr = self.acquired.wrap(addr).map_err(
+                    |err| FarChannelsRefreshError::Wrap {
+                        err: err
+                    }
+                )?;
+
+                // Only create a new flows if there isn't one already
+                // in existence.
+                match self.tokens.remove(&addr) {
+                    Some(token) => {
+                        trace!(target: "far-channel-registry",
+                               "retaining flows for {}",
+                               addr);
+
+                        let flows = self.flows.remove(&token)
+                            .ok_or(FarChannelsRefreshError::Inconsistent)?;
+
+                        retained.insert(token.clone());
+                        new_flows.insert(token.clone(), flows);
+                        new_tokens.insert(addr, token);
+                    }
+                    None => {
+                        debug!(target: "far-channel-registry",
+                               "establishing flows for {}",
+                               addr);
+
+                        let token = tokens.next()
+                            .ok_or(FarChannelsRefreshError::NoTokens)?;
+                        let xfrm = InnerXfrm::create(&addr, &self.xfrm_param);
+                        let flows = channel
+                            .flows(self.flows_config.clone(),
+                                   addr.clone(),
+                                   xfrm)
+                            .map_err(|err| {
+                                FarChannelsRefreshError::Flows {
+                                    err: err
+                                }
+                            })?;
+                        let ent = match self.nflows_hint {
+                            Some(hint) => FlowsEntry::with_capacity(flows,
+                                                                    hint),
+                            None => FlowsEntry::new(flows)
+                        };
+
+                        new_flows.insert(token.clone(), ent);
+                        new_tokens.insert(addr, token);
+                    }
+                };
+            } else {
+                debug!(target: "far-channel-registry",
+                       "discarding address {} of unknown type",
+                       addr);
+            }
+        }
+
+        if new_tokens.is_empty() {
+            Err(FarChannelsRefreshError::NoValidAddrs)
+        } else {
+            let out = new_tokens.keys().cloned().collect();
+
+            // Replace the flows.
+            new_tokens.shrink_to_fit();
+            new_flows.shrink_to_fit();
+            self.tokens = new_tokens;
+            self.flows = new_flows;
+
+            // Filter out the flows that weren't retained.
+            let deletes: Vec<Token> = self.flows.keys().cloned()
+                .filter(|tok| !retained.contains(tok))
+                .collect();
+
+            for tok in deletes {
+                if let Some(mut flows) = self.flows.remove(&tok) {
+                    let addr = flows.flows.local_addr()
+                        .map_err(|err| FarChannelsRefreshError::IO {
+                            err: err
+                        })?;
+
+                    debug!(target: "far-channel-registry",
+                           "deregistering flows for {}, token {}",
+                           addr, tok.0);
+
+                    flows.flows.deregister(registry)
+                        .map_err(|err| FarChannelsRefreshError::IO {
+                            err: err
+                        })?;
+                } else {
+                    error!(target: "far-channel-registry",
+                           "entry should not be missing for token {}",
+                           tok.0);
+                }
+            }
+
+            Ok(out)
+        }
+    }
+
     fn flows<I>(
         &mut self,
         tokens: &mut I,
@@ -2204,159 +3144,10 @@ where
                 Ok((flows, addrs, refresh_when))
             })
     }
-
-    fn shutdown_flow<I>(
-        &mut self,
-        tokens: &mut I,
-        registry: &Registry,
-        channel: &Channel,
-        policy: &SocketAddrPolicy,
-        channel_param: &Channel::Param,
-        shutdown: &Channel::ShutdownNego,
-        param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
-        session: AuthN::AuthNSession,
-        peer: <Channel::Flow as Session>::PeerAddr
-    ) -> Result<
-        RetryResult<(
-            Option<Vec<Channel::Param>>,
-            Option<Instant>
-        )>,
-        AcquiredEntryShutdownError<
-            FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError,
-            >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError,
-        >
-    >
-    where I: Iterator<Item = Token>
-    {
-        self.refresh(tokens, registry, channel, policy)
-            .map_err(|err| AcquiredEntryShutdownError::Refresh { err: err })?
-            .map_ok(move |(addrs, refresh_when)| {
-                // The token might have gotten deleted in the refresh;
-                // don't throw a hard error here.
-                if let Some(token) = self
-                    .tokens
-                    .get(channel_param) {
-                    // The flows tables should always be consistent.
-                    let flows = self
-                        .flows
-                        .get_mut(&token)
-                        .ok_or(AcquiredEntryShutdownError::Inconsistent)?;
-
-                    // Try to shut down the flow.  Errors here aren't
-                    // fatal, and should not be reported.
-                    if let Err(err) = flows
-                        .shutdown_flow(shutdown, param, session, peer) {
-                        warn!(target: "",
-                              "error shutting down channel {}: {}",
-                              channel_param, err)
-                    }
-                }
-
-                Ok((addrs, refresh_when))
-            })
-    }
-
-    fn req_flow<I>(
-        &mut self,
-        tokens: &mut I,
-        registry: &Registry,
-        channel: &Channel,
-        shutdown: &Channel::ShutdownNego,
-        shutdown_param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
-        authn: &AuthN,
-        policy: &SocketAddrPolicy,
-        channel_param: &Channel::Param,
-        nego_param: &<Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
-        endpoint: &Xfrm::PeerAddr,
-    ) -> Result<
-        RetryResult<(
-            Option<AuthN::AuthNSession>,
-            Option<Vec<Channel::Param>>,
-            Option<Instant>
-        )>,
-        AcquiredEntryFlowError<
-            FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
-            >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError,
-            FlowStateGetFlowError<
-                AuthN::NegotiateError,
-                AuthN::StartError,
-                FlowsFlowError<
-                    <Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
-                    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
-                >,
-                ShutdownError<
-                    <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
-                    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
-                >
-            >
-        >
-    >
-    where I: Iterator<Item = Token>
-    {
-        let retry = self.retry.clone();
-
-        self.flows(tokens, registry, channel, policy, channel_param)
-            .map_err(|err| AcquiredEntryFlowError::Flows { err: err })?
-            .flat_map_ok(|(ent, addrs, refresh_when)| {
-                Ok(ent.req_flow(shutdown, shutdown_param, authn,
-                                &retry, nego_param, endpoint)
-                   .map_err(|err| AcquiredEntryFlowError::Flow { err: err })?
-                   .map(|session| (session, addrs, refresh_when)))
-            })
-    }
-
-    /// Obtain a snapshot of the current address set.
-    ///
-    /// The result will also indicate whether a refresh occurred.
-    fn addrs<I>(
-        &mut self,
-        tokens: &mut I,
-        registry: &Registry,
-        channel: &Channel,
-        policy: &SocketAddrPolicy
-    ) -> Result<
-        RetryResult<(Vec<Channel::Param>, Option<Instant>)>,
-        FarChannelsRefreshError<
-            FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
-            >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
-        >
-    >
-    where I: Iterator<Item = Token>
-    {
-        Ok(self
-           .refresh(
-               tokens,
-               registry,
-               channel,
-               policy,
-            )?
-            .map(|(out, refresh_when)| match out {
-                // No refresh was necessary, generate the addresses directly.
-                None => (self.tokens.keys().cloned().collect(), refresh_when),
-                // The refresh generated the address list for us.
-                Some(out) => (out, refresh_when)
-            }))
-    }
-
 }
 
 impl<Channel, AuthN, Xfrm, InnerXfrm>
-    AcquireState<Channel, AuthN, Xfrm, InnerXfrm>
+    ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
 where
     Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
     <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
@@ -2377,295 +3168,618 @@ where
     InnerXfrm::CreateParam: Clone,
     Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
     Channel::Param: Clone + Display + Eq + Hash + PartialEq {
-
-
-}
-/*
-impl<Channel, AuthN, Xfrm, InnerXfrm>
-    AcquireState<Channel, AuthN, Xfrm, InnerXfrm>
-where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    AuthN: Clone + SessionAuthN<Channel::Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
-{
-    fn create(
-        channel: &mut Channel,
+    /// Create a new `ChannelEntry`.
+    ///
+    /// This will attempt to perform acquire negotiations on
+    /// `channel`.  If negotiations can be concluded immediately, then
+    /// an `AcquiredEntry` will be created if possible.
+    ///
+    /// The time of the next refresh or update will be returned along
+    /// with the `AcquiredEntry`, if there is one.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution
+    ///   caches.
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `gentok`: Generator for [Token]s.
+    ///
+    /// - `namectx`: Context from which to obtain name resolution caches.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel`: [FarChannel] that provided `acquired`.
+    ///
+    /// - `shutdown_param`: Parameter for beginning shutdown negotiations.
+    ///
+    /// - `flows_config`: Configuration object to use to create a [Flows].
+    ///
+    /// - `resolve_config`: Configuration object for the resolver.
+    ///
+    /// - `addr_policy`: Address policy to filter resolved names.
+    ///
+    /// - `xfrm_param`: Configuration object to use to create the
+    ///   [DatagramXfrm].
+    ///
+    /// - `retry`: Retry configuration for name resolution.
+    ///
+    /// - `nflows_hint`: Size hint for the number of [Flows].
+    ///
+    /// # Return Value
+    ///
+    /// - `(self, Some(when))`: The next refresh or retry occurs at
+    /// `when`.
+    ///
+    /// - `(self, None)`: There is no next refresh or update.
+    pub(crate) fn create<Ctx, I>(
+        gentok: &mut I,
+        namectx: &mut Ctx,
         registry: &Registry,
-        config: &FlowsConfig,
-        channel_param: &Channel::Param,
-        xfrm_param: &InnerXfrm::CreateParam,
-        addr: &InnerXfrm::Addr,
-        nsessions: Option<usize>
+        channel: Channel,
+        shutdown_param: <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
+        authn: AuthN,
+        flows_config: FlowsConfig,
+        resolve_config: ResolverConfig,
+        addr_policy: SocketAddrPolicy,
+        xfrm_param: InnerXfrm::CreateParam,
+        retry: Retry,
+        nflows_hint: Option<usize>
     ) -> Result<
-        RetryResult<Self>,
-        AcquireStateCreateError<
+        (Self, Option<Instant>),
+        ChannelEntryCreateError<
             Channel::AcquireError,
+            Channel::ShutdownNegoError,
             Channel::NegotiateError,
-            FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
-            >
-        >
-    > {
-        channel
-            .acquire(registry)
-            .map_err(|err| AcquireStateCreateError::Acquire { err: err })?
-            .map_ok(|state| match channel.negotiate(state)
-                    .map_err(|err| AcquireStateCreateError::Nego {
-                        err: err
-                    })? {
-                NegotiatorResult::Pending(pending) =>
-                    Ok(AcquireState::Pending {
-                        pending: pending
-                    }),
-                NegotiatorResult::Complete(acquired) => {
-                    let xfrm = InnerXfrm::create(xfrm_param, addr);
-                    let flows = channel.flows(
-                        config.clone(),
-                        channel_param.clone(),
-                        xfrm
-                    ).map_err(|err| AcquireStateCreateError::Flows {
-                        err: err
-                    })?;
-
-                    Ok(AcquireState::Acquired {
-                        acquired: acquired
-                    })
-                }
-            })
-    }
-}
-
-impl<Pending, Acquired> AcquireState<Pending, Acquired> {
-    fn create<F, Channel, AuthN, Xfrm, InnerXfrm>(
-        channel: &mut Channel,
-        registry: &Registry,
-        config: &FlowsConfig,
-        channel_param: &Channel::Param,
-        xfrm_param: &InnerXfrm::CreateParam,
-        addr: &InnerXfrm::Addr,
-        nsessions: Option<usize>
-    ) -> Result<
-        RetryResult<Self>,
-        AcquireStateCreateError<
-            Channel::AcquireError,
-            Channel::NegotiateError,
-            FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+            AcquiredEntryCreateError<
+                <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+                FarChannelFlowsError<
+                    Channel::SocketError,
+                    Channel::XfrmError,
+                    Channel::InboundNegoError,
+                    Channel::OutboundNegoError
+                >,
+                <Channel::Acquired as FarChannelAcquired>::WrapError
             >
         >
     >
     where
-        F: Flow,
-        Channel: FarChannelFlows<Xfrm, InnerXfrm>
-        + FarChannel<
-            Acquired = FlowsEntry<F, Channel::Socket,
-                                  Channel::InboundNego,
-                                  Channel::OutboundNego,
-                                  AuthN, Xfrm>,
-            NegotiatePending = Pending,
-        >
-        + FarChannelCreate,
-        <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-        <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-            Display,
-        AuthN: SessionAuthN<F, Param = ()>,
-        AuthN::NegotiateError: ScopedError,
-        AuthN::StartError: ScopedError,
-        Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-        Xfrm::CreateParam: Clone + Default,
-        Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-        Xfrm::Error: ScopedError,
-        InnerXfrm: DatagramXfrmCreate,
-        Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-        Channel::Param: Clone + Display + Eq + Hash + PartialEq {
-        channel
-            .acquire(registry)
-            .map_err(|err| AcquireStateCreateError::Acquire { err: err })?
-            .map_ok(|state| match channel.negotiate(state)
-                    .map_err(|err| AcquireStateCreateError::Nego {
-                        err: err
-                    })? {
-                NegotiatorResult::Pending(pending) =>
-                    Ok(AcquireState::Pending {
-                        pending: pending
-                    }),
-                NegotiatorResult::Complete(acquired) => {
-                    let xfrm = InnerXfrm::create(xfrm_param, addr);
-                    let flows = channel.flows(
-                        config.clone(),
-                        channel_param.clone(),
-                        xfrm
-                    ).map_err(|err| AcquireStateCreateError::Flows {
-                        err: err
-                    })?;
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx {
+        let shutdown = channel.shutdown_negotiator()
+            .map_err(|err| ChannelEntryCreateError::Shutdown { err: err })?;
+        let mut out = ChannelEntry {
+            authn: authn,
+            channel: channel,
+            flows_config: flows_config,
+            resolve_config: resolve_config,
+            addr_policy: addr_policy,
+            xfrm_param: xfrm_param,
+            shutdown: shutdown,
+            shutdown_param: shutdown_param,
+            retry: retry,
+            nflows_hint: nflows_hint,
+            acquired: None
+        };
+        let when = out.try_acquire(gentok, namectx, registry)
+            .map_err(|err| ChannelEntryCreateError::Acquire { err: err })?;
 
-                    Ok(AcquireState::Acquired {
-                        acquired: acquired
-                    })
-                }
-            })
+        Ok((out, when))
     }
 
-    fn step<Channel, Xfrm, InnerXfrm>(
-        self,
-        channel: &mut Channel,
-        nsessions: Option<usize>
+    /// Obtain a snapshot of the current set of addresses.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then return the same value as the last
+    /// `refresh`.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokens`:  Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// # Return Value
+    ///
+    /// Same as for a call to [refresh](ChannelEntry::refresh).
+    fn addrs<I>(
+        &mut self,
+        tokens: &mut I,
+        registry: &Registry,
     ) -> Result<
-        Self,
-        AcquireStateCreateError<
-            Channel::AcquireError,
-            Channel::NegotiateError
+        RetryResult<(Vec<Channel::Param>, Option<Instant>)>,
+        ChannelEntryAddrsError<
+            FarChannelsRefreshError<
+                FarChannelFlowsError<
+                    Channel::SocketError,
+                    Channel::XfrmError,
+                    Channel::InboundNegoError,
+                    Channel::OutboundNegoError
+                >,
+                <Channel::Acquired as FarChannelAcquired>::WrapError
+            >
         >
     >
-    where
-        Channel: FarChannelFlows<Xfrm, InnerXfrm>
-        + FarChannel<
-            Acquired = Flows<Channel::Flow, Channel::Socket,
-                             Channel::InboundNego,
-                             Channel::OutboundNego,
-                             Xfrm>,
-            NegotiatePending = Pending,
-        >
-        + FarChannelCreate,
-        <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-        <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-            Display,
-        Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-        Xfrm::CreateParam: Clone + Default,
-        Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-        Xfrm::Error: ScopedError,
-        InnerXfrm: DatagramXfrmCreate,
-        Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-        Channel::Param: Clone + Display + Eq + Hash + PartialEq {
-        if let AcquireState::Pending { pending } = self {
-            match channel.complete_negotiate(pending)
-                .map_err(|err| AcquireStateCreateError::Nego {
+    where I: Iterator<Item = Token>
+    {
+        match self.acquired.as_mut().ok_or(ChannelEntryAddrsError::None)? {
+            RetryResult::Success(AcquireState::Active { acquired }) =>
+                acquired.addrs(tokens, registry,
+                               &self.channel, &self.addr_policy)
+                .map_err(|err| ChannelEntryAddrsError::Flow {
                     err: err
-                })? {
-                NegotiatorResult::Pending(pending) =>
-                    Ok(AcquireState::Pending {
-                        pending: pending
-                    }),
-                NegotiatorResult::Complete(acquired) =>
-                    Ok(AcquireState::Acquired {
-                        acquired: acquired
-                    })
-            }
-        } else {
-            Err()
+                }),
+            RetryResult::Success(AcquireState::Pending { .. }) |
+            RetryResult::Success(AcquireState::Acquired { .. }) =>
+                Err(ChannelEntryAddrsError::Pending),
+            RetryResult::Success(AcquireState::Shutdown { .. }) =>
+                Err(ChannelEntryAddrsError::Shutdown),
+            // If we are delayed, pass the delay along.
+            RetryResult::Retry(when) => Ok(RetryResult::Retry(*when))
         }
     }
-}
 
-impl<Channel, AuthN, Xfrm, InnerXfrm>
-    ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
-where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    AuthN: Clone + SessionAuthN<Channel::Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
-
-    fn acquire_nonblock<NameCtx>(
+    /// Request a flow for a given endpoint.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then attempt to negotiate and authenticate a
+    /// session with the given endpoint.  If negotiations can be
+    /// concluded immediately, then the authenticated session will be
+    /// returned.  Otherwise, the request will remain active and will
+    /// eventually be returned by [listen](ChannelEntry::listen).
+    /// Subsequent calls to this function with the same `endpoint`
+    /// will return an error.
+    ///
+    /// If a session is obtained from a call to this function, it must
+    /// be shut down with [shutdown_flow](ChannelEntry::shutdown_flow)
+    /// to properly handle shutdown negotiations and cleanup.
+    /// Information from the call to `refresh` will also be returned.
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokens`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel_param`: Resolved channel parameter for which to
+    ///   request a [Flow]
+    ///
+    /// - `nego_param`: Parameter used by the outbound negotiator.
+    ///
+    /// - `endpoint`: The counterparty'ss address.
+    ///
+    /// # Return Value
+    ///
+    /// A triple containing three values in order:
+    ///
+    /// 1. The authenticated session, if there is one.
+    ///
+    /// 1. If a refresh occurred, the new set of channel parameters.
+    ///
+    /// 1. When the next refresh occurs.
+    pub(crate) fn req_flow<I>(
         &mut self,
-        caches: &mut NameCtx,
-        policy: &SocketAddrPolicy,
-        resolve_config: &AddrsConfig,
-        authn: &AuthN,
-        reporter: &F::Reporter,
-        flows_param: &F::CreateParam,
-        xfrm_param: &Xfrm::CreateParam
+        tokens: &mut I,
+        registry: &Registry,
+        channel_param: &Channel::Param,
+        nego_param: &<Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
+        endpoint: &Xfrm::PeerAddr,
     ) -> Result<
-        RetryResult<Option<Instant>>,
-        RegistryAcquireError<
+        RetryResult<(
+            Option<AuthN::AuthNSession>,
+            Option<Vec<Channel::Param>>,
+            Option<Instant>
+        )>,
+        ChannelEntryReqFlowError<
+            AcquiredEntryFlowError<
+                FarChannelFlowsError<
+                    Channel::SocketError,
+                    Channel::XfrmError,
+                    Channel::InboundNegoError,
+                    Channel::OutboundNegoError
+                >,
+                <Channel::Acquired as FarChannelAcquired>::WrapError,
+                FlowStateGetFlowError<
+                    AuthN::NegotiateError,
+                    AuthN::StartError,
+                    FlowsFlowError<
+                        <Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
+                        <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                    >,
+                    ShutdownError<
+                        <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
+                        <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                    >
+                >
+            >
+        >
+    >
+    where I: Iterator<Item = Token>
+    {
+        match self.acquired.as_mut().ok_or(ChannelEntryReqFlowError::None)? {
+            // The channel is active; directly request the flow.
+            RetryResult::Success(AcquireState::Active { acquired, .. }) =>
+                acquired.req_flow(tokens, registry, &self.channel,
+                                  &self.shutdown, &self.shutdown_param,
+                                  &self.authn, &self.addr_policy, &self.retry,
+                                  channel_param, nego_param, endpoint)
+                .map_err(|err| ChannelEntryReqFlowError::Flow {
+                    err: err
+                }),
+            // Acquisition is pending.
+            RetryResult::Success(AcquireState::Pending { .. } |
+                                 AcquireState::Acquired { .. }) =>
+                Err(ChannelEntryReqFlowError::Pending),
+            // The channel is shutting down.
+            RetryResult::Success(AcquireState::Shutdown { .. }) =>
+                Err(ChannelEntryReqFlowError::Shutdown),
+            // If we are delayed, pass the delay along.
+            RetryResult::Retry(when) => Ok(RetryResult::Retry(*when))
+        }
+    }
+
+    /// Shut down a session obtained from this `ChannelEntry`.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then perform shutdown negotiations on
+    /// `session` and handle any cleanup.
+    ///
+    /// Previous calls to `refresh` (including the one performed by
+    /// this call) may result in `session` becoming stale.  No error
+    /// is returned in this case.
+    ///
+    /// The return value is the same as for the call to `refresh`.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `tokens`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    ///
+    /// - `channel_param`: Channel parameter indicating the specific
+    ///   [Flows] from which `session` was obtained.
+    ///
+    /// - `session`: The session to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// Same as for a call to [refresh](AcquiredEntry::refresh).
+    pub(crate) fn shutdown_flow<I>(
+        &mut self,
+        tokens: &mut I,
+        registry: &Registry,
+        channel_param: &Channel::Param,
+        session: AuthN::AuthNSession,
+    ) -> Result<
+        RetryResult<(
+            Option<Vec<Channel::Param>>,
+            Option<Instant>
+        )>,
+        ChannelEntryShutdownFlowError<
+            AcquiredEntryShutdownError<
+                FarChannelFlowsError<
+                    Channel::SocketError,
+                    Channel::XfrmError,
+                    Channel::InboundNegoError,
+                    Channel::OutboundNegoError,
+                >,
+                <Channel::Acquired as FarChannelAcquired>::WrapError,
+            >
+        >
+    >
+    where I: Iterator<Item = Token>
+    {
+        let addr = session.get().peer_addr()
+            .map_err(|err| ChannelEntryShutdownFlowError::IO {
+                err: err
+            })?;
+
+        match self.acquired.as_mut()
+            .ok_or(ChannelEntryShutdownFlowError::None)? {
+            RetryResult::Success(AcquireState::Active { acquired, .. }) =>
+                acquired.shutdown_flow(tokens, registry, &self.channel,
+                                       &self.addr_policy, &self.shutdown,
+                                       &self.shutdown_param,
+                                       channel_param, session, addr)
+                .map_err(|err| ChannelEntryShutdownFlowError::Flow {
+                    err: err
+                }),
+            // None of these should ever happen.
+            RetryResult::Success(AcquireState::Pending { .. }) |
+            RetryResult::Success(AcquireState::Acquired { .. }) =>
+                Err(ChannelEntryShutdownFlowError::Pending),
+            RetryResult::Success(AcquireState::Shutdown { .. }) =>
+                Err(ChannelEntryShutdownFlowError::Shutdown),
+            // If we are delayed, pass the delay along.
+            RetryResult::Retry(when) => Ok(RetryResult::Retry(*when))
+        }
+    }
+
+    fn listen<Ctx, I>(
+        &mut self,
+        namectx: &mut Ctx,
+        gentok: &mut I,
+        ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
+        sessions: &mut Vec<AuthN::AuthNSession>,
+        registry: &Registry,
+        param: &<Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
+        tokens: &HashSet<Token>,
+    ) -> Result<
+        RetryResult<(Option<Vec<Channel::Param>>, Option<Instant>)>,
+        ChannelEntryListenError<
+            AcquiredEntryListenError<
+                FarChannelsRefreshError<
+                    FarChannelFlowsError<
+                        Channel::SocketError,
+                        Channel::XfrmError,
+                        Channel::InboundNegoError,
+                        Channel::OutboundNegoError
+                    >,
+                    <Channel::Acquired as FarChannelAcquired>::WrapError
+                >,
+                FlowsListenError<
+                    Xfrm::Error,
+                    <Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
+                    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError,
+                    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                >,
+                AuthN::StartError,
+                AuthN::NegotiateError,
+                ShutdownError<
+                    <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
+                    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                >
+            >,
+            AcquiredEntryCreateError<
+                <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+                FarChannelFlowsError<
+                    Channel::SocketError,
+                    Channel::XfrmError,
+                    Channel::InboundNegoError,
+                    Channel::OutboundNegoError
+                >,
+                <Channel::Acquired as FarChannelAcquired>::WrapError
+            >,
+            Channel::NegotiateError,
+            Channel::ShutdownNegotiateError
+        >
+    >
+    where
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx {
+        match self.acquired.take()
+            .ok_or(ChannelEntryListenError::None)? {
+            RetryResult::Success(AcquireState::Pending { state }) => match self
+                .channel.complete_negotiate(state)
+                .map_err(|err| ChannelEntryListenError::Nego {
+                    err: err
+                })? {
+                NegotiatorResult::Pending(state) => {
+                    let state = AcquireState::Pending { state: state };
+
+                    self.acquired = Some(RetryResult::Success(state));
+
+                    Ok(RetryResult::Success((None, None)))
+                }
+                NegotiatorResult::Complete(acquired) =>
+                    self.handle_acquired(gentok, namectx, acquired)
+                        .map_err(|err| ChannelEntryListenError::Entry {
+                            err: err
+                        })
+                        .map(|when| RetryResult::Success((None, when))),
+            }
+            RetryResult::Success(AcquireState::Acquired { acquired, when }) =>
+                if when <= Instant::now() {
+                    self.handle_acquired(gentok, namectx, acquired)
+                        .map_err(|err| ChannelEntryListenError::Entry {
+                            err: err
+                        })
+                        .map(|when| RetryResult::Success((None, when)))
+                } else {
+                    let state = AcquireState::Acquired {
+                        acquired: acquired,
+                        when: when
+                    };
+
+                    self.acquired = Some(RetryResult::Success(state));
+
+                    Ok(RetryResult::Success((None, Some(when))))
+                }
+            RetryResult::Success(AcquireState::Active { mut acquired }) =>
+                match acquired
+                    .listen(ext_endpoints, sessions, gentok, registry,
+                            &self.channel, &self.addr_policy, &self.shutdown,
+                            &self.shutdown_param, &self.authn, &self.retry,
+                            param, tokens)
+                    .map_err(|err| ChannelEntryListenError::Listen {
+                        err: err
+                    })? {
+                    RetryResult::Success((refreshed, when)) => {
+                        let state = AcquireState::Active { acquired: acquired };
+
+                        self.acquired = Some(RetryResult::Success(state));
+
+                        Ok(RetryResult::Success((refreshed, when)))
+                    }
+                    RetryResult::Retry(when) => {
+                        let state = AcquireState::Active { acquired: acquired };
+
+                        self.acquired = Some(RetryResult::Success(state));
+
+                        Ok(RetryResult::Retry(when))
+                    }
+                }
+            RetryResult::Success(AcquireState::Shutdown { pending }) =>
+                match self.channel
+                    .complete_shutdown_negotiate(registry, pending)
+                    .map_err(|err| ChannelEntryListenError::Shutdown {
+                        err: err
+                    })? {
+                    // Shutdown is complete; there's nothing more to return.
+                    NegotiatorResult::Complete(()) =>
+                        Ok(RetryResult::Success((None, None))),
+                    // Shutdown is still pending.
+                    NegotiatorResult::Pending(pending) => {
+                        let state = AcquireState::Shutdown { pending: pending };
+
+                        self.acquired = Some(RetryResult::Success(state));
+
+                        Ok(RetryResult::Success((None, None)))
+                    }
+                }
+            // Pass through any delay.
+            RetryResult::Retry(when) => {
+                self.acquired = Some(RetryResult::Retry(when));
+
+                Ok(RetryResult::Retry(when))
+            }
+        }
+    }
+
+    fn try_acquire<Ctx, I>(
+        &mut self,
+        gentok: &mut I,
+        namectx: &mut Ctx,
+        registry: &Registry,
+    ) -> Result<
+        Option<Instant>,
+        ChannelEntryAcquireError<
             Channel::AcquireError,
+            Channel::NegotiateError,
+            AcquiredEntryCreateError<
+                <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+                FarChannelFlowsError<
+                    Channel::SocketError,
+                    Channel::XfrmError,
+                    Channel::InboundNegoError,
+                    Channel::OutboundNegoError
+                >,
+                <Channel::Acquired as FarChannelAcquired>::WrapError
+            >
+        >
+    >
+    where
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx {
+        match self.channel.acquire(registry)
+            .map_err(|err| ChannelEntryAcquireError::Acquire { err: err })? {
+            RetryResult::Success(state) => match self.channel.negotiate(state)
+                .map_err(|err| ChannelEntryAcquireError::Nego {
+                    err: err
+                })? {
+                // Negotiations are still pending.
+                NegotiatorResult::Pending(state) => {
+                    let state = AcquireState::Pending {
+                        state: state
+                    };
+
+                    self.acquired = Some(RetryResult::Success(state));
+
+                    Ok(None)
+                }
+                // Acquisition negotiations completed.
+                NegotiatorResult::Complete(acquired) =>
+                    // Create the AcquiredEntry, retry delays at this
+                    // point are due to resolution, not acquisition.
+                    match AcquiredEntry::create(gentok, namectx,
+                                                &mut self.channel,
+                                                &self.flows_config,
+                                                &self.resolve_config,
+                                                &self.addr_policy,
+                                                &self.xfrm_param, acquired,
+                                                self.nflows_hint)
+                        .map_err(|err| ChannelEntryAcquireError::Entry {
+                            err: err
+                        })? {
+                        RetryResult::Success((acquired, when)) => {
+                            let state = AcquireState::Active {
+                                acquired: acquired
+                            };
+
+                            self.acquired = Some(RetryResult::Success(state));
+
+                            Ok(when)
+                        }
+                        RetryResult::Retry(retry) => {
+                            let (acquired, when) = retry.take();
+                            let state = AcquireState::Acquired {
+                                acquired: acquired,
+                                when: when.clone()
+                            };
+
+                            self.acquired = Some(RetryResult::Success(state));
+
+                            Ok(Some(when))
+                        }
+                    }
+            }
+            // Retry delay starting acquisition.
+            RetryResult::Retry(when) => {
+                self.acquired = Some(RetryResult::Retry(when));
+
+                Ok(Some(when))
+            }
+        }
+    }
+
+    fn handle_acquired<Ctx, I>(
+        &mut self,
+        gentok: &mut I,
+        namectx: &mut Ctx,
+        acquired: Channel::Acquired
+    ) -> Result<
+        Option<Instant>,
+        AcquiredEntryCreateError<
             <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
             FarChannelFlowsError<
                 Channel::SocketError,
-                F::CreateError,
-                Channel::XfrmError
+                Channel::XfrmError,
+                Channel::InboundNegoError,
+                Channel::OutboundNegoError
             >,
             <Channel::Acquired as FarChannelAcquired>::WrapError
         >
     >
     where
-        NameCtx: NSNameCachesCtx {
-        trace!(target: "far-channel-registry",
-               "checking whether to attempt to initialize");
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx {
+        // XXX possibly transition to shutdown on error?
+        match AcquiredEntry::create(gentok, namectx, &mut self.channel,
+                                    &self.flows_config, &self.resolve_config,
+                                    &self.addr_policy, &self.xfrm_param,
+                                    acquired, self.nflows_hint)? {
+            RetryResult::Success((acquired, refresh_when)) => {
+                let state = AcquireState::Active { acquired: acquired };
 
-        let policy = self.policy.unwrap_or(policy.clone());
+                self.acquired = Some(RetryResult::Success(state));
 
-        match &self.acquired {
-            // We still need to initialize
-            RetryResult::Retry(when) => {
-                if *when <= Instant::now() {
-                    debug!(target: "far-channel-registry",
-                           "attempt to initialize registry entry");
-
-                    match RegistryAcquired::create_nonblock(
-                        caches,
-                        &mut self.channel,
-                        policy,
-                        resolve_config,
-                        authn,
-                        reporter,
-                        flows_param,
-                        xfrm_param
-                    )? {
-                        RetryResult::Retry(when) => {
-                            self.acquired = RetryResult::Retry(when);
-
-                            Ok(RetryResult::Retry(when))
-                        }
-                        RetryResult::Success((acquired, time)) => {
-                            self.acquired = RetryResult::Success(acquired);
-
-                            Ok(RetryResult::Success(time))
-                        }
-                    }
-                } else {
-                    Ok(RetryResult::Retry(*when))
-                }
+                Ok(refresh_when)
             }
-            RetryResult::Success(acquired) => {
-                Ok(RetryResult::Success(acquired.next_refresh()))
+            RetryResult::Retry(retry) => {
+                let (acquired, when) = retry.take();
+                let state = AcquireState::Acquired {
+                    acquired: acquired,
+                    when: when.clone()
+                };
+
+                self.acquired = Some(RetryResult::Success(state));
+
+                Ok(Some(when))
             }
         }
     }
-
 }
-
+/*
 impl<Channel, AuthN, Xfrm, InnerXfrm>
     FarChannels<Channel, AuthN, Xfrm, InnerXfrm>
 where
@@ -2860,17 +3974,91 @@ where AuthN: ScopedError,
     }
 }
 
-impl<Acquire, Nego, Flows> ScopedError
-    for AcquireStateCreateError<Acquire, Nego, Flows>
+impl<Acquire, Shutdown, Nego, Entry> ScopedError
+    for ChannelEntryCreateError<Acquire, Shutdown, Nego, Entry>
 where Acquire: ScopedError,
+      Shutdown: ScopedError,
       Nego: ScopedError,
-      Flows: ScopedError,
+      Entry: ScopedError,
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            AcquireStateCreateError::Acquire { err } => err.scope(),
-            AcquireStateCreateError::Nego { err } => err.scope(),
-            AcquireStateCreateError::Flows { err } => err.scope(),
+            ChannelEntryCreateError::Acquire { err } => err.scope(),
+            ChannelEntryCreateError::Shutdown { err } => err.scope(),
+        }
+    }
+}
+
+impl<Acquire, Nego, Entry> ScopedError
+    for ChannelEntryAcquireError<Acquire, Nego, Entry>
+where Acquire: ScopedError,
+      Nego: ScopedError,
+      Entry: ScopedError,
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryAcquireError::Acquire { err } => err.scope(),
+            ChannelEntryAcquireError::Nego { err } => err.scope(),
+            ChannelEntryAcquireError::Entry { err } => err.scope(),
+        }
+    }
+}
+
+impl<Flow> ScopedError for ChannelEntryShutdownFlowError<Flow>
+where Flow: ScopedError,
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryShutdownFlowError::Flow { err } => err.scope(),
+            ChannelEntryShutdownFlowError::IO { err } => err.scope(),
+            ChannelEntryShutdownFlowError::Shutdown |
+            ChannelEntryShutdownFlowError::Pending |
+            ChannelEntryShutdownFlowError::None => ErrorScope::Session
+        }
+    }
+}
+
+impl<Flow> ScopedError for ChannelEntryReqFlowError<Flow>
+where Flow: ScopedError,
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryReqFlowError::Flow { err } => err.scope(),
+            ChannelEntryReqFlowError::Shutdown |
+            ChannelEntryReqFlowError::Pending |
+            ChannelEntryReqFlowError::None => ErrorScope::Session
+        }
+    }
+}
+
+impl<Flow> ScopedError for ChannelEntryAddrsError<Flow>
+where Flow: ScopedError,
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryAddrsError::Flow { err } => err.scope(),
+            ChannelEntryAddrsError::Shutdown |
+            ChannelEntryAddrsError::Pending |
+            ChannelEntryAddrsError::None => ErrorScope::Session
+        }
+    }
+}
+
+impl<Listen, Entry, Nego, Shutdown> ScopedError
+    for ChannelEntryListenError<Listen, Entry, Nego, Shutdown>
+where
+    Listen: ScopedError,
+    Entry: ScopedError,
+    Nego: ScopedError,
+    Shutdown: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryListenError::Listen { err } => err.scope(),
+            ChannelEntryListenError::Entry { err } => err.scope(),
+            ChannelEntryListenError::Nego { err } => err.scope(),
+            ChannelEntryListenError::Shutdown { err } => err.scope(),
+            ChannelEntryListenError::None => ErrorScope::Session
         }
     }
 }
@@ -3091,7 +4279,7 @@ where
             SessionShutdownError::Pending =>
                 write!(f, "session has pending state"),
             SessionShutdownError::None =>
-                write!(f, "session has no active")
+                write!(f, "session has no active state")
         }
     }
 }
@@ -3163,20 +4351,59 @@ where Refresh: Display,
     }
 }
 
-impl<Acquire, Nego, Flows> Display
-    for AcquireStateCreateError<Acquire, Nego, Flows>
+impl<Acquire, Shutdown, Nego, Entry> Display
+    for ChannelEntryCreateError<Acquire, Shutdown, Nego, Entry>
 where Acquire: Display,
+      Shutdown: Display,
       Nego: Display,
-      Flows: Display
+      Entry: Display
 {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), std::fmt::Error> {
         match self {
-            AcquireStateCreateError::Acquire { err } => err.fmt(f),
-            AcquireStateCreateError::Nego { err } => err.fmt(f),
-            AcquireStateCreateError::Flows { err } => err.fmt(f),
+            ChannelEntryCreateError::Acquire { err } => err.fmt(f),
+            ChannelEntryCreateError::Shutdown { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Acquire, Nego, Entry> Display
+    for ChannelEntryAcquireError<Acquire, Nego, Entry>
+where Acquire: Display,
+      Nego: Display,
+      Entry: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            ChannelEntryAcquireError::Acquire { err } => err.fmt(f),
+            ChannelEntryAcquireError::Nego { err } => err.fmt(f),
+            ChannelEntryAcquireError::Entry { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Listen, Entry, Nego, Shutdown> Display
+    for ChannelEntryListenError<Listen, Entry, Nego, Shutdown>
+where Listen: Display,
+      Entry: Display,
+      Nego: Display,
+      Shutdown: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            ChannelEntryListenError::Listen { err } => err.fmt(f),
+            ChannelEntryListenError::Entry { err } => err.fmt(f),
+            ChannelEntryListenError::Nego { err } => err.fmt(f),
+            ChannelEntryListenError::Shutdown { err } => err.fmt(f),
+            ChannelEntryListenError::None => write!(f, "no acquire state"),
         }
     }
 }
@@ -3230,6 +4457,64 @@ where Flows: Display,
             AcquiredEntryShutdownError::Inconsistent => {
                 write!(f, "no flows for given token")
             }
+        }
+    }
+}
+
+impl<Flow> Display for ChannelEntryShutdownFlowError<Flow>
+where Flow: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            ChannelEntryShutdownFlowError::Flow { err } => err.fmt(f),
+            ChannelEntryShutdownFlowError::IO { err } => err.fmt(f),
+            ChannelEntryShutdownFlowError::Shutdown =>
+                write!(f, "shutdown negotiations are pending"),
+            ChannelEntryShutdownFlowError::Pending =>
+                write!(f, "session negotiations are pending"),
+            ChannelEntryShutdownFlowError::None =>
+                write!(f, "no acquire state"),
+        }
+    }
+}
+
+impl<Flow> Display for ChannelEntryAddrsError<Flow>
+where Flow: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            ChannelEntryAddrsError::Flow { err } => err.fmt(f),
+            ChannelEntryAddrsError::Shutdown =>
+                write!(f, "shutdown negotiations are pending"),
+            ChannelEntryAddrsError::Pending =>
+                write!(f, "session negotiations are pending"),
+            ChannelEntryAddrsError::None =>
+                write!(f, "no acquire state"),
+        }
+    }
+}
+
+impl<Flow> Display for ChannelEntryReqFlowError<Flow>
+where Flow: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            ChannelEntryReqFlowError::Flow { err } => err.fmt(f),
+            ChannelEntryReqFlowError::Pending =>
+                write!(f, "session negotiations are pending"),
+            ChannelEntryReqFlowError::Shutdown =>
+                write!(f, "shutdown negotiations are pending"),
+            ChannelEntryReqFlowError::None =>
+                write!(f, "no current acquire state"),
         }
     }
 }

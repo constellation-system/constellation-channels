@@ -329,7 +329,7 @@ pub trait FarChannel: Sized {
     type Acquired;
     /// Type of negotiation state.
     type AcquireState;
-    type NegotiatePending;
+    type AcquirePending;
     type ShutdownState;
     type ShutdownPending;
     /// Type of errors that can occur in the acquisition phase.
@@ -367,18 +367,18 @@ pub trait FarChannel: Sized {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError>;
 
     /// Complete a failed negotiation.
     fn complete_negotiate(
         &self,
-        err: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        err: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError>;
 
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError>;
 

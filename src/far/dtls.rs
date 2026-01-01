@@ -355,7 +355,7 @@ where
 {
     type Acquired = Channel::Acquired;
     type AcquireState = Channel::AcquireState;
-    type NegotiatePending = Channel::NegotiatePending;
+    type AcquirePending = Channel::AcquirePending;
     type AcquireError = Channel::AcquireError;
     type NegotiateError = Channel::NegotiateError;
     type ShutdownState = Channel::ShutdownState;
@@ -384,7 +384,7 @@ where
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         self.inner.negotiate(state)
     }
@@ -392,15 +392,15 @@ where
     #[inline]
     fn complete_negotiate(
         &self,
-        err: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        err: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         self.inner.complete_negotiate(err)
     }
 
     #[inline]
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
         self.inner.shutdown(acquired)

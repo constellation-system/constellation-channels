@@ -409,7 +409,7 @@ pub enum SOCKS5NegotiateError<Datagram, Proxy> {
     BadSplit
 }
 
-pub enum SOCKS5NegotiatePending<Datagram, DatagramState, DatagramPending,
+pub enum SOCKS5AcquirePending<Datagram, DatagramState, DatagramPending,
                                 Proxy, ProxyPending> {
     Proxy {
         state: DatagramState,
@@ -661,10 +661,10 @@ where
     ) -> Result<
         NegotiatorResult<
             SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>,
-            SOCKS5NegotiatePending<
+            SOCKS5AcquirePending<
                 Datagram::Acquired,
                 Datagram::AcquireState,
-                Datagram::NegotiatePending,
+                Datagram::AcquirePending,
                 Proxy::Conn,
                 Proxy::Pending
             >
@@ -716,7 +716,7 @@ where
             }
             Err(err) => match err.split() {
                 (Some(pending), None) => Ok(NegotiatorResult::Pending(
-                    SOCKS5NegotiatePending::SOCKS5 {
+                    SOCKS5AcquirePending::SOCKS5 {
                         endpoint: target,
                         datagram: datagram,
                         proxy: stream,
@@ -738,10 +738,10 @@ where
     ) -> Result<
         NegotiatorResult<
             SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>,
-            SOCKS5NegotiatePending<
+            SOCKS5AcquirePending<
                 Datagram::Acquired,
                 Datagram::AcquireState,
-                Datagram::NegotiatePending,
+                Datagram::AcquirePending,
                 Proxy::Conn,
                 Proxy::Pending
             >
@@ -766,10 +766,10 @@ where
     ) -> Result<
         NegotiatorResult<
             SOCKS5Acquired<Datagram::Acquired, Proxy::Conn, IPEndpoint>,
-            SOCKS5NegotiatePending<
+            SOCKS5AcquirePending<
                 Datagram::Acquired,
                 Datagram::AcquireState,
-                Datagram::NegotiatePending,
+                Datagram::AcquirePending,
                 Proxy::Conn,
                 Proxy::Pending
             >
@@ -784,7 +784,7 @@ where
             NegotiatorResult::Complete(acquired) =>
                     self.negotiate_acquired(stream, acquired),
             NegotiatorResult::Pending(pending) =>
-                Ok(NegotiatorResult::Pending(SOCKS5NegotiatePending::Datagram {
+                Ok(NegotiatorResult::Pending(SOCKS5AcquirePending::Datagram {
                     pending: pending,
                     proxy: stream
                 }))
@@ -808,10 +808,10 @@ where
         Datagram::NegotiateError,
         Proxy::NegotiateError,
     >;
-    type NegotiatePending = SOCKS5NegotiatePending<
+    type AcquirePending = SOCKS5AcquirePending<
         Datagram::Acquired,
         Datagram::AcquireState,
-        Datagram::NegotiatePending,
+        Datagram::AcquirePending,
         Proxy::Conn,
         Proxy::Pending
     >;
@@ -870,14 +870,14 @@ where
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         match self.proxy.negotiate(state.proxy)
             .map_err(|err| SOCKS5NegotiateError::Proxy { err: err })? {
             NegotiatorResult::Complete((stream, _)) =>
                 self.negotiate_datagram(stream, state.datagram),
             NegotiatorResult::Pending(pending) =>
-                Ok(NegotiatorResult::Pending(SOCKS5NegotiatePending::Proxy {
+                Ok(NegotiatorResult::Pending(SOCKS5AcquirePending::Proxy {
                     state: state.datagram,
                     pending: pending
                 })),
@@ -887,35 +887,35 @@ where
     #[inline]
     fn complete_negotiate(
         &self,
-        err: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        err: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         match err {
-            SOCKS5NegotiatePending::Proxy { state, pending } => match self.proxy
+            SOCKS5AcquirePending::Proxy { state, pending } => match self.proxy
                 .complete_negotiate(pending)
                 .map_err(|err| SOCKS5NegotiateError::Proxy { err: err })? {
                 NegotiatorResult::Complete((stream, _)) =>
                     self.negotiate_datagram(stream, state),
                 NegotiatorResult::Pending(pending) =>
-                    Ok(NegotiatorResult::Pending(SOCKS5NegotiatePending::Proxy {
+                    Ok(NegotiatorResult::Pending(SOCKS5AcquirePending::Proxy {
                         pending: pending,
                         state: state
                     })),
             }
-            SOCKS5NegotiatePending::Datagram { proxy, pending } => match self
+            SOCKS5AcquirePending::Datagram { proxy, pending } => match self
                 .datagram.complete_negotiate(pending)
                 .map_err(|err| SOCKS5NegotiateError::Datagram { err: err })? {
                 NegotiatorResult::Complete(acquired) =>
                     self.negotiate_acquired(proxy, acquired),
                 NegotiatorResult::Pending(pending) =>
                     Ok(NegotiatorResult::Pending(
-                        SOCKS5NegotiatePending::Datagram {
+                        SOCKS5AcquirePending::Datagram {
                             pending: pending,
                             proxy: proxy
                         }
                     ))
             }
-            SOCKS5NegotiatePending::SOCKS5 {
+            SOCKS5AcquirePending::SOCKS5 {
                 endpoint, datagram, mut proxy, pending
             } => {
                 let machine: RawStateMachine<SOCKS5State> =
@@ -940,7 +940,7 @@ where
                     }
                     Err(err) => match err.split() {
                         (Some(pending), None) => Ok(NegotiatorResult::Pending(
-                            SOCKS5NegotiatePending::SOCKS5 {
+                            SOCKS5AcquirePending::SOCKS5 {
                                 endpoint: endpoint.clone(),
                                 datagram: datagram,
                                 proxy: proxy,
@@ -954,7 +954,7 @@ where
                     }
                 }
             }
-            SOCKS5NegotiatePending::IO { datagram, proxy } => match self
+            SOCKS5AcquirePending::IO { datagram, proxy } => match self
                 .datagram.socks5_target(&datagram) {
                 Ok(target) => self.negotiate_endpoint(proxy, datagram, target),
                 Err(err) => Err(SOCKS5NegotiateError::IO {
@@ -966,7 +966,7 @@ where
 
     #[inline]
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
         let proxy = self.shutdown_nego

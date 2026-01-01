@@ -117,7 +117,7 @@ use crate::far::socks5::SOCKS5FarChannel;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5NegotiateError;
 #[cfg(feature = "socks5")]
-use crate::far::socks5::SOCKS5NegotiatePending;
+use crate::far::socks5::SOCKS5AcquirePending;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5SessionNegotiation;
 #[cfg(feature = "socks5")]
@@ -411,7 +411,7 @@ pub enum CompoundFarIPChannelAcquireNegoPending {
     #[cfg(feature = "socks5")]
     SOCKS5 {
         socks5: Box<
-            SOCKS5NegotiatePending<
+            SOCKS5AcquirePending<
                 CompoundFarIPChannelAcquired,
                 CompoundFarIPChannelAcquireState,
                 CompoundFarIPChannelAcquireNegoPending,
@@ -2338,7 +2338,7 @@ impl FarChannel for CompoundFarIPChannel {
     type Acquired = CompoundFarIPChannelAcquired;
     type AcquireState = CompoundFarIPChannelAcquireState;
     type NegotiateError = CompoundFarIPChannelAcquireNegoError;
-    type NegotiatePending = CompoundFarIPChannelAcquireNegoPending;
+    type AcquirePending = CompoundFarIPChannelAcquireNegoPending;
     type ShutdownState = CompoundIPAcquiredShutdownNegotiateState;
     type ShutdownPending = CompoundIPAcquiredShutdownNegotiatePending;
     type ShutdownError = CompoundFarIPChannelShutdownAcquiredError;
@@ -2375,7 +2375,7 @@ impl FarChannel for CompoundFarIPChannel {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         match (self, state) {
             (CompoundFarIPChannel::UDP { udp },
@@ -2407,8 +2407,8 @@ impl FarChannel for CompoundFarIPChannel {
 
     fn complete_negotiate(
         &self,
-        pending: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        pending: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         match (self, pending) {
             (CompoundFarIPChannel::DTLS { dtls }, pending) =>
@@ -2438,7 +2438,7 @@ impl FarChannel for CompoundFarIPChannel {
     }
 
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
         match (self, acquired) {
@@ -2672,7 +2672,7 @@ impl FarChannel for CompoundFarChannel {
     type Acquired = CompoundFarChannelAcquired;
     type AcquireState = CompoundFarChannelAcquireState;
     type NegotiateError = CompoundFarChannelAcquireNegoError;
-    type NegotiatePending = CompoundFarChannelAcquireNegoPending;
+    type AcquirePending = CompoundFarChannelAcquireNegoPending;
     type ShutdownState = CompoundAcquiredShutdownNegotiateState;
     type ShutdownPending = CompoundAcquiredShutdownNegotiatePending;
     type ShutdownError = CompoundFarChannelShutdownAcquiredError;
@@ -2704,7 +2704,7 @@ impl FarChannel for CompoundFarChannel {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         match (self, state) {
             (CompoundFarChannel::Unix { unix },
@@ -2738,8 +2738,8 @@ impl FarChannel for CompoundFarChannel {
 
     fn complete_negotiate(
         &self,
-        pending: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        pending: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         match (self, pending) {
             (CompoundFarChannel::DTLS { dtls }, pending) =>
@@ -2763,7 +2763,7 @@ impl FarChannel for CompoundFarChannel {
     }
 
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
         match (self, acquired) {
@@ -3014,7 +3014,7 @@ impl FarChannel for Box<CompoundFarIPChannel> {
     type Acquired = CompoundFarIPChannelAcquired;
     type AcquireState = CompoundFarIPChannelAcquireState;
     type NegotiateError = CompoundFarIPChannelAcquireNegoError;
-    type NegotiatePending = CompoundFarIPChannelAcquireNegoPending;
+    type AcquirePending = CompoundFarIPChannelAcquireNegoPending;
     type ShutdownState = CompoundIPAcquiredShutdownNegotiateState;
     type ShutdownPending = CompoundIPAcquiredShutdownNegotiatePending;
     type ShutdownError = CompoundFarIPChannelShutdownAcquiredError;
@@ -3032,7 +3032,7 @@ impl FarChannel for Box<CompoundFarIPChannel> {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         self.as_ref().negotiate(state)
     }
@@ -3040,18 +3040,18 @@ impl FarChannel for Box<CompoundFarIPChannel> {
     #[inline]
     fn complete_negotiate(
         &self,
-        pending: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        pending: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         self.as_ref().complete_negotiate(pending)
     }
 
     #[inline]
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
-        self.as_mut().shutdown(acquired)
+        self.as_ref().shutdown(acquired)
     }
 
     #[inline]
@@ -3121,7 +3121,7 @@ impl FarChannel for Box<CompoundFarChannel> {
     type Acquired = CompoundFarChannelAcquired;
     type AcquireState = CompoundFarChannelAcquireState;
     type NegotiateError = CompoundFarChannelAcquireNegoError;
-    type NegotiatePending = CompoundFarChannelAcquireNegoPending;
+    type AcquirePending = CompoundFarChannelAcquireNegoPending;
     type ShutdownState = CompoundAcquiredShutdownNegotiateState;
     type ShutdownPending = CompoundAcquiredShutdownNegotiatePending;
     type ShutdownError = CompoundFarChannelShutdownAcquiredError;
@@ -3139,7 +3139,7 @@ impl FarChannel for Box<CompoundFarChannel> {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         self.as_ref().negotiate(state)
     }
@@ -3147,18 +3147,18 @@ impl FarChannel for Box<CompoundFarChannel> {
     #[inline]
     fn complete_negotiate(
         &self,
-        pending: Self::NegotiatePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+        pending: Self::AcquirePending
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         self.as_ref().complete_negotiate(pending)
     }
 
     #[inline]
     fn shutdown(
-        &mut self,
+        &self,
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
-        self.as_mut().shutdown(acquired)
+        self.as_ref().shutdown(acquired)
     }
 
     #[inline]

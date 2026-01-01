@@ -144,16 +144,18 @@ pub struct AddrsConfig {
 ///
 ///  - `channels`: An array of [ChannelRegistryEntryConfig] structures.
 ///
-///  - `resolve`: An [AddrsConfig] structure.  This is optional, and set to the
-///    default value if not present.
+///  - `default-resolve`: An [AddrsConfig] structure.  This is
+///    optional, and set to the default value if not present.
 ///
-///  - `flows-params`: A configuration object for creating the type of traffic
-///    splitters used for managing flows. This is optional, and set to the
-///    default value if not present.
+///  - `default-flows-params`: A configuration object for creating the
+///    type of traffic splitters used for managing flows. This is
+///    optional, and set to the default value if not present.
 ///
-///  - `context-params`: A configuration object for creating the type of base
-///    [DatagramXfrm](constellation_common::net::DatagramXfrm) used to create
-///    flows.  This is optional, and set to the default value if not present.
+///  - `default-transform-params`: A configuration object for creating
+///    the type of base
+///    [DatagramXfrm](constellation_common::net::DatagramXfrm) used to
+///    create flows.  This is optional, and set to the default value
+///    if not present.
 ///
 /// ## Examples
 ///
@@ -174,23 +176,27 @@ pub struct AddrsConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "channel-registry")]
 #[serde(rename_all = "kebab-case")]
-pub struct ChannelRegistryConfig<
-    Channel,
-    FlowsParams: Default,
-    ContextParams: Default
-> {
+pub struct FarChannelRegistryConfig<Channel, Flows, Shutdown, Xfrm>
+where Flows: Default,
+      Shutdown: Default,
+      Xfrm: Default,
+{
     /// Configuration of all channels.
-    channels: Vec<ChannelRegistryEntryConfig<Channel>>,
+    channels: Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
     /// Resolver configuration.
     #[serde(default)]
-    resolve: AddrsConfig,
+    default_resolve: AddrsConfig,
     /// Context creation parameters.
     #[serde(default)]
-    #[serde(rename = "context-params")]
-    ctx_params: ContextParams,
+    default_xfrm_params: Xfrm,
     /// Flows creation parameters.
     #[serde(default)]
-    flows_params: FlowsParams
+    default_flows_params: Flows,
+    #[serde(default)]
+    default_shutdown_params: Shutdown,
+    /// Retry configuration.
+    #[serde(default)]
+    default_retry: Retry
 }
 
 /// Configuration parameters for stream creation for
@@ -212,7 +218,7 @@ pub struct ChannelRegistryConfig<
 )]
 #[serde(rename = "channels")]
 #[serde(rename_all = "kebab-case")]
-pub struct ChannelRegistryChannelsConfig<Codec>
+pub struct FarChannelRegistryChannelsConfig<Codec>
 where
     Codec: Default {
     codec: Codec
@@ -242,17 +248,32 @@ where
 ///   port: 7777
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename = "entry")]
+#[serde(rename = "far-channel-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct ChannelRegistryEntryConfig<Channel> {
+pub struct FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
+where Flows: Default,
+      Shutdown: Default,
+      Xfrm: Default,
+{
     /// Unique name of the channel.
     id: String,
     /// Channel configuration.
     #[serde(flatten)]
     channel: Channel,
+    /// Resolver configuration.
+    #[serde(default)]
+    resolve: Option<AddrsConfig>,
+    /// Context creation parameters.
+    #[serde(default)]
+    xfrm_params: Option<Xfrm>,
+    /// Flows creation parameters.
+    #[serde(default)]
+    flows_params: Option<Flows>,
+    #[serde(default)]
+    shutdown_params: Option<Shutdown>,
     /// Retry configuration.
     #[serde(default)]
-    retry: Retry
+    retry: Option<Retry>
 }
 
 /// Creation parameters for
@@ -2394,7 +2415,12 @@ impl AddrsConfig {
     }
 }
 
-impl<Channel> ChannelRegistryEntryConfig<Channel> {
+impl<Channel, Flows, Shutdown, Xfrm>
+    FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
+where Flows: Default,
+      Shutdown: Default,
+      Xfrm: Default
+{
     /// Create a new `ChannelRegistryEntryConfig` from its components.
     ///
     /// The arguments of this function correspond to similarly-named
@@ -2403,11 +2429,19 @@ impl<Channel> ChannelRegistryEntryConfig<Channel> {
     pub fn new(
         id: String,
         channel: Channel,
-        retry: Retry
+        resolve: Option<AddrsConfig>,
+        flows_params: Option<Flows>,
+        xfrm_params: Option<Xfrm>,
+        shutdown_params: Option<Shutdown>,
+        retry: Option<Retry>
     ) -> Self {
-        ChannelRegistryEntryConfig {
+        FarChannelRegistryEntryConfig {
             id: id,
             channel: channel,
+            resolve: resolve,
+            flows_params: flows_params,
+            xfrm_params: xfrm_params,
+            shutdown_params: shutdown_params,
             retry: retry
         }
     }
@@ -2426,18 +2460,60 @@ impl<Channel> ChannelRegistryEntryConfig<Channel> {
 
     /// Get the retry configuration.
     #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
     }
 
-    /// Decompose a `ChannelRegistryEntryConfig` into its components.
+    /// Get the resolver configuration.
     #[inline]
-    pub fn take(self) -> (String, Channel, Retry) {
-        (self.id, self.channel, self.retry)
+    pub fn resolve(&self) -> Option<&AddrsConfig> {
+        self.resolve.as_ref()
+    }
+
+    /// Get the [Flows] creation parameters.
+    #[inline]
+    pub fn flows_params(&self) -> Option<&Flows> {
+        self.flows_params.as_ref()
+    }
+
+    /// Get the [DatagramXfrm] creation parameters.
+    #[inline]
+    pub fn xfrm_params(&self) -> Option<&Xfrm> {
+        self.xfrm_params.as_ref()
+    }
+
+    /// Get the shutdown [Negotiator] creation parameters.
+    #[inline]
+    pub fn shutdown_params(&self) -> Option<&Shutdown> {
+        self.shutdown_params.as_ref()
+    }
+
+    /// Decompose a `FarChannelRegistryEntryConfig` into its components.
+    #[inline]
+    pub fn take(
+        self
+    ) -> (
+        String,
+        Channel,
+        Option<AddrsConfig>,
+        Option<Flows>,
+        Option<Xfrm>,
+        Option<Shutdown>,
+        Option<Retry>
+    ) {
+        (
+            self.id,
+            self.channel,
+            self.resolve,
+            self.flows_params,
+            self.xfrm_params,
+            self.shutdown_params,
+            self.retry
+        )
     }
 }
 
-impl<Codec> ChannelRegistryChannelsConfig<Codec>
+impl<Codec> FarChannelRegistryChannelsConfig<Codec>
 where
     Codec: Default
 {
@@ -2447,7 +2523,7 @@ where
     /// fields in the YAML format.  See documentation for details.
     #[inline]
     pub fn new(codec: Codec) -> Self {
-        ChannelRegistryChannelsConfig { codec: codec }
+        FarChannelRegistryChannelsConfig { codec: codec }
     }
 
     /// Get the configuration parameters used to create
@@ -2466,11 +2542,12 @@ where
     }
 }
 
-impl<Channel, FlowsParams, ContextParams>
-    ChannelRegistryConfig<Channel, FlowsParams, ContextParams>
+impl<Channel, Flows, Shutdown, Xfrm>
+    FarChannelRegistryConfig<Channel, Flows, Shutdown, Xfrm>
 where
-    FlowsParams: Default,
-    ContextParams: Default
+    Flows: Default,
+    Shutdown: Default,
+    Xfrm: Default
 {
     /// Create a new `ChannelRegistryConfig` from its components.
     ///
@@ -2478,58 +2555,74 @@ where
     /// fields in the YAML format.  See documentation for details.
     #[inline]
     pub fn new(
-        channels: Vec<ChannelRegistryEntryConfig<Channel>>,
+        channels: Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
         resolve: AddrsConfig,
-        flows_params: FlowsParams,
-        ctx_params: ContextParams
+        flows_params: Flows,
+        xfrm_params: Xfrm,
+        shutdown_params: Shutdown,
+        retry: Retry
     ) -> Self {
-        ChannelRegistryConfig {
+        FarChannelRegistryConfig {
             channels: channels,
-            resolve: resolve,
-            flows_params: flows_params,
-            ctx_params: ctx_params
+            default_resolve: resolve,
+            default_flows_params: flows_params,
+            default_xfrm_params: xfrm_params,
+            default_shutdown_params: shutdown_params,
+            default_retry: retry
         }
     }
 
     /// Get the channel configurations.
     #[inline]
-    pub fn channels(&self) -> &[ChannelRegistryEntryConfig<Channel>] {
+    pub fn channels(
+        &self
+    ) -> &[FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>] {
         &self.channels
     }
 
     /// Get the resolver configuration.
     #[inline]
     pub fn resolve(&self) -> &AddrsConfig {
-        &self.resolve
+        &self.default_resolve
     }
 
     /// Get the flows creation parameters.
     #[inline]
-    pub fn flows_params(&self) -> &FlowsParams {
-        &self.flows_params
+    pub fn flows_params(&self) -> &Flows {
+        &self.default_flows_params
     }
 
     /// Get the context creation parameters.
     #[inline]
-    pub fn ctx_params(&self) -> &ContextParams {
-        &self.ctx_params
+    pub fn xfrm_params(&self) -> &Xfrm {
+        &self.default_xfrm_params
     }
 
-    /// Decompose a `ChannelRegistryEntryConfig` into its components.
+    /// Get the shutdown creation parameters.
+    #[inline]
+    pub fn shutdown_params(&self) -> &Shutdown {
+        &self.default_shutdown_params
+    }
+
+    /// Decompose a `FarChannelRegistryConfig` into its components.
     #[inline]
     pub fn take(
         self
     ) -> (
-        Vec<ChannelRegistryEntryConfig<Channel>>,
+        Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
         AddrsConfig,
-        FlowsParams,
-        ContextParams
+        Flows,
+        Xfrm,
+        Shutdown,
+        Retry
     ) {
         (
             self.channels,
-            self.resolve,
-            self.flows_params,
-            self.ctx_params
+            self.default_resolve,
+            self.default_flows_params,
+            self.default_xfrm_params,
+            self.default_shutdown_params,
+            self.default_retry
         )
     }
 }

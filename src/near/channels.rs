@@ -53,8 +53,6 @@ use mio::Registry;
 use mio::Token;
 
 use crate::channels::ShutdownError;
-use crate::channels::WithShutdownError;
-use crate::config::NearChannelsEntryConfig;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
@@ -65,16 +63,22 @@ use crate::resolve::cache::NSNameCachesCtx;
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NearChannelID(Token);
 
+/// Generic type used in duplex channels.
+///
+/// This is necessary as unlike [FarChannel](crate::far::FarChannel)s,
+/// [NearChannel]s have distinct types for inbound and outbound
+/// sessions.
 enum DuplexValue<Accept, Conn> {
-    Accept {
-        accept: Accept
-    },
-    Conn {
-        conn: Conn
-    }
+    /// Value associated with the inbound (accepting) channel.
+    Accept(Accept),
+    /// Value associated with the outbound (connecting) channel.
+    Conn(Conn)
 }
 
-enum SessionNegoEntry<Channel, AuthN>
+/// Negotiation state for a given channel.
+///
+/// This is usable for both incoming and outgoing channels.
+enum SessionNegoState<Channel, AuthN>
 where
     Channel: NearChannel,
     Channel::NegotiateError: ScopedError,
@@ -106,6 +110,10 @@ where
     }
 }
 
+/// Session entry for an incoming (accepting) channel.
+///
+/// This holds the negotiation state for sessions through an acceptor
+/// with a single endpoint..
 struct AcceptorEntry<Channel, AuthN>
 where
     Channel: NearChannel,
@@ -113,11 +121,20 @@ where
     AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
     AuthN::NegotiateError: ScopedError
 {
-    state: Option<SessionNegoEntry<Channel, AuthN>>,
+    /// State of negotiations.
+    ///
+    /// This should generally never be `None`.  [Option] is only used
+    /// here to implement a state machine (this is a limitation of the
+    /// Rust standard API).
+    state: Option<SessionNegoState<Channel, AuthN>>,
     /// When to retry next.
     when: Option<Instant>
 }
 
+/// Session entry for an outgoing (connecting) channel.
+///
+/// This holds the negotiation state for sessions through a connector
+/// for a single endpoint.
 struct ConnectorEntry<Channel, AuthN>
 where
     Channel: NearChannel,
@@ -125,15 +142,32 @@ where
     AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
     AuthN::NegotiateError: ScopedError
 {
+    /// The [NearConnector] used to establish sessions.
     channel: Channel,
+    /// The [Negotiator] used to shut down sessions.
     shutdown: Channel::ShutdownNego,
-    state: Option<SessionNegoEntry<Channel, AuthN>>,
+    /// The current state of negotiations.
+    ///
+    /// This is allowed to be `None`, if no session currently exists.
+    state: Option<SessionNegoState<Channel, AuthN>>,
+    // XXX Replace this retry information with a standard type in
+    // common.
     /// Number of retries.
     nretries: usize,
     /// When to retry next.
     when: Option<Instant>
 }
 
+/// Representation of a mode in which a given channel operates.
+///
+/// This effectively acts as most of the state of the [ChannelEntry].
+///
+/// Unlike [FarChannel](crate::far::FarChannel)s, [NearChannel]s have
+/// differing incoming and outgoing types.  This means that the
+/// incoming and outgoing channels are logically associated with each
+/// other in duplex mode as opposed to being the same type.  Also,
+/// there is not necessarily an incoming or outgoing channel in all
+/// cases.  This type exists to manage that.
 enum ChannelMode<Accept, Conn, AcceptAuthN, ConnAuthN>
 where
     Conn: NearConnector + NearChannelCreateWithEndpoint,
@@ -152,33 +186,48 @@ where
     /// Full-duplex channels, which can establish outbound as well as
     /// inbound connections.
     Duplex {
+        /// Base configuration used to create connectors.
         config: Conn::Config,
+        /// [SessionAuthN] used to authenticate incoming sessions.
         in_authn: AcceptAuthN,
+        /// [SessionAuthN] used to authenticate outgoing sessions.
         out_authn: ConnAuthN,
         /// Acceptor for incoming sessions.
         acceptor: Accept,
+        /// [Negotiator] used to shut down incoming sessions.
         shutdown: Accept::ShutdownNego,
-        /// Token for acceptor.
+        /// [Token] associated with `acceptor`.
         token: Token,
         /// Retry delay for acceptor.
         retry_when: Option<Instant>,
-        /// Session information for each endpoint.
+        /// Session information for each endpoint, for incoming sessions.
         accept_tokens: HashMap<Accept::Endpoint, Token>,
+        /// Session information for each endpoint, for outgoing sessions.
         conn_tokens: HashMap<Conn::Endpoint, Token>,
+        /// Negotiation states corresponding to each [Token].
+        ///
+        /// Each `Token` in this table must have exactly one entry in
+        /// either `accept_tokens` or `conn_tokens`.
         negos: HashMap<
             Token,
             DuplexValue<
-                Option<SessionNegoEntry<Accept, AcceptAuthN>>,
+                Option<SessionNegoState<Accept, AcceptAuthN>>,
                 ConnectorEntry<Conn, ConnAuthN>
             >
         >
     },
     /// Outbound-only channels, which can only establish connections.
     Outbound {
+        /// Base configuration used to create connectors.
         config: Conn::Config,
+        /// [SessionAuthN] used to authenticate sessions.
         authn: ConnAuthN,
         /// Session information for each endpoint.
         tokens: HashMap<Conn::Endpoint, Token>,
+        /// Negotiation states corresponding to each [Token].
+        ///
+        /// Each `Token` in this table must have exactly one entry in
+        /// `tokens`.
         negos: HashMap<
             Token,
             ConnectorEntry<Conn, ConnAuthN>,
@@ -186,9 +235,11 @@ where
     },
     /// Inbound-only channels, which can only listen for connections.
     Inbound {
+        /// [SessionAuthN] used to authenticate sessions.
         authn: AcceptAuthN,
         /// Acceptor for incoming sessions.
         acceptor: Accept,
+        /// [Negotiator] used to shut down sessions.
         shutdown: Accept::ShutdownNego,
         /// Token for acceptor.
         token: Token,
@@ -198,11 +249,37 @@ where
         tokens: HashMap<Accept::Endpoint, Token>,
         negos: HashMap<
             Token,
-            Option<SessionNegoEntry<Accept, AcceptAuthN>>,
+            Option<SessionNegoState<Accept, AcceptAuthN>>,
         >
     }
 }
 
+/// Information about a given logical channel configuration.
+///
+/// Unlike [FarChannel](crate::far::FarChannel)s, [NearChannel]s have
+/// differing incoming and outgoing types.  This means that incoming
+/// and outgoing channels are managed separately, and are only
+/// associated together logically.
+///
+/// There are three configurations that a given logical channel may take:
+///
+/// - **Duplex**: Both incoming and outgoing sessions.  In a duplex
+///   channel, an incoming and outgoing connection to the same
+///   principal will be considered equivalent for the purposes of
+///   deduplication.
+///
+/// - **Accept-only**: Only incoming sessions.
+///
+/// - **Connect-only**: Only outgoing sessions.
+///
+/// Since the endpoints for all incoming sessions will be unique
+/// (unique port numbers will be assigned to TCP-type connections,
+/// which will differ from the port to which outgoing sessions
+/// connect), we cannot deduplicate sessions based on endpoints.  The
+/// only correct way to deduplicate sessions is through
+/// principals. However, we do also need to associate sessions with
+/// the same logical channel ID, so that incoming and outgoing
+/// sessions can be deduplicated in this fashion.
 struct ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>
 where
     Conn: NearConnector + NearChannelCreateWithEndpoint,
@@ -219,6 +296,7 @@ where
     AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
     AcceptAuthN::NegotiateError: ScopedError
 {
+    /// The per-mode channel state.
     mode: ChannelMode<Accept, Conn, AcceptAuthN, ConnAuthN>,
     /// Retry configuration to use.
     retry: Retry,
@@ -375,9 +453,52 @@ pub enum ConnectorEntryStepError<Start, Connect, Step> {
     }
 }
 
+#[derive(Debug)]
+pub enum ChannelEntryReqError<Channel, Entry> {
+    /// Error creating the channel instance.
+    Channel {
+        /// Error that occurred creating the channel instance.
+        err: Channel
+    },
+    /// Error creating the [ConnectorEntry].
+    Entry {
+    /// The error that occurred creating the [ConnectorEntry].
+        err: Entry
+    },
+    /// The given endpoint was already requested.
+    Collision,
+    /// Token generator was exhausted.
+    NoTokens,
+    /// Trying to request a stream from an inbound-only channel.
+    Inbound
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryShutdownError<Shutdown, Endpoint> {
+    Shutdown {
+        err: Shutdown
+    },
+    IO {
+        err: std::io::Error
+    },
+    NotFound {
+        endpoint: Endpoint
+    },
+    Inconsistent,
+    Mismatch
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryListenError<Start> {
+    Start {
+        err: Start
+    },
+    NoTokens
+}
 
 
-impl<Channel, AuthN> SessionNegoEntry<Channel, AuthN>
+
+impl<Channel, AuthN> SessionNegoState<Channel, AuthN>
 where
     Channel: NearChannel,
     Channel::Endpoint: Clone + Eq + Hash,
@@ -386,21 +507,25 @@ where
     AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
     AuthN::NegotiateError: ScopedError
 {
-    /// Create a new `SessionNegoEntry`.
+    /// Create a new `SessionNegoState`.
     ///
     /// This will advance negotiations as far as they can go, possibly
-    /// to the point of failing to create the `SessionNegoEntry` due
-    /// to authentication failures.
+    /// to the point of failing to create the `SessionNegoState` due
+    /// to authentication failures.  If they succeed, then the
+    /// authenticated session will be returned as well.  If they fail,
+    /// then the session will be shut down, and retried later.
+    /// Regardless, the `SessionNegoState` will be returned.
     ///
     /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
     ///
     /// - `channel`: The [NearChannel] definition to use.
     ///
     /// - `authn`: The [SessionAuthN] to use for authentication.
     ///
     /// - `shutdown`: The [Negotiator] to use for shutting down sessions.
-    ///
-    /// - `param`: The parameter to use to begin shutdown.
     ///
     /// - `state`: The initial state to use for session negotiations.
     ///
@@ -431,7 +556,7 @@ where
             >
         >
     > {
-        match SessionNegoEntry::session(channel, authn, state) {
+        match SessionNegoState::session(channel, authn, state) {
             Ok(NegotiatorResult::Complete((AuthNResult::Accept((out, session)),
                                            endpoint))) => {
                 info!(target: "session-nego-entry",
@@ -514,6 +639,39 @@ where
         }
     }
 
+    /// Attempt to negotiate a new session and create a `SessionNegoState`.
+    ///
+    /// This will advance negotiations as far as they can go, possibly
+    /// to the point of failing to create the `SessionNegoState` due
+    /// to authentication failures.  If they succeed, then the
+    /// authenticated session will be returned as well.
+    ///
+    /// This will not initiate shutdown if authentication fails.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `channel`: The [NearChannel] definition to use.
+    ///
+    /// - `authn`: The [SessionAuthN] to use for authentication.
+    ///
+    /// - `shutdown`: The [Negotiator] to use for shutting down sessions.
+    ///
+    /// - `state`: The initial state to use for session negotiations.
+    ///
+    /// # Return Values
+    ///
+    /// - `NegotiatorResult::Complete(AuthNResult::Accept((self,
+    ///   session)))`: Negotiations were completed and authentication
+    ///   succeeded.
+    ///
+    /// - `NegotiatorResult::Complete(AuthNResult::Reject(conn))`:
+    ///   Negotiations were completed and authentication failed.
+    ///
+    /// - `NegotiatorResult::Pending(self)`: Negotiations are still
+    ///   pending.
     fn session(
         channel: &Channel,
         authn: &AuthN,
@@ -531,7 +689,7 @@ where
     > {
         channel.negotiate(state)
             .map_err(|err| NegoEntrySessionError::Nego { err: err })?
-            .map_pending(|pending| SessionNegoEntry::Session {
+            .map_pending(|pending| SessionNegoState::Session {
                 pending: pending
             })
             .flat_map_ok(|(stream, endpoint)|
@@ -542,6 +700,36 @@ where
                          }))
     }
 
+    /// Attempt to authenticate session and create a
+    /// `SessionNegoState`.
+    ///
+    /// This will advance authentication negotiations as far as they
+    /// can go, possibly to the point of failing to create the
+    /// `SessionNegoState` due to authentication failures.  If they
+    /// succeed, then the authenticated session will be returned as
+    /// well.
+    ///
+    /// This will not initiate shutdown if authentication fails.
+    ///
+    /// # Parameters
+    ///
+    /// - `authn`: The [SessionAuthN] to use for authentication.
+    ///
+    /// - `endpoint`: The counterparty's address.
+    ///
+    /// - `state`: The initial state to use for session negotiations.
+    ///
+    /// # Return Values
+    ///
+    /// - `NegotiatorResult::Complete(AuthNResult::Accept((self,
+    ///   session)))`: Negotiations were completed and authentication
+    ///   succeeded.
+    ///
+    /// - `NegotiatorResult::Complete(AuthNResult::Reject(conn))`:
+    ///   Negotiations were completed and authentication failed.
+    ///
+    /// - `NegotiatorResult::Pending(self)`: Negotiations are still
+    ///   pending.
     fn authn(
         authn: &AuthN,
         endpoint: Channel::Endpoint,
@@ -571,7 +759,7 @@ where
                       "continuing session authentication over {}",
                       endpoint);
 
-               SessionNegoEntry::AuthN {
+               SessionNegoState::AuthN {
                    endpoint: endpoint.clone(),
                    pending: pending
                }
@@ -581,157 +769,30 @@ where
                       "completed session authentication over {}",
                       endpoint);
 
-               res.map(|session| (SessionNegoEntry::Active {
+               res.map(|session| (SessionNegoState::Active {
                    endpoint: endpoint
                }, session))
            }))
     }
-
-    /// Create a `SessionNegoEntry` for shutdown negotiations.
-    fn do_shutdown(
-        shutdown: &Channel::ShutdownNego,
-        param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
-        endpoint: Channel::Endpoint,
-        stream: Channel::Conn,
-    ) -> Result<
-        NegotiatorResult<Channel::ShutdownValue, Self>,
-        ShutdownError<
-            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
-        >
-    > {
-        let state = shutdown.start(param, stream)
-            .map_err(|err| ShutdownError::Start { err: err })?;
-
-        Ok(shutdown.negotiate(state)
-           .map_err(|err| ShutdownError::Negotiate {
-               err: err
-           })?
-           .map_pending(|pending| SessionNegoEntry::Shutdown {
-               endpoint: endpoint,
-               pending: pending
-           }))
-    }
-
-    fn do_step(
-        self,
-        endpoints: &mut HashSet<Channel::Endpoint>,
-        registry: &Registry,
-        channel: &Channel,
-        authn: &AuthN,
-        shutdown: &Channel::ShutdownNego,
-    ) -> Result<
-        NegotiatorResult<
-            (Option<AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>>,
-             Channel::Endpoint),
-            Self
-        >,
-        SessionEntryStepError<
-            Channel::NegotiateError,
-            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
-        >
-    > {
-        match self {
-            SessionNegoEntry::Session { pending } => channel
-                .complete_negotiate(pending)
-                .map_err(|err| SessionEntryStepError::Session { err: err })?
-                .map_pending(|pending| SessionNegoEntry::Session {
-                    pending: pending
-                })
-                .flat_map_ok(|(stream, endpoint)|
-                             Self::authn(authn, endpoint.clone(), stream)
-                             .map(|res| res.map(|res| (Some(res), endpoint)))
-                             .map_err(|err| SessionEntryStepError::AuthN {
-                                 err: err
-                             })),
-            SessionNegoEntry::AuthN { pending, endpoint } =>
-                Ok(authn
-                   .complete_negotiate(pending)
-                   .map_err(|err| SessionEntryStepError::AuthN {
-                       err: SessionEntryAuthNError::AuthN {
-                           err: err
-                       }
-                   })?
-                   .map_pending(|pending| SessionNegoEntry::AuthN {
-                       endpoint: endpoint.clone(),
-                       pending: pending
-                   })
-                   .map(|res| (Some(res.map(|session|
-                                            (SessionNegoEntry::Active {
-                                                endpoint: endpoint.clone()
-                                            }, session))),
-                                    endpoint))),
-            SessionNegoEntry::Active { endpoint } => {
-                endpoints.insert(endpoint.clone());
-
-                Ok(NegotiatorResult::Pending(SessionNegoEntry::Active {
-                    endpoint: endpoint
-                }))
-            }
-            SessionNegoEntry::Shutdown { pending, endpoint } =>
-                Ok(shutdown.complete_negotiate(pending)
-                   .map_err(|err| SessionEntryStepError::Shutdown { err: err })?
-                   .map_pending(|pending| SessionNegoEntry::Shutdown {
-                       endpoint: endpoint.clone(),
-                       pending: pending
-                   })
-                   .map(|mut val| {
-                       info!(target: "session-nego-entry",
-                             "shutdown session with {}",
-                             endpoint);
-
-                       val.deregister(registry);
-
-                       (None, endpoint)
-                   }))
-        }
-    }
-
-    fn handle_shutdown_result<Addr>(
-        registry: &Registry,
-        res: NegotiatorResult<Channel::ShutdownValue, Self>,
-        endpoint: Addr
-    ) -> Result<Option<Self>, std::io::Error>
-    where Addr: Display {
-        match res {
-            NegotiatorResult::Complete(mut val) => {
-                info!(target: "session-nego-entry",
-                      "shutdown session with {}",
-                      endpoint);
-
-                val.deregister(registry);
-
-                Ok(None)
-            }
-            NegotiatorResult::Pending(pending) => {
-                debug!(target: "session-nego-entry",
-                       "continuing shutdown negotiation with {}",
-                       endpoint);
-
-                Ok(Some(pending))
-            }
-        }
-    }
-
-    /// Consume this `SessionNegoEntry` and step negotiations forward.
+    /// Consume this `SessionNegoState` and step negotiations forward.
     ///
     /// This will advance negotiations as far as they can go, possibly
     /// to the point of completion.  It will create a new
-    /// `SessionNegoEntry` if the session is still going.
+    /// `SessionNegoState` if the session is still going.
     ///
     /// # Parameters
     ///
     /// - `endpoints`: A [HashSet] into which the endpoints for any
     ///   active sessions will be placed.
     ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
     /// - `channel`: The [NearChannel] definition to use.
     ///
     /// - `authn`: The [SessionAuthN] to use for authentication.
     ///
     /// - `shutdown`: The [Negotiator] to use for shutting down sessions.
-    ///
-    /// - `param`: The parameter to use to begin shutdown.
     ///
     /// # Return Values
     ///
@@ -870,12 +931,15 @@ where
 
     /// Shut down an active session.
     ///
-    /// This will consume the `SessionNegoEntry` and attempt shutdown
+    /// This will consume the `SessionNegoState` and attempt shutdown
     /// negotiations.  If negotiations cannot be concluded
-    /// immediately, a new `SessionNegoEntry` representing the pending
+    /// immediately, a new `SessionNegoState` representing the pending
     /// negotiations will be returned.
     ///
     /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
     ///
     /// - `shutdown`: The [Negotiator] to use for shutdown.
     ///
@@ -885,7 +949,7 @@ where
     ///
     /// # Return Value
     ///
-    /// - `Some(..)` if shutdown negotiations are still pending.
+    /// - `Some(self)` if shutdown negotiations are still pending.
     ///
     /// - `None` if the session was shut down successfully.
     fn shutdown(
@@ -901,8 +965,8 @@ where
             <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
         >
     > {
-        if let SessionNegoEntry::Active { endpoint } = self {
-            let res = SessionNegoEntry::do_shutdown(shutdown, param,
+        if let SessionNegoState::Active { endpoint } = self {
+            let res = SessionNegoState::do_shutdown(shutdown, param,
                                                     endpoint.clone(), stream)
                 .map_err(|err| SessionEntryShutdownError::Shutdown {
                     err: err
@@ -912,6 +976,132 @@ where
                 .map_err(|err| SessionEntryShutdownError::IO { err: err })
         } else {
             Err(SessionEntryShutdownError::NotActive)
+        }
+    }
+
+    fn do_shutdown(
+        shutdown: &Channel::ShutdownNego,
+        param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
+        endpoint: Channel::Endpoint,
+        stream: Channel::Conn,
+    ) -> Result<
+        NegotiatorResult<Channel::ShutdownValue, Self>,
+        ShutdownError<
+            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+        >
+    > {
+        let state = shutdown.start(param, stream)
+            .map_err(|err| ShutdownError::Start { err: err })?;
+
+        Ok(shutdown.negotiate(state)
+           .map_err(|err| ShutdownError::Negotiate {
+               err: err
+           })?
+           .map_pending(|pending| SessionNegoState::Shutdown {
+               endpoint: endpoint,
+               pending: pending
+           }))
+    }
+
+    fn do_step(
+        self,
+        endpoints: &mut HashSet<Channel::Endpoint>,
+        registry: &Registry,
+        channel: &Channel,
+        authn: &AuthN,
+        shutdown: &Channel::ShutdownNego,
+    ) -> Result<
+        NegotiatorResult<
+            (Option<AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>>,
+             Channel::Endpoint),
+            Self
+        >,
+        SessionEntryStepError<
+            Channel::NegotiateError,
+            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+        >
+    > {
+        match self {
+            SessionNegoState::Session { pending } => channel
+                .complete_negotiate(pending)
+                .map_err(|err| SessionEntryStepError::Session { err: err })?
+                .map_pending(|pending| SessionNegoState::Session {
+                    pending: pending
+                })
+                .flat_map_ok(|(stream, endpoint)|
+                             Self::authn(authn, endpoint.clone(), stream)
+                             .map(|res| res.map(|res| (Some(res), endpoint)))
+                             .map_err(|err| SessionEntryStepError::AuthN {
+                                 err: err
+                             })),
+            SessionNegoState::AuthN { pending, endpoint } =>
+                Ok(authn
+                   .complete_negotiate(pending)
+                   .map_err(|err| SessionEntryStepError::AuthN {
+                       err: SessionEntryAuthNError::AuthN {
+                           err: err
+                       }
+                   })?
+                   .map_pending(|pending| SessionNegoState::AuthN {
+                       endpoint: endpoint.clone(),
+                       pending: pending
+                   })
+                   .map(|res| (Some(res.map(|session|
+                                            (SessionNegoState::Active {
+                                                endpoint: endpoint.clone()
+                                            }, session))),
+                                    endpoint))),
+            SessionNegoState::Active { endpoint } => {
+                endpoints.insert(endpoint.clone());
+
+                Ok(NegotiatorResult::Pending(SessionNegoState::Active {
+                    endpoint: endpoint
+                }))
+            }
+            SessionNegoState::Shutdown { pending, endpoint } =>
+                Ok(shutdown.complete_negotiate(pending)
+                   .map_err(|err| SessionEntryStepError::Shutdown { err: err })?
+                   .map_pending(|pending| SessionNegoState::Shutdown {
+                       endpoint: endpoint.clone(),
+                       pending: pending
+                   })
+                   .map(|mut val| {
+                       info!(target: "session-nego-entry",
+                             "shutdown session with {}",
+                             endpoint);
+
+                       val.deregister(registry);
+
+                       (None, endpoint)
+                   }))
+        }
+    }
+
+    fn handle_shutdown_result<Addr>(
+        registry: &Registry,
+        res: NegotiatorResult<Channel::ShutdownValue, Self>,
+        endpoint: Addr
+    ) -> Result<Option<Self>, std::io::Error>
+    where Addr: Display {
+        match res {
+            NegotiatorResult::Complete(mut val) => {
+                info!(target: "session-nego-entry",
+                      "shutdown session with {}",
+                      endpoint);
+
+                val.deregister(registry);
+
+                Ok(None)
+            }
+            NegotiatorResult::Pending(pending) => {
+                debug!(target: "session-nego-entry",
+                       "continuing shutdown negotiation with {}",
+                       endpoint);
+
+                Ok(Some(pending))
+            }
         }
     }
 }
@@ -925,6 +1115,32 @@ where
     AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
     AuthN::NegotiateError: ScopedError,
 {
+    /// Create a new `ConnectorEntry`.
+    ///
+    /// This will attempt to negotiate and authenticate a new session.
+    /// If negotiations succeed immediately, then the authenticated
+    /// session will be returned immediately as well.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `channel`: The [NearChannel] definition to use.
+    ///
+    /// - `authn`: The [SessionAuthN] to use for authentication.
+    ///
+    /// - `retry`: The [Retry] configuration to use if negotiations fail.
+    ///
+    /// - `token`: The [Token] associated with this `ConnectorEntry`.
+    ///
+    /// # Return Values
+    ///
+    /// - `RetryResult::Success((self, Some(session)))`: If a session
+    ///   was successfully negotiated.
+    ///
+    /// - `RetryResult::Success((self, None))`: If negotiations could
+    ///   not be concluded, or concluded but did not yield a session.
     fn create(
         registry: &Registry,
         mut channel: Channel,
@@ -967,6 +1183,38 @@ where
             })
     }
 
+    /// Listen for input and step negotiations forward as far as
+    /// possible.
+    ///
+    /// This will advance negotiations as far as they can go, possibly
+    /// to the point of completion.  It will create a new
+    /// `SessionNegoState` if the session is still going.
+    ///
+    /// If the session was already active, the counterparty address
+    /// will be added to `endpoints`.
+    ///
+    /// # Parameters
+    ///
+    /// - `endpoints`: A [HashSet] into which the endpoints for any
+    ///   active sessions will be placed.
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `authn`: The [SessionAuthN] to use for authentication.
+    ///
+    /// - `retry`: The [Retry] configuration to use if negotiations fail.
+    ///
+    /// - `token`: The [Token] associated with this `ConnectorEntry`.
+    ///
+    /// # Return Values
+    ///
+    /// - `RetryResult::Success(Some(session))`: If a session
+    ///   was successfully negotiated.
+    ///
+    /// - `RetryResult::Success(None)`: If negotiations could not be
+    ///   concluded, or concluded but did not yield a session, or the
+    ///   session was already active.
     fn step(
         &mut self,
         endpoints: &mut HashSet<Channel::Endpoint>,
@@ -1037,6 +1285,24 @@ where
         }
     }
 
+    /// Shut down an active session.
+    ///
+    /// This will attempt to run shutdown negotiations as far as
+    /// possible.  It will return a `bool` indicating whether the
+    /// shutdown was completed.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// - `true`: Shutdown negotiations are finished.
+    ///
+    /// - `false`: Shutdown negotiations are still pending.
     fn shutdown(
         &mut self,
         registry: &Registry,
@@ -1060,6 +1326,7 @@ where
         Ok(out)
     }
 
+    // XXX Get rid of this variant if possible.
     fn do_shutdown(
         &mut self,
         registry: &Registry,
@@ -1072,12 +1339,12 @@ where
             <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
         >
     > {
-        let res = SessionNegoEntry::do_shutdown(&self.shutdown,
+        let res = SessionNegoState::do_shutdown(&self.shutdown,
                                                 &self.channel.shutdown_param(),
                                                 endpoint.clone(), stream)
             .map_err(|err| SessionEntryShutdownError::Shutdown { err: err })?;
 
-        self.state = SessionNegoEntry::handle_shutdown_result(registry, res,
+        self.state = SessionNegoState::handle_shutdown_result(registry, res,
                                                               endpoint)
             .map_err(|err| SessionEntryShutdownError::IO { err: err })?;
 
@@ -1103,7 +1370,7 @@ where
             >
         >
     > {
-        match SessionNegoEntry::session(&self.channel, authn, state) {
+        match SessionNegoState::session(&self.channel, authn, state) {
             Ok(NegotiatorResult::Complete((AuthNResult::Accept((out, session)),
                                            endpoint))) => {
                 info!(target: "connector-entry",
@@ -1199,7 +1466,7 @@ where
         registry: &Registry,
         authn: &AuthN,
         retry: &Retry,
-        state: SessionNegoEntry<Channel, AuthN>
+        state: SessionNegoState<Channel, AuthN>
     ) -> Result<
         Option<AuthN::AuthNSession>,
         SessionEntryStepError<
@@ -1332,49 +1599,6 @@ where
     }
 }
 
-#[derive(Debug)]
-pub enum ChannelEntryReqError<Channel, Entry> {
-    /// Error creating the channel instance.
-    Channel {
-        /// Error that occurred creating the channel instance.
-        err: Channel
-    },
-    /// Error creating the [ConnectorEntry].
-    Entry {
-    /// The error that occurred creating the [ConnectorEntry].
-        err: Entry
-    },
-    /// The given endpoint was already requested.
-    Collision,
-    /// Token generator was exhausted.
-    NoTokens,
-    /// Trying to request a stream from an inbound-only channel.
-    Inbound
-}
-
-#[derive(Debug)]
-pub enum ChannelEntryShutdownError<Shutdown, Endpoint> {
-    Shutdown {
-        err: Shutdown
-    },
-    IO {
-        err: std::io::Error
-    },
-    NotFound {
-        endpoint: Endpoint
-    },
-    Inconsistent,
-    Mismatch
-}
-
-#[derive(Debug)]
-pub enum ChannelEntryListenError<Start> {
-    Start {
-        err: Start
-    },
-    NoTokens
-}
-
 impl<Accept, Conn, AcceptAuthN, ConnAuthN>
     ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>
 where
@@ -1394,6 +1618,456 @@ where
     AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
     AcceptAuthN::NegotiateError: ScopedError
 {
+    /// Request a stream for a given endpoint.
+    ///
+    /// This will attempt to negotiate and authenticate a session with
+    /// the given endpoint.  If negotiations can be concluded
+    /// immediately, then the authenticated session will be returned.
+    /// Otherwise, the request will remain active and will eventually
+    /// be returned by [listen](ChannelEntry::listen).  Subsequent calls
+    /// to this function with the same `endpoint` will return an
+    /// error.
+    ///
+    /// If a session is obtained from a call to this function, it must
+    /// be shut down with [shutdown_conn](FlowsEntry::shutdown_conn)
+    /// to properly handle shutdown negotiations and cleanup.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution
+    ///   caches.
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `ctx`: Context from which to obtain name resolution caches.
+    ///
+    /// - `gentok`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to register nonblocking I/O.
+    ///
+    /// - `endpoint`: Counterparty's address.
+    ///
+    /// - `verify_endpoint`: Override to use for SSL verification.
+    ///
+    /// # Return Value
+    ///
+    /// - `RetryResult::Success(Some(session))`: The session was fully
+    ///   negotiated.
+    ///
+    /// - `RetryResult::Success(None))`: Session negotiations are
+    ///   still pending and the session will eventually be reported by
+    ///   [listen](ChannelEntry::listen).
+    pub(crate) fn req_stream<Ctx, I>(
+        &mut self,
+        ctx: &mut Ctx,
+        gentok: &mut Peekable<I>,
+        registry: &Registry,
+        endpoint: Conn::Endpoint,
+        verify_endpoint: Option<&IPEndpointAddr>
+    ) -> Result<
+        RetryResult<Option<ConnAuthN::AuthNSession>>,
+        ChannelEntryReqError<
+            Conn::CreateError,
+            ConnectorEntryCreateError<
+                Conn::StartError,
+                SessionCreateError<
+                    NegoEntrySessionError<
+                        Conn::NegotiateError,
+                        SessionEntryAuthNError<ConnAuthN::StartError, ConnAuthN::NegotiateError>
+                    >,
+                    SessionEntryShutdownError<
+                        <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::StartError,
+                        <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError
+                    >
+                >
+            >
+        >
+    >
+    where
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx
+    {
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                config, conn_tokens, negos, out_authn, ..
+            } => if !conn_tokens.contains_key(&endpoint) {
+                let token = gentok.peek()
+                    .ok_or(ChannelEntryReqError::NoTokens)?;
+                let conn = Conn::create_with_endpoint(ctx, config.clone(),
+                                                      endpoint, verify_endpoint)
+                    .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
+
+                Ok(ConnectorEntry::create(registry, conn, out_authn,
+                                          &self.retry, *token)
+                   .map_err(|err| ChannelEntryReqError::Entry { err: err })?
+                   .map(|(ent, out)| {
+                       let ent = DuplexValue::Conn(ent);
+                       let _ = gentok.next();
+
+                       if conn_tokens.insert(endpoint, *token).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       if negos.insert(*token, ent).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       out
+                   }))
+            } else {
+                Err(ChannelEntryReqError::Collision)
+            }
+            ChannelMode::Outbound {
+                config, tokens, negos, authn, ..
+            } => if !tokens.contains_key(&endpoint) {
+                let token = gentok.peek()
+                    .ok_or(ChannelEntryReqError::NoTokens)?;
+                let conn = Conn::create_with_endpoint(ctx, config.clone(),
+                                                      endpoint, verify_endpoint)
+                    .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
+
+                Ok(ConnectorEntry::create(registry, conn, authn,
+                                          &self.retry, *token)
+                   .map_err(|err| ChannelEntryReqError::Entry { err: err })?
+                   .map(|(ent, out)| {
+                       let _ = gentok.next();
+
+                       if tokens.insert(endpoint, *token).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       if negos.insert(*token, ent).is_some() {
+                           error!(target: "channel-entry",
+                                  "tokens table should not contain an entry");
+                       }
+
+                       out
+                   }))
+            } else {
+                Err(ChannelEntryReqError::Collision)
+            }
+            ChannelMode::Inbound { .. } => Err(ChannelEntryReqError::Inbound)
+        }
+    }
+
+    /// Listen for incoming traffic and new sessions for this channel.
+    ///
+    /// This will fully exhaust all incoming traffic corresponding to
+    /// any [Token] in `tokens`.  All pending negotiations will be
+    /// updated, and any new sessions will be reported.  If any new
+    /// connections are found, then negotiations will begin for them.
+    ///
+    /// New authenticated sessions will be reported in `in_sessions`
+    /// and `out_sessions`.  Traffic on existing active sessions will
+    /// be reported in `in_endpoints` and `out_endpoints`.  Any
+    /// sessions that are shut down will be unregistered.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `gentok`: Generator for [Token]s.
+    ///
+    /// - `out_sessions`: Buffer for new authenticated outbound sessions.
+    ///
+    /// - `in_sessions`: Buffer for new authenticated inbound sessions.
+    ///
+    /// - `out_endpoints`: Set of all active outbound sessions that
+    ///   have pending traffic.
+    ///
+    /// - `in_endpoints`: Set of all active inbound sessions that have
+    ///   pending traffic.
+    ///
+    /// - `registry`: [Registry] to use to register nonblocking I/O.
+    ///
+    /// - `live`: All [Token]s that have pending read traffic.
+    fn listen<I>(
+        &mut self,
+        gentok: &mut Peekable<I>,
+        out_sessions: &mut Vec<ConnAuthN::AuthNSession>,
+        in_sessions: &mut Vec<AcceptAuthN::AuthNSession>,
+        out_endpoints: &mut HashSet<Conn::Endpoint>,
+        in_endpoints: &mut HashSet<Accept::Endpoint>,
+        registry: &Registry,
+        live: &HashSet<Token>,
+    ) -> Result<
+        (),
+        ChannelEntryListenError<Accept::StartError>
+    >
+    where
+        I: Iterator<Item = Token>
+    {
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                negos, out_authn, retry_when, acceptor, shutdown,
+                in_authn, accept_tokens, token, ..
+            } => while {
+                let mut read = false;
+
+                // Pick up all incoming sessions.
+                let incoming = if live.contains(token) {
+                    let incoming = Self::start_incoming(gentok, in_sessions,
+                                                        retry_when, &mut read,
+                                                        registry, acceptor,
+                                                        shutdown, in_authn)?;
+
+                    incoming
+                } else {
+                    None
+                };
+
+                let mut deletes = Vec::with_capacity(negos.len());
+
+                // Process all live existing sessions.
+                for (token, ent) in negos.iter_mut() {
+                    let now = Instant::now();
+
+                    match ent {
+                        DuplexValue::Conn(ent) => if ent
+                            .when.map_or(false, |when| when < now) ||
+                            live.contains(token) {
+                                match ent.step(out_endpoints, registry,
+                                               out_authn, &self.retry,
+                                               *token) {
+                                    // Session was produced; record it.
+                                    Ok(RetryResult::Success(Some(session))) => {
+                                        out_sessions.push(session);
+                                    }
+                                    // Record a deferral.
+                                    Ok(RetryResult::Retry(when)) => if ent.when
+                                        .map_or(true, |curr| curr < when) {
+                                            ent.when = Some(when);
+                                        }
+                                    // We don't delete outgoing
+                                    // entries that fail to connect.
+                                    Ok(RetryResult::Success(None)) => {}
+                                    Err(err) => {
+                                        error!(target: "channel-entry",
+                                               "negotiation step error: {}",
+                                               err);
+                                    }
+                                }
+                            },
+                        DuplexValue::Accept(ent) => if live
+                            .contains(token) {
+                                if let Some(state) = ent.take() {
+                                    match state.step(in_endpoints, registry,
+                                                     acceptor, in_authn,
+                                                     shutdown) {
+                                        // Session was produced; record it.
+                                        Ok(Some((state, session))) => {
+                                            *ent = Some(state);
+
+                                            if let Some(session) = session {
+                                                in_sessions.push(session);
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            deletes.push(*token)
+                                        }
+                                        Err(err) => {
+                                            error!(target: "channel-entry",
+                                                   "negotiation step error: {}",
+                                                   err);
+
+                                            deletes.push(*token)
+                                        }
+                                    }
+                                } else {
+                                    error!(target: "channel-entry",
+                                           "empty entry state for token {:?}",
+                                           token);
+                                }
+                            }
+                    }
+                }
+
+                // Delete expired entries.
+                for token in deletes {
+                    if negos.remove(&token).is_none() {
+                        error!(target: "channel-entry",
+                               "deleted token {:?} was not present",
+                               token);
+                    }
+                }
+
+                // Add the incoming sessions if we have them.
+                if let Some(incoming) = incoming {
+                    for (token, ent) in incoming {
+                        let endpoint: Option<&Accept::Endpoint> =
+                            match &ent {
+                                SessionNegoState::AuthN { endpoint, .. } |
+                                SessionNegoState::Active { endpoint } |
+                                SessionNegoState::Shutdown {
+                                    endpoint, ..
+                                } => Some(endpoint),
+                                SessionNegoState::Session { .. } => None
+                            };
+
+                        if let Some(endpoint) = endpoint {
+                            if accept_tokens.insert(endpoint.clone(),
+                                                    token.clone())
+                                .is_some() {
+                                error!(target: "channel-entry",
+                                       "tokens contains entry for {}",
+                                       endpoint);
+                            }
+                        }
+
+                        let ent = DuplexValue::Accept(Some(ent));
+
+                        if negos.insert(token, ent).is_some() {
+                            error!(target: "channel-entry",
+                                   "sessions contains entry for {:?}",
+                                   token);
+                        }
+                    }
+                }
+
+                read
+            } {}
+            ChannelMode::Outbound { negos, authn, .. } =>
+                for (token, ent) in negos.iter_mut() {
+                    let now = Instant::now();
+
+                    if ent.when.map_or(false, |when| when < now) ||
+                        live.contains(token) {
+                        match ent.step(out_endpoints, registry, authn,
+                                       &self.retry, *token) {
+                            // Session was produced; record it.
+                            Ok(RetryResult::Success(Some(session))) => {
+                                out_sessions.push(session);
+                            }
+                            // Record a deferral.
+                            Ok(RetryResult::Retry(when)) => if ent.when
+                                .map_or(true, |curr| curr < when) {
+                                ent.when = Some(when);
+                            }
+                            // We don't delete outgoing entries that fail
+                            // to connect.
+                            Ok(RetryResult::Success(None)) => {}
+                            Err(err) => {
+                                error!(target: "channel-entry",
+                                       "negotiation step error: {}",
+                                       err);
+                            }
+                        }
+                    }
+                }
+            ChannelMode::Inbound {
+                tokens, negos, shutdown, acceptor, authn, retry_when, token
+            } => while {
+                let mut read = false;
+
+                // Pick up all incoming sessions.
+                let incoming = if live.contains(token) {
+                    Self::start_incoming(gentok, in_sessions,
+                                         retry_when, &mut read,
+                                         registry, acceptor,
+                                         shutdown, authn)?
+                } else {
+                    None
+                };
+
+                let mut deletes = Vec::with_capacity(negos.len());
+
+                // Process all live existing sessions.
+                for (token, ent) in negos.iter_mut() {
+                    if live.contains(token) {
+                        if let Some(state) = ent.take() {
+                            match state.step(in_endpoints, registry, acceptor,
+                                             authn, shutdown) {
+                                // Session was produced; record it.
+                                Ok(Some((state, session))) => {
+                                    *ent = Some(state);
+
+                                    if let Some(session) = session {
+                                        in_sessions.push(session);
+                                    }
+                                }
+                                Ok(None) => {
+                                    deletes.push(*token)
+                                }
+                                Err(err) => {
+                                    error!(target: "channel-entry",
+                                           "negotiation step error: {}",
+                                           err);
+                                }
+                            }
+                        } else {
+                            error!(target: "channel-entry",
+                                   "empty entry state for token {:?}",
+                                   token);
+                        }
+                    }
+                }
+
+                // Delete expired entries.
+                for token in deletes {
+                    if negos.remove(&token).is_none() {
+                        error!(target: "channel-entry",
+                               "deleted token {:?} was not present",
+                               token);
+                    }
+                }
+
+                // Add the incoming sessions if we have them.
+                if let Some(incoming) = incoming {
+                    for (token, ent) in incoming {
+                        let endpoint: Option<&Accept::Endpoint> =
+                            match &ent {
+                                SessionNegoState::AuthN { endpoint, .. } |
+                                SessionNegoState::Active { endpoint } |
+                                SessionNegoState::Shutdown {
+                                    endpoint, ..
+                                } => Some(endpoint),
+                                SessionNegoState::Session { .. } => None
+                            };
+
+                        if let Some(endpoint) = endpoint {
+                            if tokens.insert(endpoint.clone(),
+                                             token.clone())
+                                .is_some() {
+                                error!(target: "channel-entry",
+                                       "tokens contains entry for {}",
+                                       endpoint);
+                            }
+                        }
+
+                        if negos.insert(token, Some(ent)).is_some() {
+                            error!(target: "channel-entry",
+                                   "sessions contains entry for {:?}",
+                                   token);
+                        }
+                    }
+                }
+
+                read
+            } {}
+        }
+
+        Ok(())
+    }
+
+    /// Shut down an outbound (connected) session.
+    ///
+    /// This will consume `stream` and attempt to run shutdown
+    /// negotiations as far as possible.  Once `stream` is shut down,
+    /// it will be deregistered.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `stream`: The [Session] to shut down.
     fn shutdown_conn(
         &mut self,
         registry: &Registry,
@@ -1417,7 +2091,7 @@ where
                 conn_tokens, negos, ..
             } => if let Entry::Occupied(ent) =
                 conn_tokens.entry(endpoint.clone()) {
-                if let DuplexValue::Conn { conn } = negos
+                if let DuplexValue::Conn(conn) = negos
                     .get_mut(ent.get())
                     .ok_or(ChannelEntryShutdownError::Inconsistent)? {
                     let delete = conn.shutdown(registry, stream)
@@ -1475,6 +2149,18 @@ where
         }
     }
 
+    /// Shut down an inbound (accepted) session.
+    ///
+    /// This will consume `stream` and attempt to run shutdown
+    /// negotiations as far as possible.  Once `stream` is shut down,
+    /// it will be deregistered.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `stream`: The [Session] to shut down.
     fn shutdown_accept(
         &mut self,
         registry: &Registry,
@@ -1498,7 +2184,7 @@ where
                 accept_tokens, negos, shutdown, acceptor, ..
             } => if let Entry::Occupied(ent) = accept_tokens
                 .entry(endpoint.clone()) {
-                if let DuplexValue::Accept { accept } = negos
+                if let DuplexValue::Accept(accept) = negos
                     .get_mut(ent.get())
                     .ok_or(ChannelEntryShutdownError::Inconsistent)? {
                     let newaccept = accept.take()
@@ -1574,102 +2260,6 @@ where
         }
     }
 
-    fn req_stream<Ctx, I>(
-        &mut self,
-        ctx: &mut Ctx,
-        gentok: &mut Peekable<I>,
-        registry: &Registry,
-        endpoint: Conn::Endpoint,
-        verify_endpoint: Option<&IPEndpointAddr>
-    ) -> Result<
-        RetryResult<Option<ConnAuthN::AuthNSession>>,
-        ChannelEntryReqError<
-            Conn::CreateError,
-            ConnectorEntryCreateError<
-                Conn::StartError,
-                SessionCreateError<
-                    NegoEntrySessionError<
-                        Conn::NegotiateError,
-                        SessionEntryAuthNError<ConnAuthN::StartError, ConnAuthN::NegotiateError>
-                    >,
-                    SessionEntryShutdownError<
-                        <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::StartError,
-                        <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError
-                    >
-                >
-            >
-        >
-    >
-    where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx
-    {
-        match &mut self.mode {
-            ChannelMode::Duplex {
-                config, conn_tokens, negos, out_authn, ..
-            } => if !conn_tokens.contains_key(&endpoint) {
-                let token = gentok.peek()
-                    .ok_or(ChannelEntryReqError::NoTokens)?;
-                let conn = Conn::create_with_endpoint(ctx, config.clone(),
-                                                      endpoint, verify_endpoint)
-                    .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
-
-                Ok(ConnectorEntry::create(registry, conn, out_authn,
-                                          &self.retry, *token)
-                   .map_err(|err| ChannelEntryReqError::Entry { err: err })?
-                   .map(|(ent, out)| {
-                       let ent = DuplexValue::Conn { conn: ent };
-                       let _ = gentok.next();
-
-                       if conn_tokens.insert(endpoint, *token).is_some() {
-                           error!(target: "channel-entry",
-                                  "tokens table should not contain an entry");
-                       }
-
-                       if negos.insert(*token, ent).is_some() {
-                           error!(target: "channel-entry",
-                                  "tokens table should not contain an entry");
-                       }
-
-                       out
-                   }))
-            } else {
-                Err(ChannelEntryReqError::Collision)
-            }
-            ChannelMode::Outbound {
-                config, tokens, negos, authn, ..
-            } => if !tokens.contains_key(&endpoint) {
-                let token = gentok.peek()
-                    .ok_or(ChannelEntryReqError::NoTokens)?;
-                let conn = Conn::create_with_endpoint(ctx, config.clone(),
-                                                      endpoint, verify_endpoint)
-                    .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
-
-                Ok(ConnectorEntry::create(registry, conn, authn,
-                                          &self.retry, *token)
-                   .map_err(|err| ChannelEntryReqError::Entry { err: err })?
-                   .map(|(ent, out)| {
-                       let _ = gentok.next();
-
-                       if tokens.insert(endpoint, *token).is_some() {
-                           error!(target: "channel-entry",
-                                  "tokens table should not contain an entry");
-                       }
-
-                       if negos.insert(*token, ent).is_some() {
-                           error!(target: "channel-entry",
-                                  "tokens table should not contain an entry");
-                       }
-
-                       out
-                   }))
-            } else {
-                Err(ChannelEntryReqError::Collision)
-            }
-            ChannelMode::Inbound { .. } => Err(ChannelEntryReqError::Inbound)
-        }
-    }
-
     fn start_incoming<I>(
         gentok: &mut Peekable<I>,
         sessions: &mut Vec<AcceptAuthN::AuthNSession>,
@@ -1680,7 +2270,7 @@ where
         shutdown: &Accept::ShutdownNego,
         authn: &AcceptAuthN,
     ) -> Result<
-        Option<Vec<(Token, SessionNegoEntry<Accept, AcceptAuthN>)>>,
+        Option<Vec<(Token, SessionNegoState<Accept, AcceptAuthN>)>>,
         ChannelEntryListenError<Accept::StartError>
     >
     where
@@ -1733,7 +2323,7 @@ where
             let mut out = Vec::with_capacity(incoming.len());
 
             for (token, state) in incoming.drain(..) {
-                match SessionNegoEntry::create(registry, accept, authn,
+                match SessionNegoState::create(registry, accept, authn,
                                                shutdown, state) {
                     Ok(Some((ent, session))) => {
                         out.push((token, ent));
@@ -1763,277 +2353,6 @@ where
             Ok(None)
         }
     }
-
-    fn listen<Ctx, I>(
-        &mut self,
-        gentok: &mut Peekable<I>,
-        out_sessions: &mut Vec<ConnAuthN::AuthNSession>,
-        in_sessions: &mut Vec<AcceptAuthN::AuthNSession>,
-        out_endpoints: &mut HashSet<Conn::Endpoint>,
-        in_endpoints: &mut HashSet<Accept::Endpoint>,
-        registry: &Registry,
-        live: &HashSet<Token>,
-    ) -> Result<
-        (),
-        ChannelEntryListenError<Accept::StartError>
-    >
-    where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx
-    {
-        match &mut self.mode {
-            ChannelMode::Duplex {
-                negos, out_authn, retry_when, acceptor, shutdown,
-                in_authn, accept_tokens, token, ..
-            } => while {
-                let mut read = false;
-
-                // Pick up all incoming sessions.
-                let incoming = if live.contains(token) {
-                    let incoming = Self::start_incoming(gentok, in_sessions,
-                                                        retry_when, &mut read,
-                                                        registry, acceptor,
-                                                        shutdown, in_authn)?;
-
-                    incoming
-                } else {
-                    None
-                };
-
-                let mut deletes = Vec::with_capacity(negos.len());
-
-                // Process all live existing sessions.
-                for (token, ent) in negos.iter_mut() {
-                    let now = Instant::now();
-
-                    match ent {
-                        DuplexValue::Conn { conn: ent } => if ent
-                            .when.map_or(false, |when| when < now) ||
-                            live.contains(token) {
-                                match ent.step(out_endpoints, registry,
-                                               out_authn, &self.retry,
-                                               *token) {
-                                    // Session was produced; record it.
-                                    Ok(RetryResult::Success(Some(session))) => {
-                                        out_sessions.push(session);
-                                    }
-                                    // Record a deferral.
-                                    Ok(RetryResult::Retry(when)) => if ent.when
-                                        .map_or(true, |curr| curr < when) {
-                                            ent.when = Some(when);
-                                        }
-                                    // We don't delete outgoing
-                                    // entries that fail to connect.
-                                    Ok(RetryResult::Success(None)) => {}
-                                    Err(err) => {
-                                        error!(target: "channel-entry",
-                                               "negotiation step error: {}",
-                                               err);
-                                    }
-                                }
-                            },
-                        DuplexValue::Accept { accept: ent } => if live
-                            .contains(token) {
-                                if let Some(state) = ent.take() {
-                                    match state.step(in_endpoints, registry,
-                                                     acceptor, in_authn,
-                                                     shutdown) {
-                                        // Session was produced; record it.
-                                        Ok(Some((state, session))) => {
-                                            *ent = Some(state);
-
-                                            if let Some(session) = session {
-                                                in_sessions.push(session);
-                                            }
-                                        }
-                                        Ok(None) => {
-                                            deletes.push(*token)
-                                        }
-                                        Err(err) => {
-                                            error!(target: "channel-entry",
-                                                   "negotiation step error: {}",
-                                                   err);
-
-                                            deletes.push(*token)
-                                        }
-                                    }
-                                } else {
-                                    error!(target: "channel-entry",
-                                           "empty entry state for token {:?}",
-                                           token);
-                                }
-                            }
-                    }
-                }
-
-                // Delete expired entries.
-                for token in deletes {
-                    if negos.remove(&token).is_none() {
-                        error!(target: "channel-entry",
-                               "deleted token {:?} was not present",
-                               token);
-                    }
-                }
-
-                // Add the incoming sessions if we have them.
-                if let Some(incoming) = incoming {
-                    for (token, ent) in incoming {
-                        let endpoint: Option<&Accept::Endpoint> =
-                            match &ent {
-                                SessionNegoEntry::AuthN { endpoint, .. } |
-                                SessionNegoEntry::Active { endpoint } |
-                                SessionNegoEntry::Shutdown {
-                                    endpoint, ..
-                                } => Some(endpoint),
-                                SessionNegoEntry::Session { .. } => None
-                            };
-
-                        if let Some(endpoint) = endpoint {
-                            if accept_tokens.insert(endpoint.clone(),
-                                                    token.clone())
-                                .is_some() {
-                                error!(target: "channel-entry",
-                                       "tokens contains entry for {}",
-                                       endpoint);
-                            }
-                        }
-
-                        let ent = DuplexValue::Accept { accept: Some(ent) };
-
-                        if negos.insert(token, ent).is_some() {
-                            error!(target: "channel-entry",
-                                   "sessions contains entry for {:?}",
-                                   token);
-                        }
-                    }
-                }
-
-                read
-            } {}
-            ChannelMode::Outbound { negos, authn, .. } =>
-                for (token, ent) in negos.iter_mut() {
-                    let now = Instant::now();
-
-                    if ent.when.map_or(false, |when| when < now) ||
-                        live.contains(token) {
-                        match ent.step(out_endpoints, registry, authn,
-                                       &self.retry, *token) {
-                            // Session was produced; record it.
-                            Ok(RetryResult::Success(Some(session))) => {
-                                out_sessions.push(session);
-                            }
-                            // Record a deferral.
-                            Ok(RetryResult::Retry(when)) => if ent.when
-                                .map_or(true, |curr| curr < when) {
-                                ent.when = Some(when);
-                            }
-                            // We don't delete outgoing entries that fail
-                            // to connect.
-                            Ok(RetryResult::Success(None)) => {}
-                            Err(err) => {
-                                error!(target: "channel-entry",
-                                       "negotiation step error: {}",
-                                       err);
-                            }
-                        }
-                    }
-                }
-            ChannelMode::Inbound {
-                tokens, negos, shutdown, acceptor, authn, retry_when, token
-            } => while {
-                let mut read = false;
-
-                // Pick up all incoming sessions.
-                let incoming = if live.contains(token) {
-                    let incoming = Self::start_incoming(gentok, in_sessions,
-                                                        retry_when, &mut read,
-                                                        registry, acceptor,
-                                                        shutdown, authn)?;
-
-                    incoming
-                } else {
-                    None
-                };
-
-                let mut deletes = Vec::with_capacity(negos.len());
-
-                // Process all live existing sessions.
-                for (token, ent) in negos.iter_mut() {
-                    if live.contains(token) {
-                        if let Some(state) = ent.take() {
-                            match state.step(in_endpoints, registry, acceptor,
-                                             authn, shutdown) {
-                                // Session was produced; record it.
-                                Ok(Some((state, session))) => {
-                                    *ent = Some(state);
-
-                                    if let Some(session) = session {
-                                        in_sessions.push(session);
-                                    }
-                                }
-                                Ok(None) => {
-                                    deletes.push(*token)
-                                }
-                                Err(err) => {
-                                    error!(target: "channel-entry",
-                                           "negotiation step error: {}",
-                                           err);
-                                }
-                            }
-                        } else {
-                            error!(target: "channel-entry",
-                                   "empty entry state for token {:?}",
-                                   token);
-                        }
-                    }
-                }
-
-                // Delete expired entries.
-                for token in deletes {
-                    if negos.remove(&token).is_none() {
-                        error!(target: "channel-entry",
-                               "deleted token {:?} was not present",
-                               token);
-                    }
-                }
-
-                // Add the incoming sessions if we have them.
-                if let Some(incoming) = incoming {
-                    for (token, ent) in incoming {
-                        let endpoint: Option<&Accept::Endpoint> =
-                            match &ent {
-                                SessionNegoEntry::AuthN { endpoint, .. } |
-                                SessionNegoEntry::Active { endpoint } |
-                                SessionNegoEntry::Shutdown {
-                                    endpoint, ..
-                                } => Some(endpoint),
-                                SessionNegoEntry::Session { .. } => None
-                            };
-
-                        if let Some(endpoint) = endpoint {
-                            if tokens.insert(endpoint.clone(),
-                                             token.clone())
-                                .is_some() {
-                                error!(target: "channel-entry",
-                                       "tokens contains entry for {}",
-                                       endpoint);
-                            }
-                        }
-
-                        if negos.insert(token, Some(ent)).is_some() {
-                            error!(target: "channel-entry",
-                                   "sessions contains entry for {:?}",
-                                   token);
-                        }
-                    }
-                }
-
-                read
-            } {}
-        }
-
-        Ok(())
-    }
 }
 
 impl<Accept, Conn> Read for DuplexValue<Accept, Conn>
@@ -2044,8 +2363,8 @@ where Conn: Read,
         buf: &mut [u8]
     ) -> Result<usize, std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.read(buf),
-            DuplexValue::Accept { accept } => accept.read(buf),
+            DuplexValue::Conn(conn) => conn.read(buf),
+            DuplexValue::Accept(accept) => accept.read(buf),
         }
     }
 
@@ -2054,8 +2373,8 @@ where Conn: Read,
         buf: &mut [IoSliceMut<'_>]
     ) -> Result<usize, std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.read_vectored(buf),
-            DuplexValue::Accept { accept } => accept.read_vectored(buf),
+            DuplexValue::Conn(conn) => conn.read_vectored(buf),
+            DuplexValue::Accept(accept) => accept.read_vectored(buf),
         }
     }
 
@@ -2064,8 +2383,8 @@ where Conn: Read,
         buf: &mut [u8]
     ) -> Result<(), std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.read_exact(buf),
-            DuplexValue::Accept { accept } => accept.read_exact(buf),
+            DuplexValue::Conn(conn) => conn.read_exact(buf),
+            DuplexValue::Accept(accept) => accept.read_exact(buf),
         }
     }
 }
@@ -2078,8 +2397,8 @@ where Conn: Write,
         buf: &[u8]
     ) -> Result<usize, std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.write(buf),
-            DuplexValue::Accept { accept } => accept.write(buf),
+            DuplexValue::Conn(conn) => conn.write(buf),
+            DuplexValue::Accept(accept) => accept.write(buf),
         }
     }
 
@@ -2087,8 +2406,8 @@ where Conn: Write,
         &mut self,
     ) -> Result<(), std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.flush(),
-            DuplexValue::Accept { accept } => accept.flush()
+            DuplexValue::Conn(conn) => conn.flush(),
+            DuplexValue::Accept(accept) => accept.flush()
         }
     }
 
@@ -2097,8 +2416,8 @@ where Conn: Write,
         buf: &[IoSlice<'_>]
     ) -> Result<usize, std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.write_vectored(buf),
-            DuplexValue::Accept { accept } => accept.write_vectored(buf),
+            DuplexValue::Conn(conn) => conn.write_vectored(buf),
+            DuplexValue::Accept(accept) => accept.write_vectored(buf),
         }
     }
 
@@ -2107,8 +2426,8 @@ where Conn: Write,
         buf: &[u8]
     ) -> Result<(), std::io::Error> {
         match self {
-            DuplexValue::Conn { conn } => conn.write_all(buf),
-            DuplexValue::Accept { accept } => accept.write_all(buf),
+            DuplexValue::Conn(conn) => conn.write_all(buf),
+            DuplexValue::Accept(accept) => accept.write_all(buf),
         }
     }
 }

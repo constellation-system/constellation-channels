@@ -245,7 +245,7 @@ where UnixSocketPath: TryFrom<Addr>,
 impl FarChannel for UnixFarChannel {
     type Acquired = UnixSocketPath;
     type AcquireState = UnixSocketPath;
-    type NegotiatePending = Infallible;
+    type AcquirePending = Infallible;
     type AcquireError = Infallible;
     type NegotiateError = Infallible;
     type ShutdownState = ();
@@ -274,7 +274,7 @@ impl FarChannel for UnixFarChannel {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         Ok(NegotiatorResult::Complete(state))
     }
@@ -283,14 +283,14 @@ impl FarChannel for UnixFarChannel {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::NegotiatePending>,
+    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
                 Self::NegotiateError> {
         panic!("This should never be called!")
     }
 
     #[inline]
     fn shutdown(
-        &mut self,
+        &self,
         _acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
         Ok(())
