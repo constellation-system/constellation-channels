@@ -139,7 +139,7 @@ pub enum CompoundNearConcreteAddr {
 
 /// Multiplexer for [Endpoint](NearChannel::Endpoint)s for
 /// [CompoundNearConnector].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum CompoundNearNameAddr {
     #[cfg(feature = "unix")]
     Unix {
