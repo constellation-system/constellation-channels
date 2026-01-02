@@ -47,13 +47,10 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::Negotiator;
-use constellation_common::net::NegotiatorStart;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
-use log::info;
-use log::warn;
 use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
@@ -61,7 +58,6 @@ use mio::Token;
 use openssl::error::ErrorStack;
 use openssl::ssl::HandshakeError;
 use openssl::ssl::MidHandshakeSslStream;
-use openssl::ssl::ShutdownResult;
 use openssl::ssl::SslAcceptor;
 use openssl::ssl::SslConnector;
 use openssl::ssl::SslStream;
@@ -70,6 +66,7 @@ use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
 use crate::config::TLSChannelConfig;
+use crate::config::TLSParam;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
@@ -950,6 +947,7 @@ where
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type EndpointConfig = Conn::EndpointConfig;
+    type Param = TLSParam<Conn::Param>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
     #[inline]
@@ -957,22 +955,23 @@ where
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>,
         endpoint: Conn::EndpointConfig,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Self::Param,
     ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx
     {
         let (tls, config, shutdown_retry, shutdown_timeout) = config.take();
-        let verify_endpoint = match tls.verify_endpoint() {
+        let (verify_endpoint, inner) = param.take();
+        let verify_endpoint = match verify_endpoint {
             Some(endpoint) => Ok(endpoint),
-            None => match verify_endpoint {
-                Some(endpoint) => Ok(endpoint),
+            None => match tls.verify_endpoint() {
+                Some(endpoint) => Ok(endpoint.clone()),
                 None => Err(TLSSessionCreateError::Session {
                     error: TLSCreateError::NoName
                 })
             }
         }?;
-        let connector = tls.load_client(None, verify_endpoint, false)
+        let connector = tls.load_client(None, &verify_endpoint, false)
             .map_err(|err| {
                 TLSSessionCreateError::Session {
                     error: TLSCreateError::TLS { error: err }
@@ -990,8 +989,7 @@ where
             // XXX This should probably produce an error.
             IPEndpointAddr::Addr(_) => String::new()
         };
-        let inner = Conn::create_with_endpoint(caches, config, endpoint,
-                                               Some(verify_endpoint))
+        let inner = Conn::create_with_endpoint(caches, config, endpoint, inner)
             .map_err(|err| TLSSessionCreateError::Channel { error: err })?;
 
         Ok(TLSNearConnector {
@@ -1153,6 +1151,7 @@ where
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type EndpointConfig = Conn::EndpointConfig;
+    type Param = TLSParam<Conn::Param>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
     #[inline]
@@ -1160,13 +1159,12 @@ where
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>,
         endpoint: Conn::EndpointConfig,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Self::Param
     ) -> Result<Box<TLSNearConnector<Conn, TLS>>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
         Ok(Box::new(TLSNearConnector::create_with_endpoint(caches, config,
-                                                           endpoint,
-                                                           verify_endpoint)?))
+                                                           endpoint, param)?))
     }
 }
 

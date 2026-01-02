@@ -456,6 +456,7 @@ impl NearChannelCreate for UnixNearConnector {
 impl NearChannelCreateWithEndpoint for UnixNearConnector {
     type Config = UnixNearConnectorPartialConfig;
     type EndpointConfig = UnixSocketAddr;
+    type Param = ();
     type CreateError = Error;
 
     #[inline]
@@ -463,7 +464,7 @@ impl NearChannelCreateWithEndpoint for UnixNearConnector {
         _caches: &mut Ctx,
         _config: UnixNearConnectorPartialConfig,
         endpoint: UnixSocketAddr,
-        _verify_endpoint: Option<&IPEndpointAddr>
+        _param: Self::Param
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
@@ -578,7 +579,7 @@ fn test_send_recv() {
         let mut conn =
             UnixNearConnector::create_with_endpoint(&mut client_nscaches,
                                                     connect_config,
-                                                    endpoint, None)
+                                                    endpoint, ())
             .expect("expected success");
 
         client_barrier.wait();
@@ -670,7 +671,7 @@ fn test_send_close() {
         let mut conn =
             UnixNearConnector::create_with_endpoint(&mut client_nscaches,
                                                     connect_config,
-                                                    endpoint, None)
+                                                    endpoint, ())
             .expect("expected success");
 
         client_barrier.wait();
@@ -761,7 +762,7 @@ fn test_recv_close() {
         let mut conn =
             UnixNearConnector::create_with_endpoint(&mut client_nscaches,
                                                     connect_config,
-                                                    endpoint, None)
+                                                    endpoint, ())
             .expect("expected success");
 
         client_barrier.wait();

@@ -296,6 +296,7 @@ pub trait NearChannelCreateWithEndpoint: NearChannel + Sized {
     /// Type of configurations.
     type Config;
     type EndpointConfig;
+    type Param: Default;
     /// Type of errors that can be returned from [new](NearChannelCreate::new).
     type CreateError: Display + ScopedError + Sized;
 
@@ -316,7 +317,7 @@ pub trait NearChannelCreateWithEndpoint: NearChannel + Sized {
         ctx: &mut Ctx,
         config: Self::Config,
         endpoint: Self::EndpointConfig,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Self::Param
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx;

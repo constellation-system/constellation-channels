@@ -145,6 +145,14 @@ use mio::Poll;
 
 use crate::config::FlowsConfig;
 
+pub trait SocketXfrmTypes {
+    type LocalAddr;
+    type SockAddr: TryFrom<Self::LocalAddr, Error = Self::ConvertError>;
+    type Sock: Socket<Addr = Self::SockAddr> + Sender + Receiver;
+    type Xfrm: DatagramXfrm<LocalAddr = Self::LocalAddr>;
+    type ConvertError: Display;
+}
+
 type MsgBuf = VecDeque<Vec<u8>>;
 
 enum PendingEntry<In, Out> {

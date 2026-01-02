@@ -61,6 +61,7 @@ use std::time::Duration;
 #[cfg(feature = "gssapi")]
 use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::net::IPEndpoint;
+use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
@@ -314,6 +315,14 @@ pub struct CompoundXfrmCreateParam<Unix, UDP> {
     unix: Unix,
     #[serde(default)]
     udp: UDP
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompoundNearConnectorParam {
+    TLS {
+        tls: Box<TLSParam<Option<CompoundNearConnectorParam>>>
+    }
 }
 
 /// Endpoint for
@@ -2180,6 +2189,17 @@ pub type TLSNearAcceptorConfig<Endpoint> =
 pub type TLSNearConnectorConfig<Endpoint> =
     TLSChannelConfig<TLSClientConfig, Endpoint>;
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[serde(default)]
+pub struct TLSParam<Inner> {
+    #[serde(default)]
+    verify_endpoint: Option<IPEndpointAddr>,
+    #[serde(default)]
+    #[serde(flatten)]
+    inner: Inner
+}
+
 /// Unsafe options for UDP far-link channels.
 ///
 /// # YAML Format
@@ -2976,6 +2996,34 @@ impl ThreadedNSNameCachesConfig {
     #[inline]
     fn default_renewal() -> Duration {
         Duration::from_secs(3600)
+    }
+}
+
+impl<Inner> TLSParam<Inner> {
+    #[inline]
+    pub fn new(
+        verify_endpoint: Option<IPEndpointAddr>,
+        inner: Inner
+    ) -> Self {
+        TLSParam {
+            verify_endpoint: verify_endpoint,
+            inner: inner
+        }
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &Inner {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn verify_endpoint(&self) -> Option<&IPEndpointAddr> {
+        self.verify_endpoint.as_ref()
+    }
+
+    #[inline]
+    pub fn take(self) -> (Option<IPEndpointAddr>, Inner) {
+        (self.verify_endpoint, self.inner)
     }
 }
 
@@ -4367,8 +4415,6 @@ use std::net::Ipv4Addr;
 
 #[cfg(test)]
 use constellation_common::config::authn::GSSAPISecurity;
-#[cfg(test)]
-use constellation_common::net::IPEndpointAddr;
 
 #[test]
 fn test_deserialize_unix_cfg() {

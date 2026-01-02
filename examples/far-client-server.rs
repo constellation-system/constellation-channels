@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -44,11 +44,11 @@ use constellation_channels::far::dtls::DTLSFarChannel;
 use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::udp::UDPFarChannel;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
-use constellation_channels::unix::UnixSocketPath;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::retry::RetryResult;
+use constellation_common::unix::UnixSocketPath;
 use log::LevelFilter;
 use mio::Interest;
 use mio::Poll;

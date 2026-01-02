@@ -175,6 +175,7 @@ pub trait NearDuplexNegoTypes {
         StartError = Self::OutShutdownStartError,
         NegotiateError = Self::OutShutdownNegoError
     >;
+    type OutParam;
     type OutChannel: NearConnector +
         NearChannelCreateWithEndpoint<
             Conn = Self::OutConn,
@@ -182,6 +183,7 @@ pub trait NearDuplexNegoTypes {
             State = Self::OutConnState,
             Pending = Self::OutConnPending,
             Config = Self::OutConfig,
+            Param = Self::OutParam,
             EndpointConfig = Self::OutEndpoint,
             CreateError = Self::OutCreateError,
             ShutdownValue = Self::OutShutdownValue,

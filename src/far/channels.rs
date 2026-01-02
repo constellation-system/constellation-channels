@@ -87,7 +87,14 @@ use crate::resolve::cache::NSNameCachesCtx;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FarChannelID(usize);
-
+/*
+pub trait FlowAuthNShutdownTypes {
+    type Flow: Session;
+    type AuthN: SessionAuthN<Self::Flow>;
+    type ShutdownNego: NegotiatorStart<(), Self::Stream>;
+    ShutdownNego::NegotiateError: ScopedError
+}
+*/
 /// Negotiation state for session and authentication negotiations.
 ///
 /// This is used to store current negotiation states, and advance

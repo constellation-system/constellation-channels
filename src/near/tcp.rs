@@ -633,7 +633,7 @@ impl NearChannelCreate for TCPResolvingNearConnector {
             ::new_with_unsafe(resolve, retry, unsafe_opts);
 
         TCPResolvingNearConnector::create_with_endpoint(caches, partial,
-                                                        endpoint, None)
+                                                        endpoint, ())
     }
 
     #[inline]
@@ -645,6 +645,7 @@ impl NearChannelCreate for TCPResolvingNearConnector {
 impl NearChannelCreateWithEndpoint for TCPResolvingNearConnector {
     type Config = TCPResolvingNearConnectorPartialConfig;
     type EndpointConfig = IPEndpoint;
+    type Param = ();
     type CreateError = TCPResolvingNearConnectorError;
 
     #[inline]
@@ -652,7 +653,7 @@ impl NearChannelCreateWithEndpoint for TCPResolvingNearConnector {
         caches: &mut Ctx,
         config: TCPResolvingNearConnectorPartialConfig,
         endpoint: IPEndpoint,
-        _verify_endpoint: Option<&IPEndpointAddr>
+        _param: Self::Param
     ) -> Result<Self, TCPResolvingNearConnectorError>
     where
         Ctx: NSNameCachesCtx {
@@ -781,6 +782,7 @@ impl NearChannel for TCPNearConnector {
 impl NearChannelCreateWithEndpoint for TCPNearConnector {
     type Config = TCPNearConnectorPartialConfig;
     type EndpointConfig = SocketAddr;
+    type Param = ();
     type CreateError = Infallible;
 
     #[inline]
@@ -788,7 +790,7 @@ impl NearChannelCreateWithEndpoint for TCPNearConnector {
         _caches: &mut Ctx,
         config: TCPNearConnectorPartialConfig,
         endpoint: SocketAddr,
-        _verify_endpoint: Option<&IPEndpointAddr>
+        _param: Self::Param
     ) -> Result<Self, Infallible>
     where
         Ctx: NSNameCachesCtx {

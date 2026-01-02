@@ -550,6 +550,7 @@ where
 {
     type Config = SOCKS5ConnectPartialConfig<Conn::Config>;
     type EndpointConfig = IPEndpoint;
+    type Param = ();
     type CreateError = Conn::CreateError;
 
     #[inline]
@@ -557,7 +558,7 @@ where
         caches: &mut Ctx,
         config: Self::Config,
         target: IPEndpoint,
-        _verify_endpoint: Option<&IPEndpointAddr>
+        _param: Self::Param
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {

@@ -1374,6 +1374,7 @@ where
 {
     type Config = GSSAPINearConnectorConfig<C::Config>;
     type EndpointConfig = C::EndpointConfig;
+    type Param = C::Param;
     type CreateError = C::CreateError;
 
     #[inline]
@@ -1381,12 +1382,12 @@ where
         caches: &mut Ctx,
         config: Self::Config,
         endpoint: C::EndpointConfig,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Self::Param
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
         let inner = C::create_with_endpoint(caches, config.inner, endpoint,
-                                            verify_endpoint)?;
+                                            param)?;
 
         Ok(GSSAPINearConnector {
             inner: inner,

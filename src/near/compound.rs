@@ -52,7 +52,6 @@ use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::net::PassthruNegotiator;
 use constellation_common::net::PassthruSessionNegotiation;
-use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
 #[cfg(feature = "unix")]
 use constellation_common::unix::UnixSocketAddr;
@@ -68,6 +67,8 @@ use mio::Interest;
 use mio::Registry;
 use mio::Token;
 
+use crate::config::CompoundNearConnectorParam;
+use crate::config::TLSParam;
 #[cfg(feature = "tls")]
 use crate::config::tls::TLSLoadClient;
 #[cfg(feature = "tls")]
@@ -2506,6 +2507,7 @@ where
 {
     type Config = CompoundNearConnectorPartialConfig<TLS>;
     type EndpointConfig = CompoundNearNameAddr;
+    type Param = Option<CompoundNearConnectorParam>;
     type CreateError = CompoundNearConnectorCreateWithEndpointError;
 
     #[inline]
@@ -2513,16 +2515,16 @@ where
         caches: &mut Ctx,
         config: CompoundNearConnectorPartialConfig<TLS>,
         endpoint: CompoundNearNameAddr,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Option<CompoundNearConnectorParam>
     ) -> Result<Self, CompoundNearConnectorCreateWithEndpointError>
     where
         Ctx: NSNameCachesCtx {
-        match (config, endpoint) {
+        match (config, endpoint, param) {
             (CompoundNearConnectorPartialConfig::Unix { unix_stream },
-             CompoundNearNameAddr::Unix { unix: endpoint }) => {
+             CompoundNearNameAddr::Unix { unix: endpoint },
+             None) => {
                 let unix = UnixNearConnector
-                    ::create_with_endpoint(caches, unix_stream, endpoint,
-                                           verify_endpoint)
+                    ::create_with_endpoint(caches, unix_stream, endpoint, ())
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::Unix {
                             unix: err
@@ -2532,19 +2534,23 @@ where
                 Ok(CompoundNearConnector::Unix { unix: unix })
             }
             (CompoundNearConnectorPartialConfig::TCP { tcp },
-             CompoundNearNameAddr::TCP { tcp: endpoint }) => {
+             CompoundNearNameAddr::TCP { tcp: endpoint },
+             None) => {
                 let Ok(acc) =
                     TCPNearConnector::create_with_endpoint(caches, tcp,
-                                                           endpoint,
-                                                           verify_endpoint);
+                                                           endpoint, ());
 
                 Ok(CompoundNearConnector::TCP { tcp: acc })
             }
-            (CompoundNearConnectorPartialConfig::TLS { tls }, endpoint) => {
+            (CompoundNearConnectorPartialConfig::TLS { tls },
+             endpoint, param) => {
+                let param = match param {
+                    Some(CompoundNearConnectorParam::TLS { tls }) => *tls,
+                    None => TLSParam::default()
+                };
                 let acc =
                     TLSNearConnector::create_with_endpoint(caches, tls,
-                                                           endpoint,
-                                                           verify_endpoint)
+                                                           endpoint, param)
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::TLS {
                             tls: Box::new(err)
@@ -2556,10 +2562,9 @@ where
             (CompoundNearConnectorPartialConfig::SOCKS5 { socks5_tcp },
              CompoundNearNameAddr::SOCKS5 {
                  socks5: endpoint
-             }) => {
+             }, None) => {
                 SOCKS5NearConnector::create_with_endpoint(caches, socks5_tcp,
-                                                          endpoint,
-                                                          verify_endpoint)
+                                                          endpoint, ())
                     .map(|acc| CompoundNearConnector::SOCKS5 { socks5: acc })
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::SOCKS5 {
@@ -2657,6 +2662,7 @@ where
 {
     type Config = Box<CompoundNearConnectorPartialConfig<TLS>>;
     type EndpointConfig = CompoundNearNameAddr;
+    type Param = Option<CompoundNearConnectorParam>;
     type CreateError = CompoundNearConnectorCreateWithEndpointError;
 
     #[inline]
@@ -2664,13 +2670,12 @@ where
         caches: &mut Ctx,
         config: Box<CompoundNearConnectorPartialConfig<TLS>>,
         endpoint: CompoundNearNameAddr,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Option<CompoundNearConnectorParam>
     ) -> Result<Self, CompoundNearConnectorCreateWithEndpointError>
     where
         Ctx: NSNameCachesCtx {
         CompoundNearConnector::create_with_endpoint(caches, *config,
-                                                    endpoint,
-                                                    verify_endpoint)
+                                                    endpoint, param)
             .map(Box::new)
     }
 }
@@ -3344,6 +3349,7 @@ where
 {
     type Config = CompoundResolvingNearConnectorPartialConfig<TLS>;
     type EndpointConfig = CompoundResolvingNearConnectorEndpointConfig;
+    type Param = Option<CompoundNearConnectorParam>;
     type CreateError = CompoundNearConnectorCreateWithEndpointError;
 
     #[inline]
@@ -3351,18 +3357,18 @@ where
         caches: &mut Ctx,
         config: CompoundResolvingNearConnectorPartialConfig<TLS>,
         endpoint: CompoundResolvingNearConnectorEndpointConfig,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Option<CompoundNearConnectorParam>
     ) -> Result<Self, CompoundNearConnectorCreateWithEndpointError>
     where
         Ctx: NSNameCachesCtx {
-        match (config, endpoint) {
+        match (config, endpoint, param) {
             (CompoundResolvingNearConnectorPartialConfig::Unix { unix_stream },
              CompoundResolvingNearConnectorEndpointConfig::Unix {
                  unix: endpoint
-             }) => {
+             },
+             None) => {
                 let unix = UnixNearConnector
-                    ::create_with_endpoint(caches, unix_stream, endpoint,
-                                           verify_endpoint)
+                    ::create_with_endpoint(caches, unix_stream, endpoint, ())
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::Unix {
                             unix: err
@@ -3374,11 +3380,11 @@ where
             (CompoundResolvingNearConnectorPartialConfig::TCP { tcp },
              CompoundResolvingNearConnectorEndpointConfig::TCP {
                  tcp: endpoint
-             }) => {
+             },
+             None) => {
                 let acc =
                     TCPResolvingNearConnector
-                    ::create_with_endpoint(caches, tcp, endpoint,
-                                           verify_endpoint)
+                    ::create_with_endpoint(caches, tcp, endpoint, ())
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::TCP {
                             tcp: err
@@ -3388,11 +3394,14 @@ where
                 Ok(CompoundResolvingNearConnector::TCP { tcp: acc })
             }
             (CompoundResolvingNearConnectorPartialConfig::TLS { tls },
-             endpoint) => {
+             endpoint, param) => {
+                let param = match param {
+                    Some(CompoundNearConnectorParam::TLS { tls }) => *tls,
+                    None => TLSParam::default()
+                };
                 let acc =
                     TLSNearConnector::create_with_endpoint(caches, tls,
-                                                           endpoint,
-                                                           verify_endpoint)
+                                                           endpoint, param)
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::TLS {
                             tls: Box::new(err)
@@ -3404,10 +3413,10 @@ where
             (CompoundResolvingNearConnectorPartialConfig::SOCKS5 { socks5_tcp },
              CompoundResolvingNearConnectorEndpointConfig::SOCKS5 {
                  socks5: endpoint
-             }) => {
+             },
+             None) => {
                 SOCKS5NearConnector::create_with_endpoint(caches, socks5_tcp,
-                                                          endpoint,
-                                                          verify_endpoint)
+                                                          endpoint, ())
                     .map(|acc| CompoundResolvingNearConnector::SOCKS5 {
                         socks5: acc
                     })
@@ -3532,6 +3541,7 @@ where
 {
     type Config = Box<CompoundResolvingNearConnectorPartialConfig<TLS>>;
     type EndpointConfig = CompoundResolvingNearConnectorEndpointConfig;
+    type Param = Option<CompoundNearConnectorParam>;
     type CreateError = CompoundNearConnectorCreateWithEndpointError;
 
     #[inline]
@@ -3539,12 +3549,12 @@ where
         caches: &mut Ctx,
         config: Box<CompoundResolvingNearConnectorPartialConfig<TLS>>,
         endpoint: CompoundResolvingNearConnectorEndpointConfig,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Option<CompoundNearConnectorParam>
     ) -> Result<Self, CompoundNearConnectorCreateWithEndpointError>
     where
         Ctx: NSNameCachesCtx {
         CompoundResolvingNearConnector
-            ::create_with_endpoint(caches, *config, endpoint, verify_endpoint)
+            ::create_with_endpoint(caches, *config, endpoint, param)
             .map(Box::new)
     }
 }

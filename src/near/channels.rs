@@ -260,7 +260,7 @@ where
 /// principals. However, we do also need to associate sessions with
 /// the same logical channel ID, so that incoming and outgoing
 /// sessions can be deduplicated in this fashion.
-struct ChannelEntry<Types>
+pub(crate) struct ChannelEntry<Types>
 where
     Types: NearDuplexNegoTypes
 {
@@ -1566,6 +1566,282 @@ impl<Types> ChannelEntry<Types>
 where
     Types: NearDuplexNegoTypes
 {
+    /// Create a `ChannelEntry` for outbound connections only.
+    ///
+    /// Calls to [listen](ChannelEntry::listen) on this `ChannelEntry`
+    /// will only complete pending session negotiations; it will not
+    /// generate incoming sessions.
+    ///
+    /// # Parameters
+    ///
+    /// - `config`: Base configuration for outbound channels.
+    ///
+    /// - `authn`: [SessionAuthN] to use for authenticating sessions.
+    ///
+    /// - `retry`: [Retry] configuration for retrying connections.
+    pub(crate) fn outbound(
+        config: Types::OutConfig,
+        authn: Types::OutAuthN,
+        retry: Retry
+    ) -> Self {
+        let tokens = HashMap::new();
+        let negos = HashMap::new();
+        let mode = ChannelMode::Outbound {
+            config: config,
+            authn: authn,
+            tokens: tokens,
+            negos: negos
+        };
+
+        ChannelEntry {
+            retry: retry,
+            mode: mode
+        }
+    }
+
+    /// Create a `ChannelEntry` for outbound connections only with a
+    /// size hint.
+    ///
+    /// Calls to [listen](ChannelEntry::listen) on this `ChannelEntry`
+    /// will only complete pending session negotiations; it will not
+    /// generate incoming sessions.
+    ///
+    /// # Parameters
+    ///
+    /// - `config`: Base configuration for outbound channels.
+    ///
+    /// - `authn`: [SessionAuthN] to use for authenticating sessions.
+    ///
+    /// - `retry`: [Retry] configuration for retrying connections.
+    ///
+    /// - `size`: Expected maximum number of sessions; this will not
+    ///   cause an errer if it is too low.
+    pub(crate) fn outbound_with_capacity(
+        config: Types::OutConfig,
+        authn: Types::OutAuthN,
+        retry: Retry,
+        size: usize
+    ) -> Self {
+        let tokens = HashMap::with_capacity(size);
+        let negos = HashMap::with_capacity(size);
+        let mode = ChannelMode::Outbound {
+            config: config,
+            authn: authn,
+            tokens: tokens,
+            negos: negos
+        };
+
+        ChannelEntry {
+            retry: retry,
+            mode: mode
+        }
+    }
+
+    /// Create a `ChannelEntry` for inbound connections only.
+    ///
+    /// Calls to [req_stream](ChannelEntry::req_stream) on this
+    /// `ChannelEntry` will fail, and [listen](ChannelEntry::listen)
+    /// will only produce incoming sessions.
+    ///
+    /// # Parameters
+    ///
+    /// - `acceptor`: [NearChannel] to use for accepting connections.
+    ///
+    /// - `shutdown`: [Negotiatior] to use for shutting down sessions.
+    ///
+    /// - `authn`: [SessionAuthN] to use for authenticating sessions.
+    ///
+    /// - `retry`: [Retry] configuration to use.
+    ///
+    /// - `token`: [Token] associated with `acceptor` for listening
+    ///   for new sessions.
+    pub(crate) fn inbound(
+        acceptor: Types::InChannel,
+        shutdown: Types::InShutdownNego,
+        authn: Types::InAuthN,
+        retry: Retry,
+        token: Token
+    ) -> Self {
+        let tokens = HashMap::new();
+        let negos = HashMap::new();
+        let mode = ChannelMode::Inbound {
+            acceptor: acceptor,
+            shutdown: shutdown,
+            authn: authn,
+            token: token,
+            retry_when: None,
+            tokens: tokens,
+            negos: negos
+        };
+
+        ChannelEntry {
+            retry: retry,
+            mode: mode
+        }
+    }
+
+    /// Create a `ChannelEntry` for inbound connections only, with a
+    /// size hint.
+    ///
+    /// Calls to [req_stream](ChannelEntry::req_stream) on this
+    /// `ChannelEntry` will fail, and [listen](ChannelEntry::listen)
+    /// will only produce incoming sessions.
+    ///
+    /// # Parameters
+    ///
+    /// - `acceptor`: [NearChannel] to use for accepting connections.
+    ///
+    /// - `shutdown`: [Negotiatior] to use for shutting down sessions.
+    ///
+    /// - `authn`: [SessionAuthN] to use for authenticating sessions.
+    ///
+    /// - `retry`: [Retry] configuration to use.
+    ///
+    /// - `token`: [Token] associated with `acceptor` for listening
+    ///   for new sessions.
+    ///
+    /// - `size`: Expected maximum number of sessions; this will not
+    ///   cause an errer if it is too low.
+    pub(crate) fn inbound_with_capacity(
+        acceptor: Types::InChannel,
+        shutdown: Types::InShutdownNego,
+        authn: Types::InAuthN,
+        retry: Retry,
+        token: Token,
+        size: usize
+    ) -> Self {
+        let tokens = HashMap::with_capacity(size);
+        let negos = HashMap::with_capacity(size);
+        let mode = ChannelMode::Inbound {
+            acceptor: acceptor,
+            shutdown: shutdown,
+            authn: authn,
+            token: token,
+            retry_when: None,
+            tokens: tokens,
+            negos: negos
+        };
+
+        ChannelEntry {
+            retry: retry,
+            mode: mode
+        }
+    }
+
+    /// Create a `ChannelEntry` for both inbound and outbound
+    /// connections.
+    ///
+    /// # Parameters
+    ///
+    /// - `out_config`: Base configuration for outbound channels.
+    ///
+    /// - `out_authn`: [SessionAuthN] to use for authenticating
+    ///   outbound sessions.
+    ///
+    /// - `acceptor`: [NearChannel] to use for accepting connections.
+    ///
+    /// - `in_shutdown`: [Negotiatior] to use for shutting down
+    ///   inbound sessions.
+    ///
+    /// - `in_authn`: [SessionAuthN] to use for authenticating inbound
+    ///   sessions.
+    ///
+    /// - `retry`: [Retry] configuration to use.
+    ///
+    /// - `token`: [Token] associated with `acceptor` for listening
+    ///   for new sessions.
+    pub(crate) fn duplex(
+        out_config: Types::OutConfig,
+        out_authn: Types::OutAuthN,
+        acceptor: Types::InChannel,
+        in_shutdown: Types::InShutdownNego,
+        in_authn: Types::InAuthN,
+        retry: Retry,
+        token: Token,
+    ) -> Self {
+        let out_tokens = HashMap::new();
+        let in_tokens = HashMap::new();
+        let negos = HashMap::new();
+        let mode = ChannelMode::Duplex {
+            config: out_config,
+            out_authn: out_authn,
+            in_authn: in_authn,
+            shutdown: in_shutdown,
+            acceptor: acceptor,
+            token: token,
+            retry_when: None,
+            accept_tokens: in_tokens,
+            conn_tokens: out_tokens,
+            negos: negos
+        };
+
+        ChannelEntry {
+            retry: retry,
+            mode: mode
+        }
+    }
+
+    /// Create a `ChannelEntry` for both inbound and outbound
+    /// connections, with a size hint.
+    ///
+    /// # Parameters
+    ///
+    /// - `out_config`: Base configuration for outbound channels.
+    ///
+    /// - `out_authn`: [SessionAuthN] to use for authenticating
+    ///   outbound sessions.
+    ///
+    /// - `acceptor`: [NearChannel] to use for accepting connections.
+    ///
+    /// - `in_shutdown`: [Negotiatior] to use for shutting down
+    ///   inbound sessions.
+    ///
+    /// - `in_authn`: [SessionAuthN] to use for authenticating inbound
+    ///   sessions.
+    ///
+    /// - `retry`: [Retry] configuration to use.
+    ///
+    /// - `token`: [Token] associated with `acceptor` for listening
+    ///   for new sessions.
+    ///
+    /// - `nins`: Expected maximum number of inbound sessions; this
+    ///   will not cause an errer if it is too low.
+    ///
+    /// - `nouts`: Expected maximum number of outbound sessions; this
+    ///   will not cause an errer if it is too low.
+    pub(crate) fn duplex_with_capacity(
+        out_config: Types::OutConfig,
+        out_authn: Types::OutAuthN,
+        acceptor: Types::InChannel,
+        in_shutdown: Types::InShutdownNego,
+        in_authn: Types::InAuthN,
+        retry: Retry,
+        token: Token,
+        nins: usize,
+        nouts: usize,
+    ) -> Self {
+        let out_tokens = HashMap::with_capacity(nouts);
+        let in_tokens = HashMap::with_capacity(nins);
+        let negos = HashMap::with_capacity(nins + nouts);
+        let mode = ChannelMode::Duplex {
+            config: out_config,
+            out_authn: out_authn,
+            in_authn: in_authn,
+            shutdown: in_shutdown,
+            acceptor: acceptor,
+            token: token,
+            retry_when: None,
+            accept_tokens: in_tokens,
+            conn_tokens: out_tokens,
+            negos: negos
+        };
+
+        ChannelEntry {
+            retry: retry,
+            mode: mode
+        }
+    }
+
     /// Request a stream for a given endpoint.
     ///
     /// This will attempt to negotiate and authenticate a session with
@@ -1613,7 +1889,7 @@ where
         gentok: &mut Peekable<I>,
         registry: &Registry,
         endpoint: Types::OutEndpoint,
-        verify_endpoint: Option<&IPEndpointAddr>
+        param: Types::OutParam
     ) -> Result<
         RetryResult<Option<Types::OutAuthNSession>>,
         ChannelEntryReqError<
@@ -1646,8 +1922,7 @@ where
                     .ok_or(ChannelEntryReqError::NoTokens)?;
                 let conn = Types::OutChannel
                     ::create_with_endpoint(ctx, config.clone(),
-                                           endpoint.clone(),
-                                           verify_endpoint)
+                                           endpoint.clone(), param)
                     .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
                 Ok(ConnectorEntry::create(registry, conn, out_authn,
@@ -1679,8 +1954,7 @@ where
                     .ok_or(ChannelEntryReqError::NoTokens)?;
                 let conn = Types::OutChannel
                     ::create_with_endpoint(ctx, config.clone(),
-                                           endpoint.clone(),
-                                           verify_endpoint)
+                                           endpoint.clone(), param)
                     .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
                 Ok(ConnectorEntry::create(registry, conn, authn,
@@ -2609,4 +2883,10 @@ where Shutdown: Display,
                 write!(f, "wrong type of stream for this channel entry")
         }
     }
+}
+
+#[cfg(test)]
+fn test_channel_entry(
+) {
+
 }
