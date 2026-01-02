@@ -295,7 +295,6 @@ where
     /// The authentication configuration for connecting to the proxy.
     auth: SOCKS5AuthNConfig,
     shutdown_nego: Proxy::ShutdownNego,
-    shutdown_param: <Proxy::ShutdownNego as NegotiatorStart<Proxy::ShutdownValue, Proxy::Conn>>::Param,
     /// The [FarChannel] that will be used to forward UDP traffic.
     datagram: Datagram,
     /// The [NearConnector] that will be used to connect to the proxy.
@@ -970,7 +969,7 @@ where
         acquired: Self::Acquired
     ) -> Result<Self::ShutdownState, Self::ShutdownError> {
         let proxy = self.shutdown_nego
-            .start(&self.shutdown_param, acquired.conn)
+            .start(&self.proxy.shutdown_param(), acquired.conn)
             .map_err(|err| SOCKS5AcquiredShutdownError::Proxy { err: err })?;
         let datagram = self.datagram.shutdown(acquired.datagram)
             .map_err(|err| SOCKS5AcquiredShutdownError::Datagram { err: err })?;

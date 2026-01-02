@@ -189,6 +189,7 @@ pub mod socks5;
 pub mod tcp;
 #[cfg(feature = "tls")]
 pub mod tls;
+pub mod types;
 #[cfg(feature = "unix")]
 pub mod unix;
 

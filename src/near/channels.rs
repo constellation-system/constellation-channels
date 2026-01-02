@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -57,6 +57,8 @@ use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
+use crate::near::types::NearDuplexNegoTypes;
+use crate::near::types::NearSessionNegoTypes;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Newtype wrapper for IDs created to refer to specific channels.
@@ -78,35 +80,32 @@ enum DuplexValue<Accept, Conn> {
 /// Negotiation state for a given channel.
 ///
 /// This is usable for both incoming and outgoing channels.
-enum SessionNegoState<Channel, AuthN>
+enum SessionNegoState<Types>
 where
-    Channel: NearChannel,
-    Channel::NegotiateError: ScopedError,
-    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError
+    Types: NearSessionNegoTypes
 {
     /// Session negotiation is pending.
     Session {
         /// Pending negotiation state.
-        pending: Channel::Pending
+        pending: Types::ConnPending
     },
     /// Authentication negotiation is pending.
     AuthN {
         /// Endpoint for this negotiation.
-        endpoint: Channel::Endpoint,
+        endpoint: Types::Endpoint,
         /// Pending negotiation state.
-        pending: AuthN::Pending,
+        pending: Types::AuthNPending,
     },
     Active {
         /// Endpoint for this session.
-        endpoint: Channel::Endpoint,
+        endpoint: Types::Endpoint,
     },
     /// Shutdown negotiation is pending.
     Shutdown {
         /// Endpoint for this session.
-        endpoint: Channel::Endpoint,
+        endpoint: Types::Endpoint,
         /// Pending negotiation state.
-        pending: <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::Pending
+        pending: Types::ShutdownPending
     }
 }
 
@@ -114,19 +113,16 @@ where
 ///
 /// This holds the negotiation state for sessions through an acceptor
 /// with a single endpoint..
-struct AcceptorEntry<Channel, AuthN>
+struct AcceptorEntry<Types>
 where
-    Channel: NearChannel,
-    Channel::NegotiateError: ScopedError,
-    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError
+    Types: NearSessionNegoTypes
 {
     /// State of negotiations.
     ///
     /// This should generally never be `None`.  [Option] is only used
     /// here to implement a state machine (this is a limitation of the
     /// Rust standard API).
-    state: Option<SessionNegoState<Channel, AuthN>>,
+    state: Option<SessionNegoState<Types>>,
     /// When to retry next.
     when: Option<Instant>
 }
@@ -135,21 +131,18 @@ where
 ///
 /// This holds the negotiation state for sessions through a connector
 /// for a single endpoint.
-struct ConnectorEntry<Channel, AuthN>
+struct ConnectorEntry<Types>
 where
-    Channel: NearChannel,
-    Channel::NegotiateError: ScopedError,
-    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError
+    Types: NearSessionNegoTypes
 {
     /// The [NearConnector] used to establish sessions.
-    channel: Channel,
+    channel: Types::Channel,
     /// The [Negotiator] used to shut down sessions.
-    shutdown: Channel::ShutdownNego,
+    shutdown: Types::ShutdownNego,
     /// The current state of negotiations.
     ///
     /// This is allowed to be `None`, if no session currently exists.
-    state: Option<SessionNegoState<Channel, AuthN>>,
+    state: Option<SessionNegoState<Types>>,
     // XXX Replace this retry information with a standard type in
     // common.
     /// Number of retries.
@@ -168,42 +161,31 @@ where
 /// other in duplex mode as opposed to being the same type.  Also,
 /// there is not necessarily an incoming or outgoing channel in all
 /// cases.  This type exists to manage that.
-enum ChannelMode<Accept, Conn, AcceptAuthN, ConnAuthN>
+enum ChannelMode<Types>
 where
-    Conn: NearConnector + NearChannelCreateWithEndpoint,
-    Conn::Endpoint: Clone + Eq + Hash,
-    Conn::Conn: Session,
-    Conn::NegotiateError: ScopedError,
-    Accept: NearChannel + NearChannelCreate,
-    Accept::Endpoint: Clone + Eq + Hash,
-    Accept::Conn: Session,
-    Accept::NegotiateError: ScopedError,
-    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    ConnAuthN::NegotiateError: ScopedError,
-    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
-    AcceptAuthN::NegotiateError: ScopedError
+    Types: NearDuplexNegoTypes
 {
     /// Full-duplex channels, which can establish outbound as well as
     /// inbound connections.
     Duplex {
         /// Base configuration used to create connectors.
-        config: Conn::Config,
+        config: Types::OutConfig,
         /// [SessionAuthN] used to authenticate incoming sessions.
-        in_authn: AcceptAuthN,
+        in_authn: Types::InAuthN,
         /// [SessionAuthN] used to authenticate outgoing sessions.
-        out_authn: ConnAuthN,
+        out_authn: Types::OutAuthN,
         /// Acceptor for incoming sessions.
-        acceptor: Accept,
+        acceptor: Types::InChannel,
         /// [Negotiator] used to shut down incoming sessions.
-        shutdown: Accept::ShutdownNego,
+        shutdown: Types::InShutdownNego,
         /// [Token] associated with `acceptor`.
         token: Token,
         /// Retry delay for acceptor.
         retry_when: Option<Instant>,
         /// Session information for each endpoint, for incoming sessions.
-        accept_tokens: HashMap<Accept::Endpoint, Token>,
+        accept_tokens: HashMap<Types::InEndpoint, Token>,
         /// Session information for each endpoint, for outgoing sessions.
-        conn_tokens: HashMap<Conn::Endpoint, Token>,
+        conn_tokens: HashMap<Types::OutEndpoint, Token>,
         /// Negotiation states corresponding to each [Token].
         ///
         /// Each `Token` in this table must have exactly one entry in
@@ -211,46 +193,44 @@ where
         negos: HashMap<
             Token,
             DuplexValue<
-                Option<SessionNegoState<Accept, AcceptAuthN>>,
-                ConnectorEntry<Conn, ConnAuthN>
+                Option<SessionNegoState<Types::Inbound>>,
+                ConnectorEntry<Types::Outbound>
             >
         >
     },
     /// Outbound-only channels, which can only establish connections.
     Outbound {
         /// Base configuration used to create connectors.
-        config: Conn::Config,
+        config: Types::OutConfig,
         /// [SessionAuthN] used to authenticate sessions.
-        authn: ConnAuthN,
+        authn: Types::OutAuthN,
         /// Session information for each endpoint.
-        tokens: HashMap<Conn::Endpoint, Token>,
+        tokens: HashMap<Types::OutEndpoint, Token>,
         /// Negotiation states corresponding to each [Token].
         ///
         /// Each `Token` in this table must have exactly one entry in
         /// `tokens`.
-        negos: HashMap<
-            Token,
-            ConnectorEntry<Conn, ConnAuthN>,
-        >,
+        negos: HashMap<Token, ConnectorEntry<Types::Outbound>>,
     },
     /// Inbound-only channels, which can only listen for connections.
     Inbound {
         /// [SessionAuthN] used to authenticate sessions.
-        authn: AcceptAuthN,
+        authn: Types::InAuthN,
         /// Acceptor for incoming sessions.
-        acceptor: Accept,
+        acceptor: Types::InChannel,
         /// [Negotiator] used to shut down sessions.
-        shutdown: Accept::ShutdownNego,
+        shutdown: Types::InShutdownNego,
         /// Token for acceptor.
         token: Token,
         /// Retry delay for acceptor.
         retry_when: Option<Instant>,
         /// Session information for each endpoint.
-        tokens: HashMap<Accept::Endpoint, Token>,
-        negos: HashMap<
-            Token,
-            Option<SessionNegoState<Accept, AcceptAuthN>>,
-        >
+        tokens: HashMap<Types::InEndpoint, Token>,
+        /// Negotiation states corresponding to each [Token].
+        ///
+        /// Each `Token` in this table must have exactly one entry in
+        /// `tokens`.
+        negos: HashMap<Token, Option<SessionNegoState<Types::Inbound>>>
     }
 }
 
@@ -280,43 +260,19 @@ where
 /// principals. However, we do also need to associate sessions with
 /// the same logical channel ID, so that incoming and outgoing
 /// sessions can be deduplicated in this fashion.
-struct ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>
+struct ChannelEntry<Types>
 where
-    Conn: NearConnector + NearChannelCreateWithEndpoint,
-    Conn::Endpoint: Clone + Eq + Hash,
-    Conn::Conn: Session,
-    Conn::Config: Clone,
-    Conn::NegotiateError: ScopedError,
-    Accept: NearChannel + NearChannelCreate,
-    Accept::Endpoint: Clone + Eq + Hash,
-    Accept::Conn: Session,
-    Accept::NegotiateError: ScopedError,
-    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    ConnAuthN::NegotiateError: ScopedError,
-    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
-    AcceptAuthN::NegotiateError: ScopedError
+    Types: NearDuplexNegoTypes
 {
     /// The per-mode channel state.
-    mode: ChannelMode<Accept, Conn, AcceptAuthN, ConnAuthN>,
+    mode: ChannelMode<Types>,
     /// Retry configuration to use.
     retry: Retry,
 }
 
-pub struct NearChannels<Accept, Conn, AcceptAuthN, ConnAuthN>
+pub struct NearChannels<Types>
 where
-    Conn: NearConnector + NearChannelCreateWithEndpoint,
-    Conn::Endpoint: Clone + Eq + Hash,
-    Conn::Conn: Session,
-    Conn::Config: Clone,
-    Conn::NegotiateError: ScopedError,
-    Accept: NearChannel + NearChannelCreate,
-    Accept::Endpoint: Clone + Eq + Hash,
-    Accept::Conn: Session,
-    Accept::NegotiateError: ScopedError,
-    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    ConnAuthN::NegotiateError: ScopedError,
-    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
-    AcceptAuthN::NegotiateError: ScopedError
+    Types: NearDuplexNegoTypes
 {
     /// Map from names to `NearChannelID`s.
     ids: HashMap<String, NearChannelID>,
@@ -324,7 +280,7 @@ where
     /// Reverse map from `NearChannelID`s to names.
     names: Vec<String>,
     /// Array of registry entries for each channel.
-    channels: Vec<ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>>
+    channels: Vec<ChannelEntry<Types>>
 }
 
 #[derive(Debug)]
@@ -498,14 +454,9 @@ pub enum ChannelEntryListenError<Start> {
 
 
 
-impl<Channel, AuthN> SessionNegoState<Channel, AuthN>
+impl<Types> SessionNegoState<Types>
 where
-    Channel: NearChannel,
-    Channel::Endpoint: Clone + Eq + Hash,
-    Channel::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError: ScopedError,
-    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError
+    Types: NearSessionNegoTypes
 {
     /// Create a new `SessionNegoState`.
     ///
@@ -539,26 +490,29 @@ where
     /// - `None`: If negotiations concluded, but did not yield a session.
     fn create(
         registry: &Registry,
-        channel: &Channel,
-        authn: &AuthN,
-        shutdown: &Channel::ShutdownNego,
-        state: Channel::State,
+        channel: &Types::Channel,
+        authn: &Types::AuthN,
+        shutdown: &Types::ShutdownNego,
+        state: Types::ConnState,
     ) -> Result<
-        Option<(Self, Option<AuthN::AuthNSession>)>,
+        Option<(Self, Option<Types::AuthNSession>)>,
         SessionEntryCreateError<
             NegoEntrySessionError<
-                Channel::NegotiateError,
-                SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+                Types::SessionNegoError,
+                SessionEntryAuthNError<Types::AuthStartError,
+                                       Types::AuthNegoError>
             >,
             ShutdownError<
-                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
             >
         >
     > {
         match SessionNegoState::session(channel, authn, state) {
             Ok(NegotiatorResult::Complete((AuthNResult::Accept((out, session)),
                                            endpoint))) => {
+                let session: Types::AuthNSession = session;
+
                 info!(target: "session-nego-entry",
                       "authenticated new session with {} over {}",
                       session.prin(), endpoint);
@@ -673,18 +627,19 @@ where
     /// - `NegotiatorResult::Pending(self)`: Negotiations are still
     ///   pending.
     fn session(
-        channel: &Channel,
-        authn: &AuthN,
-        state: Channel::State,
+        channel: &Types::Channel,
+        authn: &Types::AuthN,
+        state: Types::ConnState,
     ) -> Result<
         NegotiatorResult<
-            (AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>,
-             Channel::Endpoint),
+            (AuthNResult<(Self, Types::AuthNSession), Types::Conn>,
+             Types::Endpoint),
             Self
         >,
         NegoEntrySessionError<
-            Channel::NegotiateError,
-            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+            Types::SessionNegoError,
+            SessionEntryAuthNError<Types::AuthStartError,
+                                   Types::AuthNegoError>
         >
     > {
         channel.negotiate(state)
@@ -731,15 +686,15 @@ where
     /// - `NegotiatorResult::Pending(self)`: Negotiations are still
     ///   pending.
     fn authn(
-        authn: &AuthN,
-        endpoint: Channel::Endpoint,
-        stream: Channel::Conn
+        authn: &Types::AuthN,
+        endpoint: Types::Endpoint,
+        stream: Types::Conn
     ) -> Result<
         NegotiatorResult<
-            AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>,
+            AuthNResult<(Self, Types::AuthNSession), Types::Conn>,
             Self
         >,
-        SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+        SessionEntryAuthNError<Types::AuthStartError, Types::AuthNegoError>
     > {
         debug!(target: "session-nego-entry",
                "starting session authentication over {}",
@@ -774,6 +729,7 @@ where
                }, session))
            }))
     }
+
     /// Consume this `SessionNegoState` and step negotiations forward.
     ///
     /// This will advance negotiations as far as they can go, possibly
@@ -805,19 +761,20 @@ where
     /// - `None`: If negotiations concluded, but did not yield a session.
     fn step(
         self,
-        endpoints: &mut HashSet<Channel::Endpoint>,
+        endpoints: &mut HashSet<Types::Endpoint>,
         registry: &Registry,
-        channel: &Channel,
-        authn: &AuthN,
-        shutdown: &Channel::ShutdownNego,
+        channel: &Types::Channel,
+        authn: &Types::AuthN,
+        shutdown: &Types::ShutdownNego,
     ) -> Result<
-        Option<(Self, Option<AuthN::AuthNSession>)>,
+        Option<(Self, Option<Types::AuthNSession>)>,
         SessionEntryStepError<
-            Channel::NegotiateError,
-            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+            Types::SessionNegoError,
+            SessionEntryAuthNError<Types::AuthStartError,
+                                   Types::AuthNegoError>,
             ShutdownError<
-                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
             >
         >
     > {
@@ -955,14 +912,14 @@ where
     fn shutdown(
         self,
         registry: &Registry,
-        shutdown: &Channel::ShutdownNego,
-        param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
-        stream: Channel::Conn,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        stream: Types::Conn,
     ) -> Result<
         Option<Self>,
         SessionEntryShutdownError<
-            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            Types::ShutdownStartError,
+            Types::ShutdownNegoError,
         >
     > {
         if let SessionNegoState::Active { endpoint } = self {
@@ -980,15 +937,15 @@ where
     }
 
     fn do_shutdown(
-        shutdown: &Channel::ShutdownNego,
-        param: &<Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::Param,
-        endpoint: Channel::Endpoint,
-        stream: Channel::Conn,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        endpoint: Types::Endpoint,
+        stream: Types::Conn,
     ) -> Result<
-        NegotiatorResult<Channel::ShutdownValue, Self>,
+        NegotiatorResult<Types::ShutdownValue, Self>,
         ShutdownError<
-            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            Types::ShutdownStartError,
+            Types::ShutdownNegoError,
         >
     > {
         let state = shutdown.start(param, stream)
@@ -1006,21 +963,21 @@ where
 
     fn do_step(
         self,
-        endpoints: &mut HashSet<Channel::Endpoint>,
+        endpoints: &mut HashSet<Types::Endpoint>,
         registry: &Registry,
-        channel: &Channel,
-        authn: &AuthN,
-        shutdown: &Channel::ShutdownNego,
+        channel: &Types::Channel,
+        authn: &Types::AuthN,
+        shutdown: &Types::ShutdownNego,
     ) -> Result<
         NegotiatorResult<
-            (Option<AuthNResult<(Self, AuthN::AuthNSession), Channel::Conn>>,
-             Channel::Endpoint),
+            (Option<AuthNResult<(Self, Types::AuthNSession), Types::Conn>>,
+             Types::Endpoint),
             Self
         >,
         SessionEntryStepError<
-            Channel::NegotiateError,
-            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            Types::SessionNegoError,
+            SessionEntryAuthNError<Types::AuthStartError, Types::AuthNegoError>,
+            Types::ShutdownNegoError
         >
     > {
         match self {
@@ -1061,27 +1018,30 @@ where
                 }))
             }
             SessionNegoState::Shutdown { pending, endpoint } =>
-                Ok(shutdown.complete_negotiate(pending)
+                shutdown.complete_negotiate(pending)
                    .map_err(|err| SessionEntryStepError::Shutdown { err: err })?
                    .map_pending(|pending| SessionNegoState::Shutdown {
                        endpoint: endpoint.clone(),
                        pending: pending
                    })
-                   .map(|mut val| {
+                   .map_ok(|mut val| {
                        info!(target: "session-nego-entry",
                              "shutdown session with {}",
                              endpoint);
 
-                       val.deregister(registry);
+                       val.deregister(registry)
+                           .map_err(|err| SessionEntryStepError::IO {
+                               err: err
+                           })?;
 
-                       (None, endpoint)
-                   }))
+                       Ok((None, endpoint))
+                   })
         }
     }
 
     fn handle_shutdown_result<Addr>(
         registry: &Registry,
-        res: NegotiatorResult<Channel::ShutdownValue, Self>,
+        res: NegotiatorResult<Types::ShutdownValue, Self>,
         endpoint: Addr
     ) -> Result<Option<Self>, std::io::Error>
     where Addr: Display {
@@ -1091,7 +1051,7 @@ where
                       "shutdown session with {}",
                       endpoint);
 
-                val.deregister(registry);
+                val.deregister(registry)?;
 
                 Ok(None)
             }
@@ -1106,14 +1066,10 @@ where
     }
 }
 
-impl<Channel, AuthN> ConnectorEntry<Channel, AuthN>
+impl<Types> ConnectorEntry<Types>
 where
-    Channel: NearConnector,
-    Channel::Endpoint: Clone + Eq + Hash,
-    Channel::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError: ScopedError,
-    AuthN: Clone + Create + SessionAuthN<Channel::Conn, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
+    Types: NearSessionNegoTypes,
+    Types::Channel: NearConnector
 {
     /// Create a new `ConnectorEntry`.
     ///
@@ -1143,22 +1099,23 @@ where
     ///   not be concluded, or concluded but did not yield a session.
     fn create(
         registry: &Registry,
-        mut channel: Channel,
-        authn: &AuthN,
+        mut channel: Types::Channel,
+        authn: &Types::AuthN,
         retry: &Retry,
         token: Token
     ) -> Result<
-        RetryResult<(Self, Option<AuthN::AuthNSession>)>,
+        RetryResult<(Self, Option<Types::AuthNSession>)>,
         ConnectorEntryCreateError<
-            Channel::StartError,
+            Types::SessionStartError,
             SessionCreateError<
                 NegoEntrySessionError<
-                    Channel::NegotiateError,
-                    SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+                    Types::SessionNegoError,
+                    SessionEntryAuthNError<Types::AuthStartError,
+                                           Types::AuthNegoError>
                 >,
                 SessionEntryShutdownError<
-                    <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                    Types::ShutdownStartError,
+                    Types::ShutdownNegoError
                 >
             >
         >
@@ -1217,31 +1174,33 @@ where
     ///   session was already active.
     fn step(
         &mut self,
-        endpoints: &mut HashSet<Channel::Endpoint>,
+        endpoints: &mut HashSet<Types::Endpoint>,
         registry: &Registry,
-        authn: &AuthN,
+        authn: &Types::AuthN,
         retry: &Retry,
         token: Token
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
+        RetryResult<Option<Types::AuthNSession>>,
         ConnectorEntryStepError<
-            Channel::StartError,
+            Types::SessionStartError,
             SessionCreateError<
                 NegoEntrySessionError<
-                    Channel::NegotiateError,
-                    SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+                    Types::SessionNegoError,
+                    SessionEntryAuthNError<Types::AuthStartError,
+                                           Types::AuthNegoError>
                 >,
                 SessionEntryShutdownError<
-                    <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                    Types::ShutdownStartError,
+                    Types::ShutdownNegoError
                 >
             >,
             SessionEntryStepError<
-                Channel::NegotiateError,
-                SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+                Types::SessionNegoError,
+                SessionEntryAuthNError<Types::AuthStartError,
+                                       Types::AuthNegoError>,
                 SessionEntryShutdownError<
-                    <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                    <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                    Types::ShutdownStartError,
+                    Types::ShutdownNegoError
                 >
             >
         >
@@ -1306,12 +1265,12 @@ where
     fn shutdown(
         &mut self,
         registry: &Registry,
-        stream: Channel::Conn,
+        stream: Types::Conn,
     ) -> Result<
         bool,
         SessionEntryShutdownError<
-            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            Types::ShutdownStartError,
+            Types::ShutdownNegoError
         >
     > {
         let state = self.state.take()
@@ -1330,13 +1289,13 @@ where
     fn do_shutdown(
         &mut self,
         registry: &Registry,
-        endpoint: Channel::Endpoint,
-        stream: Channel::Conn,
+        endpoint: Types::Endpoint,
+        stream: Types::Conn,
     ) -> Result<
         (),
         SessionEntryShutdownError<
-            <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-            <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+            Types::ShutdownStartError,
+            Types::ShutdownNegoError
         >
     > {
         let res = SessionNegoState::do_shutdown(&self.shutdown,
@@ -1354,25 +1313,28 @@ where
     fn do_connect(
         &mut self,
         registry: &Registry,
-        authn: &AuthN,
+        authn: &Types::AuthN,
         retry: &Retry,
-        state: Channel::State,
+        state: Types::ConnState,
     ) -> Result<
-        Option<AuthN::AuthNSession>,
+        Option<Types::AuthNSession>,
         SessionCreateError<
             NegoEntrySessionError<
-                Channel::NegotiateError,
-                SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>
+                Types::SessionNegoError,
+                SessionEntryAuthNError<Types::AuthStartError,
+                                       Types::AuthNegoError>,
             >,
             SessionEntryShutdownError<
-                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
             >
         >
     > {
         match SessionNegoState::session(&self.channel, authn, state) {
             Ok(NegotiatorResult::Complete((AuthNResult::Accept((out, session)),
                                            endpoint))) => {
+                let session: Types::AuthNSession = session;
+
                 info!(target: "connector-entry",
                       "authenticated new session with {} over {}",
                       session.prin(), endpoint);
@@ -1462,19 +1424,20 @@ where
 
     fn do_step(
         &mut self,
-        endpoints: &mut HashSet<Channel::Endpoint>,
+        endpoints: &mut HashSet<Types::Endpoint>,
         registry: &Registry,
-        authn: &AuthN,
+        authn: &Types::AuthN,
         retry: &Retry,
-        state: SessionNegoState<Channel, AuthN>
+        state: SessionNegoState<Types>
     ) -> Result<
-        Option<AuthN::AuthNSession>,
+        Option<Types::AuthNSession>,
         SessionEntryStepError<
-            Channel::NegotiateError,
-            SessionEntryAuthNError<AuthN::StartError, AuthN::NegotiateError>,
+            Types::SessionNegoError,
+            SessionEntryAuthNError<Types::AuthStartError,
+                                   Types::AuthNegoError>,
             SessionEntryShutdownError<
-                <Channel::ShutdownNego as NegotiatorStart<Channel::ShutdownValue, Channel::Conn>>::StartError,
-                <Channel::ShutdownNego as Negotiator<Channel::ShutdownValue>>::NegotiateError
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
             >
         >
     > {
@@ -1599,24 +1562,9 @@ where
     }
 }
 
-impl<Accept, Conn, AcceptAuthN, ConnAuthN>
-    ChannelEntry<Accept, Conn, AcceptAuthN, ConnAuthN>
+impl<Types> ChannelEntry<Types>
 where
-    Conn: NearConnector + NearChannelCreateWithEndpoint,
-    Conn::Endpoint: Clone + Eq + Hash,
-    Conn::Conn: Session,
-    Conn::Config: Clone,
-    Conn::NegotiateError: ScopedError,
-    <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError: ScopedError,
-    Accept: NearChannel + NearChannelCreate,
-    Accept::Endpoint: Clone + Eq + Hash,
-    Accept::Conn: Session,
-    Accept::NegotiateError: ScopedError,
-    <Accept::ShutdownNego as Negotiator<Accept::ShutdownValue>>::NegotiateError: ScopedError,
-    ConnAuthN: Clone + Create + SessionAuthN<Conn::Conn, Param = ()>,
-    ConnAuthN::NegotiateError: ScopedError,
-    AcceptAuthN: Clone + Create + SessionAuthN<Accept::Conn, Param = ()>,
-    AcceptAuthN::NegotiateError: ScopedError
+    Types: NearDuplexNegoTypes
 {
     /// Request a stream for a given endpoint.
     ///
@@ -1664,22 +1612,23 @@ where
         ctx: &mut Ctx,
         gentok: &mut Peekable<I>,
         registry: &Registry,
-        endpoint: Conn::Endpoint,
+        endpoint: Types::OutEndpoint,
         verify_endpoint: Option<&IPEndpointAddr>
     ) -> Result<
-        RetryResult<Option<ConnAuthN::AuthNSession>>,
+        RetryResult<Option<Types::OutAuthNSession>>,
         ChannelEntryReqError<
-            Conn::CreateError,
+            Types::OutCreateError,
             ConnectorEntryCreateError<
-                Conn::StartError,
+                Types::OutSessionStartError,
                 SessionCreateError<
                     NegoEntrySessionError<
-                        Conn::NegotiateError,
-                        SessionEntryAuthNError<ConnAuthN::StartError, ConnAuthN::NegotiateError>
+                        Types::OutSessionNegoError,
+                        SessionEntryAuthNError<Types::OutAuthStartError,
+                                               Types::OutAuthNegoError>
                     >,
                     SessionEntryShutdownError<
-                        <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::StartError,
-                        <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError
+                        Types::OutShutdownStartError,
+                        Types::OutShutdownNegoError,
                     >
                 >
             >
@@ -1693,25 +1642,27 @@ where
             ChannelMode::Duplex {
                 config, conn_tokens, negos, out_authn, ..
             } => if !conn_tokens.contains_key(&endpoint) {
-                let token = gentok.peek()
+                let token = *gentok.peek()
                     .ok_or(ChannelEntryReqError::NoTokens)?;
-                let conn = Conn::create_with_endpoint(ctx, config.clone(),
-                                                      endpoint, verify_endpoint)
+                let conn = Types::OutChannel
+                    ::create_with_endpoint(ctx, config.clone(),
+                                           endpoint.clone(),
+                                           verify_endpoint)
                     .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
                 Ok(ConnectorEntry::create(registry, conn, out_authn,
-                                          &self.retry, *token)
+                                          &self.retry, token)
                    .map_err(|err| ChannelEntryReqError::Entry { err: err })?
                    .map(|(ent, out)| {
                        let ent = DuplexValue::Conn(ent);
                        let _ = gentok.next();
 
-                       if conn_tokens.insert(endpoint, *token).is_some() {
+                       if conn_tokens.insert(endpoint, token).is_some() {
                            error!(target: "channel-entry",
                                   "tokens table should not contain an entry");
                        }
 
-                       if negos.insert(*token, ent).is_some() {
+                       if negos.insert(token, ent).is_some() {
                            error!(target: "channel-entry",
                                   "tokens table should not contain an entry");
                        }
@@ -1724,24 +1675,26 @@ where
             ChannelMode::Outbound {
                 config, tokens, negos, authn, ..
             } => if !tokens.contains_key(&endpoint) {
-                let token = gentok.peek()
+                let token = *gentok.peek()
                     .ok_or(ChannelEntryReqError::NoTokens)?;
-                let conn = Conn::create_with_endpoint(ctx, config.clone(),
-                                                      endpoint, verify_endpoint)
+                let conn = Types::OutChannel
+                    ::create_with_endpoint(ctx, config.clone(),
+                                           endpoint.clone(),
+                                           verify_endpoint)
                     .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
                 Ok(ConnectorEntry::create(registry, conn, authn,
-                                          &self.retry, *token)
+                                          &self.retry, token)
                    .map_err(|err| ChannelEntryReqError::Entry { err: err })?
                    .map(|(ent, out)| {
                        let _ = gentok.next();
 
-                       if tokens.insert(endpoint, *token).is_some() {
+                       if tokens.insert(endpoint, token).is_some() {
                            error!(target: "channel-entry",
                                   "tokens table should not contain an entry");
                        }
 
-                       if negos.insert(*token, ent).is_some() {
+                       if negos.insert(token, ent).is_some() {
                            error!(target: "channel-entry",
                                   "tokens table should not contain an entry");
                        }
@@ -1791,15 +1744,15 @@ where
     fn listen<I>(
         &mut self,
         gentok: &mut Peekable<I>,
-        out_sessions: &mut Vec<ConnAuthN::AuthNSession>,
-        in_sessions: &mut Vec<AcceptAuthN::AuthNSession>,
-        out_endpoints: &mut HashSet<Conn::Endpoint>,
-        in_endpoints: &mut HashSet<Accept::Endpoint>,
+        out_sessions: &mut Vec<Types::OutAuthNSession>,
+        in_sessions: &mut Vec<Types::InAuthNSession>,
+        out_endpoints: &mut HashSet<Types::OutEndpoint>,
+        in_endpoints: &mut HashSet<Types::InEndpoint>,
         registry: &Registry,
         live: &HashSet<Token>,
     ) -> Result<
         (),
-        ChannelEntryListenError<Accept::StartError>
+        ChannelEntryListenError<Types::InSessionStartError>
     >
     where
         I: Iterator<Item = Token>
@@ -1901,7 +1854,7 @@ where
                 // Add the incoming sessions if we have them.
                 if let Some(incoming) = incoming {
                     for (token, ent) in incoming {
-                        let endpoint: Option<&Accept::Endpoint> =
+                        let endpoint: Option<&Types::InEndpoint> =
                             match &ent {
                                 SessionNegoState::AuthN { endpoint, .. } |
                                 SessionNegoState::Active { endpoint } |
@@ -2021,7 +1974,7 @@ where
                 // Add the incoming sessions if we have them.
                 if let Some(incoming) = incoming {
                     for (token, ent) in incoming {
-                        let endpoint: Option<&Accept::Endpoint> =
+                        let endpoint: Option<&Types::InEndpoint> =
                             match &ent {
                                 SessionNegoState::AuthN { endpoint, .. } |
                                 SessionNegoState::Active { endpoint } |
@@ -2071,15 +2024,15 @@ where
     fn shutdown_conn(
         &mut self,
         registry: &Registry,
-        stream: Conn::Conn,
+        stream: Types::OutConn,
     ) -> Result<
         (),
         ChannelEntryShutdownError<
             SessionEntryShutdownError<
-                <Conn::ShutdownNego as NegotiatorStart<Conn::ShutdownValue, Conn::Conn>>::StartError,
-                <Conn::ShutdownNego as Negotiator<Conn::ShutdownValue>>::NegotiateError
+                Types::OutShutdownStartError,
+                Types::OutShutdownNegoError,
             >,
-            Conn::Endpoint
+            Types::OutEndpoint
         >
     > {
         let endpoint = stream
@@ -2164,15 +2117,15 @@ where
     fn shutdown_accept(
         &mut self,
         registry: &Registry,
-        stream: Accept::Conn,
+        stream: Types::InConn,
     ) -> Result<
         (),
         ChannelEntryShutdownError<
             SessionEntryShutdownError<
-                <Accept::ShutdownNego as NegotiatorStart<Accept::ShutdownValue, Accept::Conn>>::StartError,
-                <Accept::ShutdownNego as Negotiator<Accept::ShutdownValue>>::NegotiateError
+                Types::InShutdownStartError,
+                Types::InShutdownNegoError,
             >,
-            Accept::Endpoint
+            Types::InEndpoint
         >
     > {
         let endpoint = stream
@@ -2262,16 +2215,16 @@ where
 
     fn start_incoming<I>(
         gentok: &mut Peekable<I>,
-        sessions: &mut Vec<AcceptAuthN::AuthNSession>,
+        sessions: &mut Vec<Types::InAuthNSession>,
         when: &mut Option<Instant>,
         read: &mut bool,
         registry: &Registry,
-        accept: &mut Accept,
-        shutdown: &Accept::ShutdownNego,
-        authn: &AcceptAuthN,
+        accept: &mut Types::InChannel,
+        shutdown: &Types::InShutdownNego,
+        authn: &Types::InAuthN,
     ) -> Result<
-        Option<Vec<(Token, SessionNegoState<Accept, AcceptAuthN>)>>,
-        ChannelEntryListenError<Accept::StartError>
+        Option<Vec<(Token, SessionNegoState<Types::Inbound>)>>,
+        ChannelEntryListenError<Types::InSessionStartError>
     >
     where
         I: Iterator<Item = Token>,
