@@ -811,12 +811,17 @@ where
             // Negotiations completed and yielrded a session.
             Ok(NegotiatorResult::Complete((None, endpoint))) => {
                 info!(target: "session-nego-entry",
-                      "shutdown session with {}",
+                      "shut down session with {}",
                       endpoint);
 
                 Ok(None)
             }
-            Ok(NegotiatorResult::Pending(pending)) => Ok(Some((pending, None))),
+            Ok(NegotiatorResult::Pending(pending)) => {
+                debug!(target: "session-nego-entry",
+                       "continuing session negotiations");
+
+                Ok(Some((pending, None)))
+            }
             Err(err) => match err.scope() {
                 // Pass these errors through.
                 ErrorScope::Unrecoverable |
@@ -1026,7 +1031,7 @@ where
                    })
                    .map_ok(|mut val| {
                        info!(target: "session-nego-entry",
-                             "shutdown session with {}",
+                             "shut down session with {}",
                              endpoint);
 
                        val.deregister(registry)
@@ -1120,6 +1125,10 @@ where
             >
         >
     > {
+        trace!(target: "connector-entry",
+               "creating connector entry with {}",
+               channel.endpoint());
+
         channel.start(registry, token)
             .map_err(|err| ConnectorEntryCreateError::Start { err: err })?
             .map_ok(|state| {
@@ -1207,6 +1216,10 @@ where
     > {
         let state = self.state.take();
 
+        trace!(target: "connector-entry",
+               "stepping negotiations with {}",
+               self.channel.endpoint());
+
         match state {
             Some(state) => self.do_step(endpoints, registry,
                                         authn, retry, state)
@@ -1273,6 +1286,10 @@ where
             Types::ShutdownNegoError
         >
     > {
+        trace!(target: "connector-entry",
+               "shutting down connector entry with {}",
+               self.channel.endpoint());
+
         let state = self.state.take()
             .ok_or(SessionEntryShutdownError::NotActive)?;
         let newstate = state
@@ -1360,6 +1377,10 @@ where
                 Ok(None)
             },
             Ok(NegotiatorResult::Pending(pending)) => {
+                debug!(target: "connector-entry",
+                      "continuing session negotiations with {}",
+                      self.channel.endpoint());
+
                 self.state = Some(pending);
 
                 Ok(None)
@@ -1485,6 +1506,9 @@ where
                 Ok(None)
             }
             Ok(NegotiatorResult::Pending(pending)) => {
+                debug!(target: "connector-entry",
+                      "continuing session negotiations with");
+
                 self.state = Some(pending);
 
                 Ok(None)
@@ -1832,6 +1856,50 @@ where
         }
     }
 
+    /// Check if this `ChannelEntry` contains any active sessions.
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        match &self.mode {
+            ChannelMode::Duplex {
+                accept_tokens, conn_tokens, negos, ..
+            } => match (accept_tokens.is_empty(), conn_tokens.is_empty(),
+                        negos.is_empty()) {
+                (true, true, true)  => true,
+                (false, false, _) | (false, _, false) => false,
+                _ => {
+                    error!(target: "channel-entry",
+                           "inconsistent token and negotiation tables");
+
+                    false
+                }
+            },
+            ChannelMode::Outbound {
+                tokens, negos, ..
+            } => match (tokens.is_empty(), negos.is_empty()) {
+                (true, true) => true,
+                (false, false) => false,
+                _ => {
+                    error!(target: "channel-entry",
+                           "inconsistent token and negotiation tables");
+
+                    false
+                }
+            },
+            ChannelMode::Inbound {
+                tokens, negos, ..
+            } => match (tokens.is_empty(), negos.is_empty()) {
+                (true, true) => true,
+                (false, false) => false,
+                _ => {
+                    error!(target: "channel-entry",
+                           "inconsistent token and negotiation tables");
+
+                    false
+                }
+            }
+        }
+    }
+
     /// Request a stream for a given endpoint.
     ///
     /// This will attempt to negotiate and authenticate a session with
@@ -1881,7 +1949,7 @@ where
         endpoint: Types::OutEndpoint,
         param: Types::OutParam
     ) -> Result<
-        RetryResult<Option<Types::OutAuthNSession>>,
+        RetryResult<(Token, Option<Types::OutAuthNSession>)>,
         ChannelEntryReqError<
             Types::OutCreateError,
             ConnectorEntryCreateError<
@@ -1948,7 +2016,7 @@ where
                                   "tokens table should not contain an entry");
                        }
 
-                       out
+                       (token, out)
                    }))
             } else {
                 Err(ChannelEntryReqError::Collision)
@@ -1991,7 +2059,7 @@ where
                                   "tokens table should not contain an entry");
                        }
 
-                       out
+                       (token, out)
                    }))
             } else {
                 Err(ChannelEntryReqError::Collision)
@@ -2078,65 +2146,64 @@ where
                         DuplexValue::Conn(ent) => if ent
                             .when.map_or(false, |when| when < now) ||
                             live.contains(token) {
-                                match ent.step(out_endpoints, registry,
-                                               out_authn, &self.retry,
-                                               *token) {
-                                    // Session was produced; record it.
-                                    Ok(RetryResult::Success(Some(session))) => {
-                                        out_sessions.push(session);
+                            match ent.step(out_endpoints, registry,
+                                           out_authn, &self.retry,
+                                           *token) {
+                                // Session was produced; record it.
+                                Ok(RetryResult::Success(Some(session))) => {
+                                    out_sessions.push(session);
+                                }
+                                // Record a deferral.
+                                Ok(RetryResult::Retry(when)) => if ent.when
+                                    .map_or(true, |curr| curr < when) {
+                                        ent.when = Some(when);
                                     }
-                                    // Record a deferral.
-                                    Ok(RetryResult::Retry(when)) => if ent.when
-                                        .map_or(true, |curr| curr < when) {
-                                            ent.when = Some(when);
+                                // We don't delete outgoing
+                                // entries that fail to connect.
+                                Ok(RetryResult::Success(None)) => {}
+                                Err(err) => {
+                                    error!(target: "channel-entry",
+                                           "negotiation step error: {}",
+                                           err);
+                                }
+                            }
+                        },
+                        DuplexValue::Accept(ent) => if live.contains(token) {
+                            if let Some(state) = ent.take() {
+                                match state.step(in_endpoints, registry,
+                                                 acceptor, in_authn,
+                                                 shutdown) {
+                                    // Session was produced; record it.
+                                    Ok(Some((state, session))) => {
+                                        *ent = Some(state);
+
+                                        if let Some(session) = session {
+                                            in_sessions.push(session);
                                         }
-                                    // We don't delete outgoing
-                                    // entries that fail to connect.
-                                    Ok(RetryResult::Success(None)) => {}
+                                    }
+                                    Ok(None) => {
+                                        deletes.push(*token)
+                                    }
                                     Err(err) => {
                                         error!(target: "channel-entry",
                                                "negotiation step error: {}",
                                                err);
+
+                                        deletes.push(*token)
                                     }
                                 }
-                            },
-                        DuplexValue::Accept(ent) => if live
-                            .contains(token) {
-                                if let Some(state) = ent.take() {
-                                    match state.step(in_endpoints, registry,
-                                                     acceptor, in_authn,
-                                                     shutdown) {
-                                        // Session was produced; record it.
-                                        Ok(Some((state, session))) => {
-                                            *ent = Some(state);
-
-                                            if let Some(session) = session {
-                                                in_sessions.push(session);
-                                            }
-                                        }
-                                        Ok(None) => {
-                                            deletes.push(*token)
-                                        }
-                                        Err(err) => {
-                                            error!(target: "channel-entry",
-                                                   "negotiation step error: {}",
-                                                   err);
-
-                                            deletes.push(*token)
-                                        }
-                                    }
-                                } else {
-                                    error!(target: "channel-entry",
-                                           "empty entry state for token {:?}",
-                                           token);
-                                }
+                            } else {
+                                error!(target: "channel-entry",
+                                       "empty entry state for token {:?}",
+                                       token);
                             }
+                        }
                     }
                 }
 
                 // Delete expired entries.
-                for token in deletes {
-                    if negos.remove(&token).is_none() {
+                for token in deletes.iter() {
+                    if negos.remove(token).is_none() {
                         error!(target: "channel-entry",
                                "deleted token {:?} was not present",
                                token);
@@ -2318,7 +2385,7 @@ where
         registry: &Registry,
         stream: Types::OutConn,
     ) -> Result<
-        (),
+        Option<Token>,
         ChannelEntryShutdownError<
             SessionEntryShutdownError<
                 Types::OutShutdownStartError,
@@ -2345,16 +2412,20 @@ where
                         })?;
 
                     if delete {
-                        if negos.remove(ent.get()).is_none() {
+                        let token = *ent.get();
+
+                        if negos.remove(&token).is_none() {
                             error!(target: "connector-entry",
                                    "entry for token {:?} missing",
                                    ent.get());
                         }
 
                         ent.remove();
-                    }
 
-                    Ok(())
+                        Ok(Some(token))
+                    } else {
+                        Ok(None)
+                    }
                 } else {
                     Err(ChannelEntryShutdownError::Mismatch)
                 }
@@ -2374,16 +2445,20 @@ where
                     })?;
 
                 if delete {
-                    if negos.remove(ent.get()).is_none() {
+                    let token = *ent.get();
+
+                    if negos.remove(&token).is_none() {
                         error!(target: "connector-entry",
                                "entry for token {:?} missing",
                                ent.get());
                     }
 
                     ent.remove();
-                }
 
-                Ok(())
+                    Ok(Some(token))
+                } else {
+                    Ok(None)
+                }
             } else {
                 Err(ChannelEntryShutdownError::NotFound {
                     endpoint: endpoint
@@ -2411,7 +2486,7 @@ where
         registry: &Registry,
         stream: Types::InConn,
     ) -> Result<
-        (),
+        Option<Token>,
         ChannelEntryShutdownError<
             SessionEntryShutdownError<
                 Types::InShutdownStartError,
@@ -2445,18 +2520,22 @@ where
                         })?;
 
                     if newaccept.is_some() {
-                        *accept = newaccept
+                        *accept = newaccept;
+
+                        Ok(None)
                     } else {
-                        if negos.remove(ent.get()).is_none() {
+                        let token = *ent.get();
+
+                        if negos.remove(&token).is_none() {
                             error!(target: "connector-entry",
                                    "entry for token {:?} missing",
                                    ent.get());
                         }
 
                         ent.remove();
-                    }
 
-                    Ok(())
+                        Ok(Some(token))
+                    }
                 } else {
                     Err(ChannelEntryShutdownError::Mismatch)
                 }
@@ -2483,18 +2562,22 @@ where
                     })?;
 
                 if newaccept.is_some() {
-                    *accept = newaccept
+                    *accept = newaccept;
+
+                    Ok(None)
                 } else {
-                    if negos.remove(ent.get()).is_none() {
+                    let token = *ent.get();
+
+                    if negos.remove(&token).is_none() {
                         error!(target: "connector-entry",
                                "entry for token {:?} missing",
                                ent.get());
                     }
 
                     ent.remove();
-                }
 
-                Ok(())
+                    Ok(Some(token))
+                }
             } else {
                 Err(ChannelEntryShutdownError::NotFound {
                     endpoint: endpoint
@@ -3019,13 +3102,15 @@ where
 
     match entry.req_stream(ctx, &mut gentok, poll.registry(), endpoint, param)
         .expect("Expected success") {
-            RetryResult::Success(Some(out)) => {
+            RetryResult::Success((newtok, Some(out))) => {
                 trace!(target: "get-in-session",
                        "got outbound session immediately");
 
+                assert_eq!(newtok, token);
+
                 out
             },
-        RetryResult::Success(None) => {
+        RetryResult::Success((newtok, None)) => {
             let mut events = Events::with_capacity(2);
             let mut out_sessions = Vec::new();
             let mut in_sessions = Vec::new();
@@ -3033,6 +3118,8 @@ where
             let mut in_endpoints = HashSet::new();
             let mut live = HashSet::new();
             let mut count = 0;
+
+            assert_eq!(newtok, token);
 
             while out_sessions.is_empty() {
                 trace!(target: "get-out-session",
@@ -3182,8 +3269,13 @@ where
         let mut entry: ChannelEntry<Types> =
             ChannelEntry::inbound(acceptor, in_authn,
                                   Retry::default(), listen);
+
+        assert!(entry.is_empty());
+
         let mut session: Types::InAuthNSession =
             get_in_session(&mut entry, &mut poll, in_session);
+
+        assert!(!entry.is_empty());
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -3199,10 +3291,15 @@ where
     let send = spawn(move || {
         let mut entry: ChannelEntry<Types> =
             ChannelEntry::outbound(out_config, out_authn, Retry::default());
+
+        assert!(entry.is_empty());
+
         let mut poll = Poll::new().expect("Expected success");
         let mut session: Types::OutAuthNSession =
             get_out_session(&mut nscaches, &mut entry, &mut poll,
                             endpoint, param, out_session);
+
+        assert!(!entry.is_empty());
 
         write_one(session.get_mut(), &mut poll, out_session, &FIRST_BYTES)
             .expect("Expected success");
@@ -3364,7 +3461,7 @@ fn test_tls_tcp() {
         "  key: test/data/certs/server/private/test_server_key.pem\n",
         "  tcp:\n",
         "    addr: ::0\n",
-        "    port: 8100\n"
+        "    port: 8101\n"
     );
     const CLIENT_CONF: &'static str = concat!(
         "tls:\n",
@@ -3388,7 +3485,7 @@ fn test_tls_tcp() {
         "  verify-endpoint: test-server.nowhere.com",
     );
     let endpoint = CompoundNearNameAddr::TCP {
-        tcp: "[::0]:8100".parse()
+        tcp: "[::0]:8101".parse()
             .expect("Expected success")
     };
 
