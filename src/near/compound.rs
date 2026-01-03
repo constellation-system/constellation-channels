@@ -26,6 +26,8 @@
 //! stringent restrictions on what types of channels can be
 //! configured.
 
+use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -772,6 +774,24 @@ pub enum CompoundNegotiatorStartError {
                                TLSLoadConfigError>>
     },
     Mismatch
+}
+
+impl<'a> TryFrom<CompoundNearNameAddrRef<'a>> for CompoundNearNameAddr {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(
+        val: CompoundNearNameAddrRef<'a>
+    ) -> Result<CompoundNearNameAddr, Error> {
+        match val {
+            CompoundNearNameAddrRef::Unix { unix } =>
+                Ok(CompoundNearNameAddr::Unix { unix: unix.try_into()? }),
+            CompoundNearNameAddrRef::TCP { tcp } =>
+                Ok(CompoundNearNameAddr::TCP { tcp: tcp.clone() }),
+            CompoundNearNameAddrRef::SOCKS5 { socks5 } =>
+                Ok(CompoundNearNameAddr::SOCKS5 { socks5: socks5.clone() }),
+        }
+    }
 }
 
 impl ScopedError for CompoundShutdownError {
