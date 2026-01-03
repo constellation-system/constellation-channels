@@ -52,6 +52,7 @@ use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
+use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -63,8 +64,13 @@ use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
+use serde::de::MapAccess;
+use serde::de::SeqAccess;
+use serde::de::Unexpected;
+use serde::de::Visitor;
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
@@ -319,6 +325,7 @@ pub struct CompoundXfrmCreateParam<Unix, UDP> {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[serde(untagged)]
 pub enum CompoundNearConnectorParam {
     TLS {
         tls: Box<TLSParam<Option<CompoundNearConnectorParam>>>
@@ -857,7 +864,9 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
-pub enum CompoundResolvingNearConnectorConfig<TLS: TLSLoadClient> {
+pub enum CompoundResolvingNearConnectorConfig<TLS>
+where TLS: TLSLoadClient
+{
     /// UNIX socket channel.
     ///
     /// The service will run as a separate process, and will
@@ -1033,7 +1042,7 @@ pub enum CompoundResolvingNearConnectorConfig<TLS: TLSLoadClient> {
 ///     username: test
 ///     password: abc123
 /// ```
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
 pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
     /// UNIX socket channel.
@@ -1043,7 +1052,7 @@ pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix_stream: UnixNearConnectorPartialConfig
+        unix_stream: Option<UnixNearConnectorPartialConfig>
     },
     /// TCP Channel.
     ///
@@ -1051,7 +1060,7 @@ pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
     /// TCP connection.
     TCP {
         /// TCP socket configuration.
-        tcp: TCPResolvingNearConnectorPartialConfig
+        tcp: Option<TCPResolvingNearConnectorPartialConfig>
     },
     /// TLS channel.
     ///
@@ -1210,7 +1219,7 @@ pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
 ///     username: test
 ///     password: abc123
 /// ```
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
 pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
     /// UNIX socket channel.
@@ -1220,15 +1229,16 @@ pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix_stream: UnixNearConnectorPartialConfig
+        unix_stream: Option<UnixNearConnectorPartialConfig>
     },
     /// TCP Channel.
     ///
     /// The service will run separately, and will communicate via a
     /// TCP connection.
+    #[serde(rename_all = "kebab-case")]
     TCP {
         /// TCP socket configuration.
-        tcp: TCPNearConnectorPartialConfig
+        tcp: Option<TCPNearConnectorPartialConfig>
     },
     /// TLS channel.
     ///
@@ -1986,8 +1996,9 @@ pub struct TCPResolvingNearConnectorConfig {
     resolve: AddrsConfig
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[serde(default)]
 pub struct TCPResolvingNearConnectorPartialConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
@@ -2013,8 +2024,9 @@ pub struct TCPNearConnectorConfig {
     retry: Retry
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[serde(default)]
 pub struct TCPNearConnectorPartialConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
@@ -2369,13 +2381,226 @@ pub struct UnixNearConnectorConfig {
     retry: Retry
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "unix-connector-partial")]
 #[serde(rename_all = "kebab-case")]
+#[serde(default)]
 pub struct UnixNearConnectorPartialConfig {
     /// Retry configuration.
     #[serde(default)]
     retry: Retry
+}
+
+#[derive(Clone)]
+struct CompoundNearConnectorPartialConfigVisitor<TLS>
+where TLS: TLSLoadClient
+{
+    tls: PhantomData<TLS>
+}
+
+#[derive(Clone)]
+struct CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
+where TLS: TLSLoadClient
+{
+    tls: PhantomData<TLS>
+}
+
+#[derive(Clone, Default)]
+struct CompoundNearChannelVariantVisitor;
+
+enum CompoundNearChannelVariant {
+    Unix,
+    TCP,
+    TLS,
+    SOCKS5
+}
+
+const COMPOUND_NEAR_CHANNEL_TYPES: &[&str] =
+    &["unix-stream", "tcp", "tls", "socks5-tcp"];
+
+impl<TLS> Default for CompoundNearConnectorPartialConfigVisitor<TLS>
+where TLS: TLSLoadClient
+{
+    #[inline]
+    fn default() -> Self {
+        CompoundNearConnectorPartialConfigVisitor {
+            tls: PhantomData
+        }
+    }
+}
+
+impl<TLS> Default for CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
+where TLS: TLSLoadClient
+{
+    #[inline]
+    fn default() -> Self {
+        CompoundResolvingNearConnectorPartialConfigVisitor {
+            tls: PhantomData
+        }
+    }
+}
+
+impl<'de> Visitor<'de> for CompoundNearChannelVariantVisitor {
+    type Value = CompoundNearChannelVariant;
+
+    fn expecting(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "unix-stream, tcp, tls, or socks5-tcp")
+    }
+
+    fn visit_str<E>(
+        self,
+        s: &str
+    ) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        match s {
+            "unix-stream" => Ok(CompoundNearChannelVariant::Unix),
+            "tcp" => Ok(CompoundNearChannelVariant::TCP),
+            "tls" => Ok(CompoundNearChannelVariant::TLS),
+            "socks5-tcp" => Ok(CompoundNearChannelVariant::SOCKS5),
+            _ => Err(serde::de::Error::unknown_variant(
+                s, COMPOUND_NEAR_CHANNEL_TYPES
+            ))
+        }
+    }
+
+    #[inline]
+    fn visit_borrowed_str<E>(
+        self,
+        s: &'de str
+    ) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        self.visit_str(s)
+    }
+
+    #[inline]
+    fn visit_string<E>(
+        self,
+        s: String
+    ) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        self.visit_str(s.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompoundNearChannelVariant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+
+        deserializer.deserialize_identifier(
+            CompoundNearChannelVariantVisitor
+        )
+    }
+}
+
+impl<'de, TLS> Visitor<'de> for CompoundNearConnectorPartialConfigVisitor<TLS>
+where TLS: TLSLoadClient + Deserialize<'de>
+{
+    type Value = CompoundNearConnectorPartialConfig<TLS>;
+
+    fn expecting(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "unix-stream, tcp, tls, or socks5-tcp and configurations")
+    }
+
+    fn visit_map<V>(
+        self,
+        mut map: V
+    ) -> Result<Self::Value, V::Error>
+    where V: MapAccess<'de> {
+        match map.next_key()? {
+            Some(CompoundNearChannelVariant::Unix) =>
+                Ok(CompoundNearConnectorPartialConfig::Unix {
+                    unix_stream: map.next_value()?
+                }),
+            Some(CompoundNearChannelVariant::TCP) =>
+                Ok(CompoundNearConnectorPartialConfig::TCP {
+                    tcp: map.next_value()?
+                }),
+            Some(CompoundNearChannelVariant::TLS) =>
+                Ok(CompoundNearConnectorPartialConfig::TLS {
+                    tls: map.next_value()?
+                }),
+            Some(CompoundNearChannelVariant::SOCKS5) =>
+                Ok(CompoundNearConnectorPartialConfig::SOCKS5 {
+                    socks5_tcp: map.next_value()?
+                }),
+            None => Err(serde::de::Error::invalid_length(0, &self))
+        }
+    }
+}
+
+impl<'de, TLS> Deserialize<'de> for CompoundNearConnectorPartialConfig<TLS>
+where TLS: TLSLoadClient + Deserialize<'de>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+
+        deserializer.deserialize_struct(
+            "compound-near-connector-partial",
+            COMPOUND_NEAR_CHANNEL_TYPES,
+            CompoundNearConnectorPartialConfigVisitor::default()
+        )
+    }
+}
+
+impl<'de, TLS> Visitor<'de>
+    for CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
+where TLS: TLSLoadClient + Deserialize<'de>
+{
+    type Value = CompoundResolvingNearConnectorPartialConfig<TLS>;
+
+    fn expecting(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "unix-stream, tcp, tls, or socks5-tcp and configurations")
+    }
+
+    fn visit_map<V>(
+        self,
+        mut map: V
+    ) -> Result<Self::Value, V::Error>
+    where V: MapAccess<'de> {
+        match map.next_key()? {
+            Some(CompoundNearChannelVariant::Unix) =>
+                Ok(CompoundResolvingNearConnectorPartialConfig::Unix {
+                    unix_stream: map.next_value()?
+                }),
+            Some(CompoundNearChannelVariant::TCP) =>
+                Ok(CompoundResolvingNearConnectorPartialConfig::TCP {
+                    tcp: map.next_value()?
+                }),
+            Some(CompoundNearChannelVariant::TLS) =>
+                Ok(CompoundResolvingNearConnectorPartialConfig::TLS {
+                    tls: map.next_value()?
+                }),
+            Some(CompoundNearChannelVariant::SOCKS5) =>
+                Ok(CompoundResolvingNearConnectorPartialConfig::SOCKS5 {
+                    socks5_tcp: map.next_value()?
+                }),
+            None => Err(serde::de::Error::invalid_length(0, &self))
+        }
+    }
+}
+
+impl<'de, TLS> Deserialize<'de>
+    for CompoundResolvingNearConnectorPartialConfig<TLS>
+where TLS: TLSLoadClient + Deserialize<'de>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+
+        deserializer.deserialize_struct(
+            "compound-near-resolving-connector-partial",
+            COMPOUND_NEAR_CHANNEL_TYPES,
+            CompoundResolvingNearConnectorPartialConfigVisitor::default()
+        )
+    }
 }
 
 impl AddrsConfig {

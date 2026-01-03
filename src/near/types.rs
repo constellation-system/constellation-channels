@@ -65,15 +65,15 @@ pub trait NearSessionNegoTypes {
     type Prin: Clone + Debug + Display + Eq + Hash;
     type AuthNPending;
     type AuthNSession: AuthNed<Self::Prin, Self::Conn>;
-    type AuthN: Clone + Create
+    type AuthN: Create
         + SessionAuthN<Self::Conn,
                        Param = (),
                        Pending = Self::AuthNPending,
                        AuthNSession = Self::AuthNSession,
                        StartError = Self::AuthStartError,
                        NegotiateError = Self::AuthNegoError>;
-    type AuthStartError: Display + ScopedError;
-    type AuthNegoError: Display + ScopedError;
+    type AuthStartError: Debug + Display + ScopedError;
+    type AuthNegoError: Debug + Display + ScopedError;
     type Endpoint: Clone + Debug + Display + Eq + Hash + Sized;
     type Conn: CredentialsMut + Read + Write + Debug + Sized + Source
         + Session<PeerAddr = Self::Endpoint>;
@@ -82,8 +82,8 @@ pub trait NearSessionNegoTypes {
     type ShutdownParam;
     type ShutdownPending;
     type ShutdownValue: Source;
-    type ShutdownNegoError: Display + ScopedError;
-    type ShutdownStartError: Display + ScopedError;
+    type ShutdownNegoError: Debug + Display + ScopedError;
+    type ShutdownStartError: Debug + Display + ScopedError;
     type ShutdownNego: NegotiatorStart<
         Self::ShutdownValue,
         Self::Conn,
@@ -102,23 +102,23 @@ pub trait NearSessionNegoTypes {
         StartError = Self::SessionStartError,
         NegotiateError = Self::SessionNegoError
     >;
-    type SessionStartError: Display + ScopedError;
-    type SessionNegoError: Display + ScopedError;
+    type SessionStartError: Debug + Display + ScopedError;
+    type SessionNegoError: Debug + Display + ScopedError;
 }
 
 pub trait NearDuplexNegoTypes {
     type InPrin: Clone + Debug + Display + Eq + Hash;
     type InAuthNPending;
     type InAuthNSession: AuthNed<Self::InPrin, Self::InConn>;
-    type InAuthN: Clone + Create
+    type InAuthN: Create
         + SessionAuthN<Self::InConn,
                        Param = (),
                        Pending = Self::InAuthNPending,
                        AuthNSession = Self::InAuthNSession,
                        StartError = Self::InAuthStartError,
                        NegotiateError = Self::InAuthNegoError>;
-    type InAuthStartError: Display + ScopedError;
-    type InAuthNegoError: Display + ScopedError;
+    type InAuthStartError: Debug + Display + ScopedError;
+    type InAuthNegoError: Debug + Display + ScopedError;
     type InEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
     type InConn: CredentialsMut + Read + Write + Debug + Sized + Source
         + Session<PeerAddr = Self::InEndpoint>;
@@ -127,8 +127,8 @@ pub trait NearDuplexNegoTypes {
     type InShutdownParam;
     type InShutdownPending;
     type InShutdownValue: Source;
-    type InShutdownNegoError: Display + ScopedError;
-    type InShutdownStartError: Display + ScopedError;
+    type InShutdownNegoError: Debug + Display + ScopedError;
+    type InShutdownStartError: Debug + Display + ScopedError;
     type InShutdownNego: NegotiatorStart<
         Self::InShutdownValue,
         Self::InConn,
@@ -146,9 +146,9 @@ pub trait NearDuplexNegoTypes {
         ShutdownNego = Self::InShutdownNego,
         StartError = Self::InSessionStartError,
         NegotiateError = Self::InSessionNegoError
-    >;
-    type InSessionStartError: Display + ScopedError;
-    type InSessionNegoError: Display + ScopedError;
+    > + Source;
+    type InSessionStartError: Debug + Display + ScopedError;
+    type InSessionNegoError: Debug + Display + ScopedError;
     type Inbound: NearSessionNegoTypes<
         Prin = Self::InPrin,
         AuthNPending = Self::InAuthNPending,
@@ -173,15 +173,15 @@ pub trait NearDuplexNegoTypes {
     type OutPrin: Clone + Debug + Display + Eq + Hash;
     type OutAuthNPending;
     type OutAuthNSession: AuthNed<Self::OutPrin, Self::OutConn>;
-    type OutAuthN: Clone + Create
+    type OutAuthN: Create
         + SessionAuthN<Self::OutConn,
                        Param = (),
                        Pending = Self::OutAuthNPending,
                        AuthNSession = Self::OutAuthNSession,
                        StartError = Self::OutAuthStartError,
                        NegotiateError = Self::OutAuthNegoError>;
-    type OutAuthStartError: Display + ScopedError;
-    type OutAuthNegoError: Display + ScopedError;
+    type OutAuthStartError: Debug + Display + ScopedError;
+    type OutAuthNegoError: Debug + Display + ScopedError;
     type OutConfig: Clone;
     type OutEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
     type OutConn: CredentialsMut + Read + Write + Debug + Sized + Source
@@ -191,8 +191,8 @@ pub trait NearDuplexNegoTypes {
     type OutShutdownParam;
     type OutShutdownPending;
     type OutShutdownValue: Source;
-    type OutShutdownNegoError: Display + ScopedError;
-    type OutShutdownStartError: Display + ScopedError;
+    type OutShutdownNegoError: Debug + Display + ScopedError;
+    type OutShutdownStartError: Debug + Display + ScopedError;
     type OutShutdownNego: NegotiatorStart<
         Self::OutShutdownValue,
         Self::OutConn,
@@ -217,9 +217,9 @@ pub trait NearDuplexNegoTypes {
             StartError = Self::OutSessionStartError,
             NegotiateError = Self::OutSessionNegoError
         >;
-    type OutCreateError: Display + ScopedError;
-    type OutSessionStartError: Display + ScopedError;
-    type OutSessionNegoError: Display + ScopedError;
+    type OutCreateError: Debug + Display + ScopedError;
+    type OutSessionStartError: Debug + Display + ScopedError;
+    type OutSessionNegoError: Debug + Display + ScopedError;
     type Outbound: NearSessionNegoTypes<
         Prin = Self::OutPrin,
         AuthNPending = Self::OutAuthNPending,
@@ -252,7 +252,12 @@ pub trait NearDuplexNegoTypes {
 pub struct SimpleNearDuplexNegoTypes<In, Out>
 where
     In: NearSessionNegoTypes,
-    Out: NearSessionNegoTypes {
+    Out: NearSessionNegoTypes,
+    In::Channel: Source,
+    Out::Channel: NearConnector
+        + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
+    <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone
+{
     pub intypes: In,
     pub outypes: Out
 }
@@ -265,7 +270,7 @@ where
 /// around [CompoundNearAcceptor]s should be type aliases of this.
 #[derive(Default)]
 pub struct CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadServer
 {
@@ -281,7 +286,7 @@ where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
 /// around [CompoundNearConnector]s should be type aliases of this.
 #[derive(Default)]
 pub struct CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadClient
 {
@@ -290,7 +295,7 @@ where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
 }
 
 impl<AuthN, TLS> Clone for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadServer {
     #[inline]
@@ -303,17 +308,17 @@ where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
 }
 
 unsafe impl<AuthN, TLS> Send for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadServer {}
 
 unsafe impl<AuthN, TLS> Sync for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadServer {}
 
 impl<AuthN, TLS> Clone for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadClient {
     #[inline]
@@ -326,17 +331,17 @@ where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
 }
 
 unsafe impl<AuthN, TLS> Send for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadClient {}
 
 unsafe impl<AuthN, TLS> Sync for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadClient {}
 
 impl<AuthN, TLS> NearSessionNegoTypes for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadServer
 {
@@ -363,7 +368,7 @@ where AuthN: Clone + Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
 }
 
 impl<AuthN, TLS> NearSessionNegoTypes for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Clone + Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
       AuthN::NegotiateError: ScopedError,
       TLS: Clone + Debug + TLSLoadClient {
     type Prin = AuthN::Prin;
@@ -392,6 +397,7 @@ impl<In, Out> NearDuplexNegoTypes for SimpleNearDuplexNegoTypes<In, Out>
 where
     In: NearSessionNegoTypes,
     Out: NearSessionNegoTypes,
+    In::Channel: Source,
     Out::Channel: NearConnector
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
     <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone

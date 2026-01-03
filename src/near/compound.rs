@@ -2523,8 +2523,9 @@ where
             (CompoundNearConnectorPartialConfig::Unix { unix_stream },
              CompoundNearNameAddr::Unix { unix: endpoint },
              None) => {
-                let unix = UnixNearConnector
-                    ::create_with_endpoint(caches, unix_stream, endpoint, ())
+                let unix = UnixNearConnector::create_with_endpoint(
+                        caches, unix_stream.unwrap_or_default(), endpoint, ()
+                    )
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::Unix {
                             unix: err
@@ -2536,9 +2537,9 @@ where
             (CompoundNearConnectorPartialConfig::TCP { tcp },
              CompoundNearNameAddr::TCP { tcp: endpoint },
              None) => {
-                let Ok(acc) =
-                    TCPNearConnector::create_with_endpoint(caches, tcp,
-                                                           endpoint, ());
+                let Ok(acc) = TCPNearConnector::create_with_endpoint(
+                    caches, tcp.unwrap_or_default(), endpoint, ()
+                );
 
                 Ok(CompoundNearConnector::TCP { tcp: acc })
             }
@@ -3367,8 +3368,9 @@ where
                  unix: endpoint
              },
              None) => {
-                let unix = UnixNearConnector
-                    ::create_with_endpoint(caches, unix_stream, endpoint, ())
+                let unix = UnixNearConnector::create_with_endpoint(
+                        caches, unix_stream.unwrap_or_default(), endpoint, ()
+                    )
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::Unix {
                             unix: err
@@ -3382,9 +3384,9 @@ where
                  tcp: endpoint
              },
              None) => {
-                let acc =
-                    TCPResolvingNearConnector
-                    ::create_with_endpoint(caches, tcp, endpoint, ())
+                let acc = TCPResolvingNearConnector::create_with_endpoint(
+                        caches, tcp.unwrap_or_default(), endpoint, ()
+                    )
                     .map_err(|err| {
                         CompoundNearConnectorCreateWithEndpointError::TCP {
                             tcp: err
@@ -3732,7 +3734,6 @@ fn test_compound(
     listen.join().unwrap();
     send.join().unwrap();
 }
-
 
 #[test]
 fn test_tls_unix() {

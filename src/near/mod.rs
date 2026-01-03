@@ -259,7 +259,7 @@ pub trait NearChannelCreate: NearChannel + Sized {
     /// Type of configurations.
     type Config;
     /// Type of errors that can be returned from [new](NearChannelCreate::new).
-    type CreateError: Display + ScopedError + Sized;
+    type CreateError: Debug + Display + ScopedError + Sized;
 
     /// Create a new instance from `config`.
     ///
@@ -298,7 +298,7 @@ pub trait NearChannelCreateWithEndpoint: NearChannel + Sized {
     type EndpointConfig;
     type Param: Default;
     /// Type of errors that can be returned from [new](NearChannelCreate::new).
-    type CreateError: Display + ScopedError + Sized;
+    type CreateError: Debug + Display + ScopedError + Sized;
 
     /// Create a new instance from `config`.
     ///

@@ -1647,8 +1647,6 @@ where
     ///
     /// - `acceptor`: [NearChannel] to use for accepting connections.
     ///
-    /// - `shutdown`: [Negotiatior] to use for shutting down sessions.
-    ///
     /// - `authn`: [SessionAuthN] to use for authenticating sessions.
     ///
     /// - `retry`: [Retry] configuration to use.
@@ -1657,13 +1655,13 @@ where
     ///   for new sessions.
     pub(crate) fn inbound(
         acceptor: Types::InChannel,
-        shutdown: Types::InShutdownNego,
         authn: Types::InAuthN,
         retry: Retry,
         token: Token
     ) -> Self {
         let tokens = HashMap::new();
         let negos = HashMap::new();
+        let shutdown = acceptor.shutdown_nego();
         let mode = ChannelMode::Inbound {
             acceptor: acceptor,
             shutdown: shutdown,
@@ -1691,8 +1689,6 @@ where
     ///
     /// - `acceptor`: [NearChannel] to use for accepting connections.
     ///
-    /// - `shutdown`: [Negotiatior] to use for shutting down sessions.
-    ///
     /// - `authn`: [SessionAuthN] to use for authenticating sessions.
     ///
     /// - `retry`: [Retry] configuration to use.
@@ -1704,7 +1700,6 @@ where
     ///   cause an errer if it is too low.
     pub(crate) fn inbound_with_capacity(
         acceptor: Types::InChannel,
-        shutdown: Types::InShutdownNego,
         authn: Types::InAuthN,
         retry: Retry,
         token: Token,
@@ -1712,6 +1707,7 @@ where
     ) -> Self {
         let tokens = HashMap::with_capacity(size);
         let negos = HashMap::with_capacity(size);
+        let shutdown = acceptor.shutdown_nego();
         let mode = ChannelMode::Inbound {
             acceptor: acceptor,
             shutdown: shutdown,
@@ -1740,9 +1736,6 @@ where
     ///
     /// - `acceptor`: [NearChannel] to use for accepting connections.
     ///
-    /// - `in_shutdown`: [Negotiatior] to use for shutting down
-    ///   inbound sessions.
-    ///
     /// - `in_authn`: [SessionAuthN] to use for authenticating inbound
     ///   sessions.
     ///
@@ -1754,7 +1747,6 @@ where
         out_config: Types::OutConfig,
         out_authn: Types::OutAuthN,
         acceptor: Types::InChannel,
-        in_shutdown: Types::InShutdownNego,
         in_authn: Types::InAuthN,
         retry: Retry,
         token: Token,
@@ -1762,6 +1754,7 @@ where
         let out_tokens = HashMap::new();
         let in_tokens = HashMap::new();
         let negos = HashMap::new();
+        let in_shutdown = acceptor.shutdown_nego();
         let mode = ChannelMode::Duplex {
             config: out_config,
             out_authn: out_authn,
@@ -1793,9 +1786,6 @@ where
     ///
     /// - `acceptor`: [NearChannel] to use for accepting connections.
     ///
-    /// - `in_shutdown`: [Negotiatior] to use for shutting down
-    ///   inbound sessions.
-    ///
     /// - `in_authn`: [SessionAuthN] to use for authenticating inbound
     ///   sessions.
     ///
@@ -1813,7 +1803,6 @@ where
         out_config: Types::OutConfig,
         out_authn: Types::OutAuthN,
         acceptor: Types::InChannel,
-        in_shutdown: Types::InShutdownNego,
         in_authn: Types::InAuthN,
         retry: Retry,
         token: Token,
@@ -1823,6 +1812,7 @@ where
         let out_tokens = HashMap::with_capacity(nouts);
         let in_tokens = HashMap::with_capacity(nins);
         let negos = HashMap::with_capacity(nins + nouts);
+        let in_shutdown = acceptor.shutdown_nego();
         let mode = ChannelMode::Duplex {
             config: out_config,
             out_authn: out_authn,
@@ -1914,10 +1904,18 @@ where
         I: Iterator<Item = Token>,
         Ctx: NSNameCachesCtx
     {
+        debug!(target: "channel-entry",
+               "requesting flow with {}",
+               endpoint);
+
         match &mut self.mode {
             ChannelMode::Duplex {
                 config, conn_tokens, negos, out_authn, ..
             } => if !conn_tokens.contains_key(&endpoint) {
+                trace!(target: "channel-entry",
+                       "creating outbound channel to {}",
+                       endpoint);
+
                 let token = *gentok.peek()
                     .ok_or(ChannelEntryReqError::NoTokens)?;
                 let conn = Types::OutChannel
@@ -1925,12 +1923,20 @@ where
                                            endpoint.clone(), param)
                     .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
+                trace!(target: "channel-entry",
+                       "creating connector entry for {}, token {:?}",
+                       endpoint, token);
+
                 Ok(ConnectorEntry::create(registry, conn, out_authn,
                                           &self.retry, token)
                    .map_err(|err| ChannelEntryReqError::Entry { err: err })?
                    .map(|(ent, out)| {
                        let ent = DuplexValue::Conn(ent);
                        let _ = gentok.next();
+
+                       trace!(target: "channel-entry",
+                              "connector entry created for {}",
+                              endpoint);
 
                        if conn_tokens.insert(endpoint, token).is_some() {
                            error!(target: "channel-entry",
@@ -1950,6 +1956,10 @@ where
             ChannelMode::Outbound {
                 config, tokens, negos, authn, ..
             } => if !tokens.contains_key(&endpoint) {
+                trace!(target: "channel-entry",
+                       "creating outbound channel to {}",
+                       endpoint);
+
                 let token = *gentok.peek()
                     .ok_or(ChannelEntryReqError::NoTokens)?;
                 let conn = Types::OutChannel
@@ -1957,11 +1967,19 @@ where
                                            endpoint.clone(), param)
                     .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
 
+                trace!(target: "channel-entry",
+                       "creating connector entry for {}, token {:?}",
+                       endpoint, token);
+
                 Ok(ConnectorEntry::create(registry, conn, authn,
                                           &self.retry, token)
                    .map_err(|err| ChannelEntryReqError::Entry { err: err })?
                    .map(|(ent, out)| {
                        let _ = gentok.next();
+
+                       trace!(target: "channel-entry",
+                              "connector entry created for {}",
+                              endpoint);
 
                        if tokens.insert(endpoint, token).is_some() {
                            error!(target: "channel-entry",
@@ -2886,7 +2904,493 @@ where Shutdown: Display,
 }
 
 #[cfg(test)]
-fn test_channel_entry(
-) {
+use std::convert::TryFrom;
+#[cfg(test)]
+use std::iter::once;
+#[cfg(test)]
+use std::net::SocketAddr;
+#[cfg(test)]
+use std::thread::spawn;
+#[cfg(test)]
+use std::time::Duration;
 
+#[cfg(test)]
+use constellation_auth::authn::TrivialAuthN;
+#[cfg(test)]
+use constellation_common::unix::UnixSocketAddr;
+#[cfg(test)]
+use mio::Events;
+#[cfg(test)]
+use mio::Interest;
+#[cfg(test)]
+use mio::Poll;
+
+#[cfg(test)]
+use crate::init;
+#[cfg(test)]
+use crate::config::CompoundNearAcceptorConfig;
+#[cfg(test)]
+use crate::config::CompoundNearConnectorParam;
+#[cfg(test)]
+use crate::config::CompoundNearConnectorPartialConfig;
+#[cfg(test)]
+use crate::config::tls::TLSClientConfig;
+#[cfg(test)]
+use crate::config::tls::TLSServerConfig;
+#[cfg(test)]
+use crate::near::read_one;
+#[cfg(test)]
+use crate::near::write_one;
+#[cfg(test)]
+use crate::near::compound::CompoundNearAcceptor;
+#[cfg(test)]
+use crate::near::compound::CompoundNearClientConn;
+#[cfg(test)]
+use crate::near::compound::CompoundNearCredential;
+#[cfg(test)]
+use crate::near::compound::CompoundNearNameAddr;
+#[cfg(test)]
+use crate::near::compound::CompoundNearServerConn;
+#[cfg(test)]
+use crate::near::types::SimpleNearDuplexNegoTypes;
+#[cfg(test)]
+use crate::near::types::CompoundAcceptorNegoTypes;
+#[cfg(test)]
+use crate::near::types::CompoundConnectorNegoTypes;
+#[cfg(test)]
+use crate::resolve::cache::SharedNSNameCaches;
+
+#[cfg(test)]
+const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+
+#[cfg(test)]
+const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, PartialOrd)]
+struct TestPrin;
+
+#[cfg(test)]
+type TestAcceptorNegoTypes =
+    CompoundAcceptorNegoTypes<TrivialAuthN<TestPrin, CompoundNearServerConn>,
+                              TLSServerConfig>;
+
+#[cfg(test)]
+type TestConnectorNegoTypes =
+    CompoundConnectorNegoTypes<TrivialAuthN<TestPrin, CompoundNearClientConn>,
+                               TLSClientConfig>;
+
+#[cfg(test)]
+type TestDuplexNegoTypes = SimpleNearDuplexNegoTypes<TestAcceptorNegoTypes,
+                                                     TestConnectorNegoTypes>;
+
+#[cfg(test)]
+impl From<CompoundNearCredential> for TestPrin {
+    #[inline]
+    fn from(_val: CompoundNearCredential) -> TestPrin {
+        TestPrin
+    }
+}
+
+#[cfg(test)]
+impl Display for TestPrin {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "test principal")
+    }
+}
+
+#[cfg(test)]
+fn get_out_session<Types, Ctx>(
+    ctx: &mut Ctx,
+    entry: &mut ChannelEntry<Types>,
+    poll: &mut Poll,
+    endpoint: Types::OutEndpoint,
+    param: Types::OutParam,
+    token: Token
+) -> Types::OutAuthNSession
+where
+    Ctx: NSNameCachesCtx,
+    Types: NearDuplexNegoTypes,
+{
+    let mut gentok = once(token).peekable();
+
+    match entry.req_stream(ctx, &mut gentok, poll.registry(), endpoint, param)
+        .expect("Expected success") {
+            RetryResult::Success(Some(out)) => {
+                trace!(target: "get-in-session",
+                       "got outbound session immediately");
+
+                out
+            },
+        RetryResult::Success(None) => {
+            let mut events = Events::with_capacity(2);
+            let mut out_sessions = Vec::new();
+            let mut in_sessions = Vec::new();
+            let mut out_endpoints = HashSet::new();
+            let mut in_endpoints = HashSet::new();
+            let mut live = HashSet::new();
+            let mut count = 0;
+
+            while out_sessions.is_empty() {
+                trace!(target: "get-out-session",
+                       "polling");
+
+                if count > 5 {
+                    panic!("Timeout")
+                }
+
+                poll.poll(&mut events, Some(Duration::from_secs(1)))
+                    .expect("Expected success");
+
+                count += 1;
+
+                trace!(target: "get-out-session",
+                       "polling returned");
+
+                for event in events.iter() {
+                    trace!(target: "get-out-session",
+                           "event for token {:?}", event.token());
+
+                    live.insert(event.token());
+                }
+
+                trace!(target: "get-out-session",
+                       "listening");
+
+                entry.listen(&mut gentok, &mut out_sessions, &mut in_sessions,
+                             &mut out_endpoints, &mut in_endpoints,
+                             poll.registry(), &live)
+                    .expect("Expected success");
+
+                live.clear();
+            }
+
+            trace!(target: "get-in-session",
+                   "got outbound session");
+
+            out_sessions.pop().expect("Expected some")
+        }
+        _ => panic!("Should not see retry delay here")
+    }
+}
+
+#[cfg(test)]
+fn get_in_session<Types>(
+    entry: &mut ChannelEntry<Types>,
+    poll: &mut Poll,
+    token: Token
+) -> Types::InAuthNSession
+where
+    Types: NearDuplexNegoTypes,
+{
+    let mut gentok = vec![token, Token(7777)].into_iter().peekable();
+    let mut events = Events::with_capacity(2);
+    let mut out_sessions = Vec::new();
+    let mut in_sessions = Vec::new();
+    let mut out_endpoints = HashSet::new();
+    let mut in_endpoints = HashSet::new();
+    let mut live = HashSet::new();
+    let mut count = 0;
+
+    while in_sessions.is_empty() {
+        trace!(target: "get-in-session",
+               "polling");
+
+        if count > 5 {
+            panic!("Timeout")
+        }
+
+        poll.poll(&mut events, Some(Duration::from_secs(1)))
+            .expect("Expected success");
+
+        count += 1;
+
+        trace!(target: "get-in-session",
+               "polling returned");
+
+        for event in events.iter() {
+            trace!(target: "get-in-session",
+                   "event for token {:?}", event.token());
+
+            live.insert(event.token());
+        }
+
+        trace!(target: "get-in-session",
+               "listening");
+
+        entry.listen(&mut gentok, &mut out_sessions, &mut in_sessions,
+                     &mut out_endpoints, &mut in_endpoints, poll.registry(),
+                     &live)
+            .expect("Expected success");
+
+        live.clear();
+    }
+
+    trace!(target: "get-in-session",
+           "got inbound session");
+
+    in_sessions.pop().expect("Expected some")
+}
+/*
+#[cfg(test)]
+fn shutdown_out_session<Types, Ctx>(
+    ctx: &mut Ctx,
+    entry: &mut ChannelEntry<Types>,
+    poll: &mut Poll,
+    endpoint: Types::OutEndpoint,
+    param: Types::OutParam,
+    token: Token
+) -> Types::OutAuthNSession
+where
+    Ctx: NSNameCachesCtx,
+    Types: NearDuplexNegoTypes,
+{
+}
+*/
+#[cfg(test)]
+fn entry_test<Types, Ctx>(
+    mut nscaches: Ctx,
+    mut acceptor: Types::InChannel,
+    out_config: Types::OutConfig,
+    in_authn: Types::InAuthN,
+    out_authn: Types::OutAuthN,
+    endpoint: Types::OutEndpoint,
+    param: Types::OutParam,
+    listen: Token,
+    in_session: Token,
+    out_session: Token
+)
+where
+    Ctx: 'static + NSNameCachesCtx + Send,
+    Types: NearDuplexNegoTypes,
+    Types::InChannel: 'static + Send,
+    Types::InAuthN: 'static + Send,
+    Types::OutConfig: 'static + Send,
+    Types::OutAuthN: 'static + Send,
+    Types::OutParam: 'static + Send,
+    Types::OutEndpoint: 'static + Send
+{
+    let listen = spawn(move || {
+        let mut poll = Poll::new().expect("Expected success");
+
+        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+            .expect("Expected success");
+
+        let mut entry: ChannelEntry<Types> =
+            ChannelEntry::inbound(acceptor, in_authn,
+                                  Retry::default(), listen);
+        let mut session: Types::InAuthNSession =
+            get_in_session(&mut entry, &mut poll, in_session);
+
+        let mut buf = [0; FIRST_BYTES.len()];
+
+        read_one(session.get_mut(), &mut poll, in_session, &mut buf)
+            .expect("Expected success");
+
+        write_one(session.get_mut(), &mut poll, in_session, &SECOND_BYTES)
+            .expect("Expected success");
+
+        assert_eq!(FIRST_BYTES, buf);
+    });
+
+    let send = spawn(move || {
+        let mut entry: ChannelEntry<Types> =
+            ChannelEntry::outbound(out_config, out_authn, Retry::default());
+        let mut poll = Poll::new().expect("Expected success");
+        let mut session: Types::OutAuthNSession =
+            get_out_session(&mut nscaches, &mut entry, &mut poll,
+                            endpoint, param, out_session);
+
+        write_one(session.get_mut(), &mut poll, out_session, &FIRST_BYTES)
+            .expect("Expected success");
+
+        let mut buf = [0; SECOND_BYTES.len()];
+
+        read_one(session.get_mut(), &mut poll, out_session, &mut buf)
+            .expect("Expected success");
+
+        assert_eq!(SECOND_BYTES, buf);
+    });
+
+    listen.join().unwrap();
+    send.join().unwrap();
+
+}
+
+#[cfg(test)]
+fn compound_entry_test(
+    server_conf: &str,
+    client_conf: &str,
+    endpoint: CompoundNearNameAddr,
+    param_conf: Option<&str>
+) {
+    init();
+
+    let mut nscaches = SharedNSNameCaches::new();
+    let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
+        serde_yaml::from_str(server_conf).unwrap();
+    let param: Option<CompoundNearConnectorParam> =
+        param_conf.map(|param_conf| serde_yaml::from_str(param_conf).unwrap());
+    let client_conf: CompoundNearConnectorPartialConfig<TLSClientConfig> =
+        serde_yaml::from_str(client_conf).unwrap();
+    let acceptor =
+        CompoundNearAcceptor::create(&mut nscaches, server_conf)
+        .expect("Expected success");
+    let listen = Token(0);
+    let in_session = Token(1);
+    let out_session = Token(0);
+
+    entry_test::<TestDuplexNegoTypes, _>(
+        nscaches, acceptor, client_conf, TrivialAuthN::default(),
+        TrivialAuthN::default(), endpoint, param, listen,
+        in_session, out_session
+    )
+}
+
+#[test]
+fn test_unix() {
+    init();
+
+    const SERVER_CONF: &'static str = concat!(
+        "unix-stream:\n",
+        "  path: test_near_channels_unix.sock"
+    );
+    const CLIENT_CONF: &'static str = concat!(
+        "unix-stream:"
+    );
+    let endpoint = CompoundNearNameAddr::Unix {
+        unix: UnixSocketAddr::try_from("test_near_channels_unix.sock")
+            .expect("Expected success")
+    };
+
+    compound_entry_test(SERVER_CONF, CLIENT_CONF, endpoint, None)
+}
+
+#[test]
+fn test_tcp() {
+    init();
+
+    const SERVER_CONF: &'static str = concat!(
+        "tcp:\n",
+        "  addr: ::0\n",
+        "  port: 8100\n"
+    );
+    const CLIENT_CONF: &'static str = concat!(
+        "tcp:",
+    );
+    let endpoint = CompoundNearNameAddr::TCP {
+        tcp: "[::0]:8100".parse()
+            .expect("Expected success")
+    };
+
+    compound_entry_test(SERVER_CONF, CLIENT_CONF, endpoint, None)
+}
+
+#[test]
+fn test_tls_unix() {
+    init();
+
+    const SERVER_CONF: &'static str = concat!(
+        "tls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  client-auth:\n",
+        "    verify: required\n",
+        "    trust-root:\n",
+        "      root-certs:\n",
+        "        - test/data/certs/client/ca_cert.pem\n",
+        "      crls: []\n",
+        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  unix-stream:\n",
+        "    path: test_near_channels_tls_unix.sock"
+    );
+    const CLIENT_CONF: &'static str = concat!(
+        "tls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/server/ca_cert.pem\n",
+        "    crls: []\n",
+        "  client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
+        "  client-key: test/data/certs/client/private/test_client_key.pem\n",
+        "  verify-endpoint: test-server.nowhere.com\n",
+        "  unix-stream:",
+    );
+    const PARAM_CONF: &'static str = concat!(
+        "tls:\n",
+        "  verify-endpoint: test-server.nowhere.com",
+    );
+    let endpoint = CompoundNearNameAddr::Unix {
+        unix: UnixSocketAddr::try_from("test_near_channels_tls_unix.sock")
+            .expect("Expected success")
+    };
+
+    compound_entry_test(SERVER_CONF, CLIENT_CONF, endpoint, Some(PARAM_CONF))
+}
+
+
+#[test]
+fn test_tls_tcp() {
+    init();
+
+    const SERVER_CONF: &'static str = concat!(
+        "tls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  client-auth:\n",
+        "    verify: required\n",
+        "    trust-root:\n",
+        "      root-certs:\n",
+        "        - test/data/certs/client/ca_cert.pem\n",
+        "      crls: []\n",
+        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  tcp:\n",
+        "    addr: ::0\n",
+        "    port: 8100\n"
+    );
+    const CLIENT_CONF: &'static str = concat!(
+        "tls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/server/ca_cert.pem\n",
+        "    crls: []\n",
+        "  client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
+        "  client-key: test/data/certs/client/private/test_client_key.pem\n",
+        "  verify-endpoint: test-server.nowhere.com\n",
+        "  tcp:",
+    );
+    const PARAM_CONF: &'static str = concat!(
+        "tls:\n",
+        "  verify-endpoint: test-server.nowhere.com",
+    );
+    let endpoint = CompoundNearNameAddr::TCP {
+        tcp: "[::0]:8100".parse()
+            .expect("Expected success")
+    };
+
+    compound_entry_test(SERVER_CONF, CLIENT_CONF, endpoint, Some(PARAM_CONF))
 }
