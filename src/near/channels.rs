@@ -2231,6 +2231,226 @@ where
         }
     }
 
+    /// Shut down an outbound (connected) session.
+    ///
+    /// This will consume `stream` and attempt to run shutdown
+    /// negotiations as far as possible.  Once `stream` is shut down,
+    /// it will be deregistered.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `stream`: The [Session] to shut down.
+    fn shutdown_conn(
+        &mut self,
+        registry: &Registry,
+        stream: Types::OutConn,
+    ) -> Result<
+        Option<Token>,
+        ChannelEntryShutdownError<
+            SessionEntryShutdownError<
+                Types::OutShutdownStartError,
+                Types::OutShutdownNegoError,
+            >,
+            Types::OutEndpoint
+        >
+    > {
+        let endpoint = stream
+            .peer_addr()
+            .map_err(|err| ChannelEntryShutdownError::IO { err: err })?;
+
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                conn_tokens, negos, ..
+            } => if let Entry::Occupied(ent) =
+                conn_tokens.entry(endpoint.clone()) {
+                if let DuplexValue::Conn(conn) = negos
+                    .get_mut(ent.get())
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)? {
+                    let delete = conn.shutdown(registry, stream)
+                        .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                            err: err
+                        })?;
+
+                    if delete {
+                        let token = *ent.get();
+
+                        if negos.remove(&token).is_none() {
+                            error!(target: "connector-entry",
+                                   "entry for token {:?} missing",
+                                   ent.get());
+                        }
+
+                        ent.remove();
+
+                        Ok(Some(token))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Err(ChannelEntryShutdownError::Mismatch)
+                }
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
+            }
+            ChannelMode::Outbound {
+                tokens, negos, ..
+            } =>  if let Entry::Occupied(ent) = tokens.entry(endpoint.clone()) {
+                let conn = negos.get_mut(ent.get())
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
+                let delete = conn.shutdown(registry, stream)
+                    .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                        err: err
+                    })?;
+
+                if delete {
+                    let token = *ent.get();
+
+                    if negos.remove(&token).is_none() {
+                        error!(target: "connector-entry",
+                               "entry for token {:?} missing",
+                               ent.get());
+                    }
+
+                    ent.remove();
+
+                    Ok(Some(token))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
+            }
+            ChannelMode::Inbound { .. } =>
+                Err(ChannelEntryShutdownError::Mismatch)
+        }
+    }
+
+    /// Shut down an inbound (accepted) session.
+    ///
+    /// This will consume `stream` and attempt to run shutdown
+    /// negotiations as far as possible.  Once `stream` is shut down,
+    /// it will be deregistered.
+    ///
+    /// # Parameters
+    ///
+    /// - `registry`: The [Registry] to use to unregister shut down
+    ///   sessions.
+    ///
+    /// - `stream`: The [Session] to shut down.
+    fn shutdown_accept(
+        &mut self,
+        registry: &Registry,
+        stream: Types::InConn,
+    ) -> Result<
+        Option<Token>,
+        ChannelEntryShutdownError<
+            SessionEntryShutdownError<
+                Types::InShutdownStartError,
+                Types::InShutdownNegoError,
+            >,
+            Types::InEndpoint
+        >
+    > {
+        let endpoint = stream
+            .peer_addr()
+            .map_err(|err| ChannelEntryShutdownError::IO { err: err })?;
+
+        match &mut self.mode {
+            ChannelMode::Duplex {
+                accept_tokens, negos, shutdown, acceptor, ..
+            } => if let Entry::Occupied(ent) = accept_tokens
+                .entry(endpoint.clone()) {
+                if let DuplexValue::Accept(accept) = negos
+                    .get_mut(ent.get())
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)? {
+                    let newaccept = accept.take()
+                        .ok_or(ChannelEntryShutdownError::NotFound {
+                            endpoint: endpoint
+                        })?
+                        .shutdown(
+                            registry, shutdown, &acceptor.shutdown_param(),
+                            stream
+                        )
+                        .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                            err: err
+                        })?;
+
+                    if newaccept.is_some() {
+                        *accept = newaccept;
+
+                        Ok(None)
+                    } else {
+                        let token = *ent.get();
+
+                        if negos.remove(&token).is_none() {
+                            error!(target: "connector-entry",
+                                   "entry for token {:?} missing",
+                                   ent.get());
+                        }
+
+                        ent.remove();
+
+                        Ok(Some(token))
+                    }
+                } else {
+                    Err(ChannelEntryShutdownError::Mismatch)
+                }
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
+            }
+            ChannelMode::Inbound {
+                tokens, negos, shutdown, acceptor, ..
+            } =>  if let Entry::Occupied(ent) = tokens.entry(endpoint.clone()) {
+                let accept = negos.get_mut(ent.get())
+                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
+                let newaccept = accept.take()
+                    .ok_or(ChannelEntryShutdownError::NotFound {
+                        endpoint: endpoint
+                    })?
+                    .shutdown(
+                        registry, shutdown, &acceptor.shutdown_param(),
+                        stream
+                    )
+                    .map_err(|err| ChannelEntryShutdownError::Shutdown {
+                        err: err
+                    })?;
+
+                if newaccept.is_some() {
+                    *accept = newaccept;
+
+                    Ok(None)
+                } else {
+                    let token = *ent.get();
+
+                    if negos.remove(&token).is_none() {
+                        error!(target: "connector-entry",
+                               "entry for token {:?} missing",
+                               ent.get());
+                    }
+
+                    ent.remove();
+
+                    Ok(Some(token))
+                }
+            } else {
+                Err(ChannelEntryShutdownError::NotFound {
+                    endpoint: endpoint
+                })
+            }
+            ChannelMode::Outbound { .. } =>
+                Err(ChannelEntryShutdownError::Mismatch)
+        }
+    }
+
     fn duplex_listen<I>(
         gentok: &mut Peekable<I>,
         out_sessions: &mut Vec<Types::OutAuthNSession>,
@@ -2641,226 +2861,6 @@ where
         };
 
         Ok((creates, deletes))
-    }
-
-    /// Shut down an outbound (connected) session.
-    ///
-    /// This will consume `stream` and attempt to run shutdown
-    /// negotiations as far as possible.  Once `stream` is shut down,
-    /// it will be deregistered.
-    ///
-    /// # Parameters
-    ///
-    /// - `registry`: The [Registry] to use to unregister shut down
-    ///   sessions.
-    ///
-    /// - `stream`: The [Session] to shut down.
-    fn shutdown_conn(
-        &mut self,
-        registry: &Registry,
-        stream: Types::OutConn,
-    ) -> Result<
-        Option<Token>,
-        ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::OutShutdownStartError,
-                Types::OutShutdownNegoError,
-            >,
-            Types::OutEndpoint
-        >
-    > {
-        let endpoint = stream
-            .peer_addr()
-            .map_err(|err| ChannelEntryShutdownError::IO { err: err })?;
-
-        match &mut self.mode {
-            ChannelMode::Duplex {
-                conn_tokens, negos, ..
-            } => if let Entry::Occupied(ent) =
-                conn_tokens.entry(endpoint.clone()) {
-                if let DuplexValue::Conn(conn) = negos
-                    .get_mut(ent.get())
-                    .ok_or(ChannelEntryShutdownError::Inconsistent)? {
-                    let delete = conn.shutdown(registry, stream)
-                        .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                            err: err
-                        })?;
-
-                    if delete {
-                        let token = *ent.get();
-
-                        if negos.remove(&token).is_none() {
-                            error!(target: "connector-entry",
-                                   "entry for token {:?} missing",
-                                   ent.get());
-                        }
-
-                        ent.remove();
-
-                        Ok(Some(token))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Err(ChannelEntryShutdownError::Mismatch)
-                }
-            } else {
-                Err(ChannelEntryShutdownError::NotFound {
-                    endpoint: endpoint
-                })
-            }
-            ChannelMode::Outbound {
-                tokens, negos, ..
-            } =>  if let Entry::Occupied(ent) = tokens.entry(endpoint.clone()) {
-                let conn = negos.get_mut(ent.get())
-                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
-                let delete = conn.shutdown(registry, stream)
-                    .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                        err: err
-                    })?;
-
-                if delete {
-                    let token = *ent.get();
-
-                    if negos.remove(&token).is_none() {
-                        error!(target: "connector-entry",
-                               "entry for token {:?} missing",
-                               ent.get());
-                    }
-
-                    ent.remove();
-
-                    Ok(Some(token))
-                } else {
-                    Ok(None)
-                }
-            } else {
-                Err(ChannelEntryShutdownError::NotFound {
-                    endpoint: endpoint
-                })
-            }
-            ChannelMode::Inbound { .. } =>
-                Err(ChannelEntryShutdownError::Mismatch)
-        }
-    }
-
-    /// Shut down an inbound (accepted) session.
-    ///
-    /// This will consume `stream` and attempt to run shutdown
-    /// negotiations as far as possible.  Once `stream` is shut down,
-    /// it will be deregistered.
-    ///
-    /// # Parameters
-    ///
-    /// - `registry`: The [Registry] to use to unregister shut down
-    ///   sessions.
-    ///
-    /// - `stream`: The [Session] to shut down.
-    fn shutdown_accept(
-        &mut self,
-        registry: &Registry,
-        stream: Types::InConn,
-    ) -> Result<
-        Option<Token>,
-        ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::InShutdownStartError,
-                Types::InShutdownNegoError,
-            >,
-            Types::InEndpoint
-        >
-    > {
-        let endpoint = stream
-            .peer_addr()
-            .map_err(|err| ChannelEntryShutdownError::IO { err: err })?;
-
-        match &mut self.mode {
-            ChannelMode::Duplex {
-                accept_tokens, negos, shutdown, acceptor, ..
-            } => if let Entry::Occupied(ent) = accept_tokens
-                .entry(endpoint.clone()) {
-                if let DuplexValue::Accept(accept) = negos
-                    .get_mut(ent.get())
-                    .ok_or(ChannelEntryShutdownError::Inconsistent)? {
-                    let newaccept = accept.take()
-                        .ok_or(ChannelEntryShutdownError::NotFound {
-                            endpoint: endpoint
-                        })?
-                        .shutdown(
-                            registry, shutdown, &acceptor.shutdown_param(),
-                            stream
-                        )
-                        .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                            err: err
-                        })?;
-
-                    if newaccept.is_some() {
-                        *accept = newaccept;
-
-                        Ok(None)
-                    } else {
-                        let token = *ent.get();
-
-                        if negos.remove(&token).is_none() {
-                            error!(target: "connector-entry",
-                                   "entry for token {:?} missing",
-                                   ent.get());
-                        }
-
-                        ent.remove();
-
-                        Ok(Some(token))
-                    }
-                } else {
-                    Err(ChannelEntryShutdownError::Mismatch)
-                }
-            } else {
-                Err(ChannelEntryShutdownError::NotFound {
-                    endpoint: endpoint
-                })
-            }
-            ChannelMode::Inbound {
-                tokens, negos, shutdown, acceptor, ..
-            } =>  if let Entry::Occupied(ent) = tokens.entry(endpoint.clone()) {
-                let accept = negos.get_mut(ent.get())
-                    .ok_or(ChannelEntryShutdownError::Inconsistent)?;
-                let newaccept = accept.take()
-                    .ok_or(ChannelEntryShutdownError::NotFound {
-                        endpoint: endpoint
-                    })?
-                    .shutdown(
-                        registry, shutdown, &acceptor.shutdown_param(),
-                        stream
-                    )
-                    .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                        err: err
-                    })?;
-
-                if newaccept.is_some() {
-                    *accept = newaccept;
-
-                    Ok(None)
-                } else {
-                    let token = *ent.get();
-
-                    if negos.remove(&token).is_none() {
-                        error!(target: "connector-entry",
-                               "entry for token {:?} missing",
-                               ent.get());
-                    }
-
-                    ent.remove();
-
-                    Ok(Some(token))
-                }
-            } else {
-                Err(ChannelEntryShutdownError::NotFound {
-                    endpoint: endpoint
-                })
-            }
-            ChannelMode::Outbound { .. } =>
-                Err(ChannelEntryShutdownError::Mismatch)
-        }
     }
 
     fn start_incoming<I>(
@@ -3378,7 +3378,7 @@ where
     match entry.req_stream(ctx, &mut gentok, poll.registry(), endpoint, param)
         .expect("Expected success") {
             RetryResult::Success((newtok, Some(out))) => {
-                trace!(target: "get-in-session",
+                trace!(target: "get-out-session",
                        "got outbound session immediately");
 
                 assert_eq!(newtok, token);
@@ -3442,7 +3442,7 @@ where
                 live.clear();
             }
 
-            trace!(target: "get-in-session",
+            trace!(target: "get-out-session",
                    "got outbound session");
 
             assert!(in_sessions.is_empty());
@@ -3528,22 +3528,187 @@ where
 
     in_sessions.pop().expect("Expected some")
 }
-/*
+
 #[cfg(test)]
-fn shutdown_out_session<Types, Ctx>(
-    ctx: &mut Ctx,
+fn shutdown_out_session<Types>(
     entry: &mut ChannelEntry<Types>,
     poll: &mut Poll,
-    endpoint: Types::OutEndpoint,
-    param: Types::OutParam,
+    stream: Types::OutAuthNSession,
     token: Token
-) -> Types::OutAuthNSession
+)
 where
-    Ctx: NSNameCachesCtx,
     Types: NearDuplexNegoTypes,
 {
+    let mut gentok = once(token).peekable();
+    let (_, stream) = stream.take();
+
+    match entry
+        .shutdown_conn(poll.registry(), stream)
+        .expect("Expected success") {
+        Some(deadtok) => {
+                trace!(target: "shutdown-out-session",
+                       "shutdown outbound session immediately");
+
+                assert_eq!(deadtok, token);
+            },
+        None => {
+            let mut events = Events::with_capacity(2);
+            let mut out_sessions = Vec::new();
+            let mut in_sessions = Vec::new();
+            let mut out_endpoints = HashSet::new();
+            let mut in_endpoints = HashSet::new();
+            let mut live = HashSet::new();
+            let mut count = 0;
+
+            loop {
+                trace!(target: "shutdown-out-session",
+                       "polling");
+
+                if count > 5 {
+                    panic!("Timeout")
+                }
+
+                poll.poll(&mut events, Some(Duration::from_secs(1)))
+                    .expect("Expected success");
+
+                count += 1;
+
+                trace!(target: "shutdown-out-session",
+                       "polling returned");
+
+                for event in events.iter() {
+                    trace!(target: "shutdown-out-session",
+                           "event for token {:?}", event.token());
+
+                    live.insert(event.token());
+                }
+
+                trace!(target: "shutdown-out-session",
+                       "listening");
+
+                let (creates, deletes) = entry
+                    .listen(&mut gentok, &mut out_sessions, &mut in_sessions,
+                            &mut out_endpoints, &mut in_endpoints,
+                            poll.registry(), &live)
+                    .expect("Expected success");
+
+                assert!(creates.is_none());
+
+                if let Some(mut deletes) = deletes {
+                    let newtok = deletes.pop().expect("Expected some");
+
+                    assert_eq!(token, newtok);
+                    assert!(!out_sessions.is_empty());
+
+                    break;
+                } else {
+                    assert!(out_sessions.is_empty());
+                }
+
+                live.clear();
+            }
+
+            trace!(target: "shutdown-out-session",
+                   "got outbound session");
+
+            assert!(out_sessions.is_empty());
+            assert!(in_sessions.is_empty());
+            assert!(out_endpoints.is_empty());
+            assert!(in_endpoints.is_empty());
+        }
+    }
 }
-*/
+
+#[cfg(test)]
+fn shutdown_in_session<Types>(
+    entry: &mut ChannelEntry<Types>,
+    poll: &mut Poll,
+    stream: Types::InAuthNSession,
+    token: Token
+)
+where
+    Types: NearDuplexNegoTypes,
+{
+    let mut gentok = once(token).peekable();
+    let (_, stream) = stream.take();
+
+    match entry
+        .shutdown_accept(poll.registry(), stream)
+        .expect("Expected success") {
+        Some(deadtok) => {
+                trace!(target: "shutdown-in-session",
+                       "shutdown outbound session immediately");
+
+                assert_eq!(deadtok, token);
+            },
+        None => {
+            let mut events = Events::with_capacity(2);
+            let mut out_sessions = Vec::new();
+            let mut in_sessions = Vec::new();
+            let mut out_endpoints = HashSet::new();
+            let mut in_endpoints = HashSet::new();
+            let mut live = HashSet::new();
+            let mut count = 0;
+
+            loop {
+                trace!(target: "shutdown-in-session",
+                       "polling");
+
+                if count > 5 {
+                    panic!("Timeout")
+                }
+
+                poll.poll(&mut events, Some(Duration::from_secs(1)))
+                    .expect("Expected success");
+
+                count += 1;
+
+                trace!(target: "shutdown-in-session",
+                       "polling returned");
+
+                for event in events.iter() {
+                    trace!(target: "get-out-session",
+                           "event for token {:?}", event.token());
+
+                    live.insert(event.token());
+                }
+
+                trace!(target: "shutdown-in-session",
+                       "listening");
+
+                let (creates, deletes) = entry
+                    .listen(&mut gentok, &mut out_sessions, &mut in_sessions,
+                            &mut out_endpoints, &mut in_endpoints,
+                            poll.registry(), &live)
+                    .expect("Expected success");
+
+                assert!(creates.is_none());
+
+                if let Some(mut deletes) = deletes {
+                    let newtok = deletes.pop().expect("Expected some");
+
+                    assert_eq!(token, newtok);
+                    assert!(!out_sessions.is_empty());
+
+                    break;
+                } else {
+                    assert!(out_sessions.is_empty());
+                }
+
+                live.clear();
+            }
+
+            trace!(target: "shutdown-in-session",
+                   "got outbound session");
+
+            assert!(out_sessions.is_empty());
+            assert!(in_sessions.is_empty());
+            assert!(out_endpoints.is_empty());
+            assert!(in_endpoints.is_empty());
+        }
+    }
+}
+
 #[cfg(test)]
 fn entry_test<Types, Ctx>(
     mut nscaches: Ctx,
@@ -3592,6 +3757,10 @@ where
         write_one(session.get_mut(), &mut poll, in_session, &SECOND_BYTES)
             .expect("Expected success");
 
+        shutdown_in_session(&mut entry, &mut poll, session, in_session);
+
+        assert!(entry.is_empty());
+
         assert_eq!(FIRST_BYTES, buf);
     });
 
@@ -3616,6 +3785,9 @@ where
         read_one(session.get_mut(), &mut poll, out_session, &mut buf)
             .expect("Expected success");
 
+        shutdown_out_session(&mut entry, &mut poll, session, out_session);
+
+        assert!(entry.is_empty());
         assert_eq!(SECOND_BYTES, buf);
     });
 
