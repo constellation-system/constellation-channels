@@ -749,8 +749,8 @@ impl NearChannel for TCPNearConnector {
             unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
             inner: stream
         };
-        let out = (stream, self.endpoint.clone());
-
+        let addr = stream.peer_addr()?;
+        let out = (stream, addr);
 
         Ok(RetryResult::Success(out))
     }
