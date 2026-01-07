@@ -192,6 +192,7 @@ pub mod flows;
 //pub mod registry;
 #[cfg(feature = "socks5")]
 pub mod socks5;
+pub mod types;
 pub mod udp;
 #[cfg(feature = "unix")]
 pub mod unix;

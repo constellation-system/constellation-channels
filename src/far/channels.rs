@@ -18,14 +18,11 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::hash_map::Iter;
 use std::collections::HashSet;
-use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::io::Error;
-use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -47,7 +44,6 @@ use constellation_common::net::Socket;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
-use constellation_common::retry::RetryWhen;
 use constellation_common::retry::WithRetryWhen;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
@@ -57,17 +53,13 @@ use log::info;
 use log::trace;
 use log::warn;
 use mio::event::Source;
-use mio::Events;
 use mio::Interest;
-use mio::Poll;
 use mio::Registry;
 use mio::Token;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::channels::ShutdownError;
 use crate::channels::WithShutdownError;
-use crate::config::AddrsConfig;
-use crate::config::AddrKind;
 use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
 use crate::far::AcquiredResolver;
@@ -77,24 +69,19 @@ use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelFlowsError;
-use crate::far::flows::BufferedFlow;
 use crate::far::flows::Flows;
 use crate::far::flows::FlowsFlowError;
 use crate::far::flows::FlowsListenError;
 use crate::far::flows::ListenResult;
+use crate::far::types::FlowAuthNShutdownTypes;
+use crate::far::types::FlowsEntryTypes;
+use crate::far::types::FarChannelsTypes;
 use crate::resolve::cache::NSNameCacheError;
 use crate::resolve::cache::NSNameCachesCtx;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FarChannelID(usize);
-/*
-pub trait FlowAuthNShutdownTypes {
-    type Flow: Session;
-    type AuthN: SessionAuthN<Self::Flow>;
-    type ShutdownNego: NegotiatorStart<(), Self::Stream>;
-    ShutdownNego::NegotiateError: ScopedError
-}
-*/
+
 /// Negotiation state for session and authentication negotiations.
 ///
 /// This is used to store current negotiation states, and advance
@@ -119,23 +106,21 @@ enum SessionNegoState<AuthPending> {
 ///
 /// This is used to store whether a session is in negotiations, or is
 /// active and has already been returned.
-enum SessionState<Stream, AuthN, ShutdownNego>
+enum SessionState<Stream, Types>
 where Stream: Session,
-      AuthN: SessionAuthN<Stream>,
-      ShutdownNego: NegotiatorStart<(), Stream>,
-      ShutdownNego::NegotiateError: ScopedError
+      Types: FlowAuthNShutdownTypes<Stream>
 {
     /// Session negotiation is pending.
     Pending {
         /// The pending negotiation state.
-        pending: SessionNegoState<AuthN::Pending>
+        pending: SessionNegoState<Types::AuthPending>
     },
     /// A session has already been established.
     Active,
     /// Session shutdown is pending.
     Shutdown {
         /// The pending shutdown negotiation state.
-        pending: ShutdownNego::Pending
+        pending: Types::ShutdownPending
     }
 }
 
@@ -149,45 +134,29 @@ struct FlowsRetry {
 }
 
 /// Negotiation state for an individual flow.
-struct FlowNegoState<Flow, AuthN, ShutdownNego>
+struct FlowNegoState<Flow, Types>
 where Flow: Session,
-      AuthN: SessionAuthN<Flow>,
-      ShutdownNego: NegotiatorStart<(), Flow>,
-      ShutdownNego::NegotiateError: ScopedError
+      Types: FlowAuthNShutdownTypes<Flow>
 {
     /// Current session negotiation state, if there are active
     /// negotiations.
-    state: Option<SessionState<Flow, AuthN, ShutdownNego>>,
+    state: Option<SessionState<Flow, Types>>,
     /// Retry information for establishing this flow.
     retry: FlowsRetry
 }
 
 /// Representation of a [Flows], and all of its [Flow] sessions and
 /// negotiations.
-struct FlowsEntry<Flow, Sock, InboundNego, OutboundNego,
-                  ShutdownNego, AuthN, Xfrm>
+struct FlowsEntry<Flow, Types>
 where
     Flow: Session,
-    Sock: Receiver + Sender + Source,
-    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
-    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-    ShutdownNego: NegotiatorStart<(), Flow>,
-    InboundNego::NegotiateError: ScopedError,
-    OutboundNego::NegotiateError: ScopedError,
-    ShutdownNego::NegotiateError: ScopedError,
-    AuthN: SessionAuthN<Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrm,
-    Xfrm::LocalAddr: From<Sock::Addr>,
-    Xfrm::Error: ScopedError
+    Types: FlowsEntryTypes<Flow>
 {
     /// All sessions either active or in negotiation.
-    sessions: HashMap<Xfrm::PeerAddr, FlowNegoState<Flow, AuthN, ShutdownNego>>,
+    sessions: HashMap<Types::PeerAddr, FlowNegoState<Flow, Types>>,
     /// The [Flows] to which all sessions correspond.
-    flows: Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
+    flows: Flows<Flow, Types::Sock, Types::InboundNego,
+                 Types::OutboundNego, Types::Xfrm>,
     /// Retry information for listening for new sessions.
     retry: FlowsRetry
 }
@@ -197,49 +166,32 @@ where
 /// This will hold all [FlowsEntry]s corresponding to the channel
 /// parameters associated with the acquired value.  It will
 /// periodically refresh these values and update states as necessary.
-struct AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
+struct AcquiredEntry<Types>
 where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    AuthN: Clone + SessionAuthN<Channel::Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
+    Types: FarChannelsTypes
 {
-    xfrm: PhantomData<Xfrm>,
-    auth: PhantomData<AuthN>,
+    xfrm: PhantomData<Types::Xfrm>,
+    auth: PhantomData<Types::AuthN>,
     /// Acquired value from the channel.
-    acquired: Channel::Acquired,
+    acquired: Types::Acquired,
     /// Resolver generated by the acquired value.
-    resolver: AcquiredResolver<Channel::Param>,
+    resolver: AcquiredResolver<Types::ChannelParam>,
     /// Current set of [Flows] for the various
     /// [Param](FarChannelSocket::Param)s.
     ///
     /// An acquired far channel allows sockets to be created, but
     /// there may be multiple possible configurations that can be set
     /// up.
-    tokens: HashMap<Channel::Param, Token>,
+    tokens: HashMap<Types::ChannelParam, Token>,
     /// Map from tokens to flows entries
     flows: HashMap<
         Token,
-        FlowsEntry<Channel::Flow, Channel::Socket, Channel::InboundNego,
-                   Channel::OutboundNego, Channel::ShutdownNego, AuthN, Xfrm>
+        FlowsEntry<Types::Flow, Types>
     >,
     /// Configuration information used to create new [Flows].
     flows_config: FlowsConfig,
     /// Parameter used to create new [DatagramXfrm]s.
-    xfrm_param: InnerXfrm::CreateParam,
+    xfrm_param: Types::InnerXfrmCreateParam,
     /// Size hint for the number of flows.
     nflows_hint: Option<usize>
 }
@@ -249,79 +201,47 @@ where
 /// This will ultimately create an [AcquiredEntry] when negotiations
 /// succeed, and will manage any shutdown associated with the
 /// underlying channel.
-enum AcquireState<Channel, AuthN, Xfrm, InnerXfrm>
+enum AcquireState<Types>
 where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    AuthN: Clone + SessionAuthN<Channel::Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
+    Types: FarChannelsTypes
 {
     /// Session negotiation is pending.
     Pending {
         /// The pending negotiation state.
-        state: Channel::AcquirePending,
+        state: Types::AcquirePending,
     },
     /// The acquisition negotiations are complete, but resolution was
     /// delayed.
     Acquired {
         /// The acquired value.
-        acquired: Channel::Acquired,
+        acquired: Types::Acquired,
         /// When to retry.
         when: Instant,
     },
     /// A session has already been established.
     Active {
         /// The associated
-        acquired: AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
+        acquired: AcquiredEntry<Types>
     },
     /// Shutdown negotiations are pending.
     Shutdown {
         /// State of pending shutdown negotiations.
-        pending: Channel::ShutdownPending
+        pending: Types::AcquireShutdownPending
     }
 }
 
-pub(crate) struct ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
+pub(crate) struct ChannelEntry<Types>
 where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    AuthN: Clone + SessionAuthN<Channel::Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError
+    Types: FarChannelsTypes
 {
     /// Authenticator to use for session authentication.
-    authn: AuthN,
+    authn: Types::AuthN,
     /// Base [FarChannel](crate::far::FarChannel) object.
-    channel: Channel,
+    channel: Types::Channel,
     /// Shutdown negotiator for channels.
-    shutdown: Channel::ShutdownNego,
+    shutdown: Types::ShutdownNego,
     /// Shutdown negotiator parameter.
-    shutdown_param: <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
+    shutdown_param: Types::ShutdownParam,
     /// Configuration used to create [Flows].
     flows_config: FlowsConfig,
     /// Configuration used to create [Resolver]s.
@@ -329,7 +249,7 @@ where
     /// Address policy.
     addr_policy: SocketAddrPolicy,
     /// Parameter used to create the basic [DatagramXfrm].
-    xfrm_param: InnerXfrm::CreateParam,
+    xfrm_param: Types::InnerXfrmCreateParam,
     /// Retry configuration.
     retry: Retry,
     /// Size hint for flows tables.
@@ -338,34 +258,19 @@ where
     ///
     /// This is used to store when to retry, if
     /// [Retry](RetryResult::Retry) is present.
-    acquired: Option<RetryResult<AcquireState<Channel, AuthN, Xfrm, InnerXfrm>>>,
+    acquired: Option<RetryResult<AcquireState<Types>>>,
 }
 
-pub struct FarChannels<Channel, AuthN, Xfrm, InnerXfrm>
+pub struct FarChannels<Types>
 where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
-    AuthN: Clone + SessionAuthN<Channel::Flow>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Types: FarChannelsTypes
+{
     /// Map from names to [FarChannelID]s.
     ids: HashMap<String, FarChannelID>,
     /// Reverse map from [FarChannelID]s to names.
     names: Vec<String>,
     /// Array of registry entries for each channel.
-    channels: Vec<ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>>
+    channels: Vec<ChannelEntry<Types>>
 
 }
 
@@ -867,14 +772,10 @@ impl<AuthPending> SessionNegoState<AuthPending> {
     }
 }
 
-impl<Flow, AuthN, ShutdownNego> FlowNegoState<Flow, AuthN, ShutdownNego>
+impl<Flow, Types> FlowNegoState<Flow, Types>
 where
     Flow: Session,
-    AuthN: SessionAuthN<Flow, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    ShutdownNego: NegotiatorStart<(), Flow>,
-    ShutdownNego::NegotiateError: ScopedError
+    Types: FlowAuthNShutdownTypes<Flow>
 {
     /// Take an incoming negotiated session and create a state in the
     /// authentication phase.
@@ -911,21 +812,21 @@ where
     /// - `(self, None)`: If authentication negotiations are pending,
     ///   or failed and will be retried later.
     fn create<Addr>(
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        authn: &AuthN,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
         flow: Flow,
         peer: Addr
     ) -> Result<
-        (Self, Option<AuthN::AuthNSession>),
+        (Self, Option<Types::AuthNSession>),
         WithShutdownError<
             SessionNegoToAuthError<
-                AuthN::NegotiateError,
-                AuthN::StartError,
+                Types::AuthNegoError,
+                Types::AuthStartError,
             >,
-            ShutdownNego::StartError,
-            ShutdownNego::NegotiateError
+            Types::ShutdownStartError,
+            Types::ShutdownNegoError
         >
     >
     where Addr: Display
@@ -979,20 +880,20 @@ where
     /// - `None`: If the result does not produce an authenticated session.
     fn handle_to_auth_result<Addr, Err, F>(
         &mut self,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
         retry: &Retry,
         addr: &Addr,
         res: Result<
-            NegotiatorResult<AuthNResult<AuthN::AuthNSession, Flow>,
-                             SessionNegoState<AuthN::Pending>>,
+            NegotiatorResult<AuthNResult<Types::AuthNSession, Flow>,
+                             SessionNegoState<Types::AuthPending>>,
             Err
         >,
         err_stream: F
     ) -> Result<
-        Option<AuthN::AuthNSession>,
-        WithShutdownError<Err, ShutdownNego::StartError,
-                          ShutdownNego::NegotiateError>
+        Option<Types::AuthNSession>,
+        WithShutdownError<Err, Types::ShutdownStartError,
+                          Types::ShutdownNegoError>
     >
     where
         F: FnOnce(Err) -> Option<Flow>,
@@ -1098,7 +999,7 @@ where
     fn handle_shutdown_result<Addr>(
         &mut self,
         addr: Addr,
-        res: NegotiatorResult<(), ShutdownNego::Pending>
+        res: NegotiatorResult<(), Types::ShutdownPending>
     )
     where Addr: Display
     {
@@ -1157,35 +1058,29 @@ where
     ///
     /// - `None`: If authentication negotiations are pending, or
     ///   failed and will be retried later.
-    fn create_flow<Sock, InboundNego, OutboundNego, Xfrm>(
+    fn create_flow(
         &mut self,
-        flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
-        shutdown: &ShutdownNego,
-        shutdown_param: &ShutdownNego::Param,
-        authn: &AuthN,
+        flows: &mut Flows<Flow, Types::Sock, Types::InboundNego,
+                          Types::OutboundNego, Types::Xfrm>,
+        shutdown: &Types::ShutdownNego,
+        shutdown_param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
-        param: &OutboundNego::Param,
-        addr: &Xfrm::PeerAddr,
+        param: &Types::OutParam,
+        addr: &Types::PeerAddr,
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
+        RetryResult<Option<Types::AuthNSession>>,
         FlowStateGetFlowError<
-            AuthN::NegotiateError,
-            AuthN::StartError,
-            FlowsFlowError<OutboundNego::StartError,
-                           OutboundNego::NegotiateError>,
-            ShutdownError<ShutdownNego::StartError,
-                          ShutdownNego::NegotiateError>
+            Types::AuthNegoError,
+            Types::AuthStartError,
+            FlowsFlowError<Types::OutStartError,
+                           Types::OutNegoError>,
+            ShutdownError<Types::ShutdownStartError,
+                          Types::ShutdownNegoError>
         >
     >
     where
-          Sock: Socket + Sender + Receiver + Source,
-          OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-          InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-          Xfrm: DatagramXfrm,
-          Xfrm::LocalAddr: From<Sock::Addr>,
-          Sock::Addr: TryFrom<Xfrm::LocalAddr>,
-          <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-          Xfrm::PeerAddr: Clone + Display + Eq + Hash
+        Types: FlowsEntryTypes<Flow>
     {
         // Check if we're still delayed
         let now = Instant::now();
@@ -1268,35 +1163,29 @@ where
     ///
     /// - `None`: If authentication negotiations are pending, or
     ///   failed and will be retried later.
-    fn get_flow<Sock, InboundNego, OutboundNego, Xfrm>(
+    fn get_flow(
         &mut self,
-        flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
-        shutdown: &ShutdownNego,
-        shutdown_param: &ShutdownNego::Param,
-        authn: &AuthN,
+        flows: &mut Flows<Flow, Types::Sock, Types::InboundNego,
+                          Types::OutboundNego, Types::Xfrm>,
+        shutdown: &Types::ShutdownNego,
+        shutdown_param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
-        param: &OutboundNego::Param,
-        addr: &Xfrm::PeerAddr,
+        param: &Types::OutParam,
+        addr: &Types::PeerAddr,
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
+        RetryResult<Option<Types::AuthNSession>>,
         FlowStateGetFlowError<
-            AuthN::NegotiateError,
-            AuthN::StartError,
-            FlowsFlowError<OutboundNego::StartError,
-                           OutboundNego::NegotiateError>,
-            ShutdownError<ShutdownNego::StartError,
-                          ShutdownNego::NegotiateError>
+            Types::AuthNegoError,
+            Types::AuthStartError,
+            FlowsFlowError<Types::OutStartError,
+                           Types::OutNegoError>,
+            ShutdownError<Types::ShutdownStartError,
+                          Types::ShutdownNegoError>
         >
     >
     where
-          Sock: Socket + Sender + Receiver + Source,
-          OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-          InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-          Xfrm: DatagramXfrm,
-          Xfrm::LocalAddr: From<Sock::Addr>,
-          Sock::Addr: TryFrom<Xfrm::LocalAddr>,
-          <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-          Xfrm::PeerAddr: Clone + Display + Eq + Hash
+        Types: FlowsEntryTypes<Flow>
     {
         if let Some(state) = &self.state {
             match state {
@@ -1348,21 +1237,21 @@ where
     ///   failed and will be retried later.
     fn recv_flow<Addr>(
         &mut self,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        authn: &AuthN,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
         flow: Flow,
         peer: Addr
     ) -> Result<
-        Option<AuthN::AuthNSession>,
+        Option<Types::AuthNSession>,
         WithShutdownError<
             SessionNegoToAuthError<
-                AuthN::NegotiateError,
-                AuthN::StartError,
+                Types::AuthNegoError,
+                Types::AuthStartError,
             >,
-            ShutdownNego::StartError,
-            ShutdownNego::NegotiateError
+            Types::ShutdownStartError,
+            Types::ShutdownNegoError
         >
     >
     where Addr: Display
@@ -1444,14 +1333,14 @@ where
     ///   [step](FlowNegoState::step).
     fn do_shutdown_session<Addr>(
         &mut self,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
         addr: Addr,
         session: Flow
     ) -> Result<
         (),
-        ShutdownError<ShutdownNego::StartError,
-                      ShutdownNego::NegotiateError>
+        ShutdownError<Types::ShutdownStartError,
+                      Types::ShutdownNegoError>
     >
     where Addr: Display
     {
@@ -1494,14 +1383,14 @@ where
     ///   [step](FlowNegoState::step).
     fn shutdown_session<Addr>(
         &mut self,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
         addr: Addr,
-        session: AuthN::AuthNSession
+        session: Types::AuthNSession
     ) -> Result<
         (),
-        SessionShutdownError<ShutdownNego::StartError,
-                             ShutdownNego::NegotiateError>
+        SessionShutdownError<Types::ShutdownStartError,
+                             Types::ShutdownNegoError>
     >
     where Addr: Display
     {
@@ -1544,11 +1433,11 @@ where
     /// - `addr`: Counterparty's address, used for logging.
     fn shutdown_step<Addr>(
         &mut self,
-        shutdown: &ShutdownNego,
+        shutdown: &Types::ShutdownNego,
         addr: Addr,
     ) -> Result<
         (),
-        ShutdownError<ShutdownNego::StartError, ShutdownNego::NegotiateError>
+        ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
     >
     where Addr: Display + Eq + Hash
     {
@@ -1621,16 +1510,16 @@ where
     fn step<Addr>(
         &mut self,
         ext_endpoints: &mut HashSet<Addr>,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        authn: &AuthN,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
         addr: Addr,
     ) -> Result<
-        Option<AuthN::AuthNSession>,
-        SessionNegoStepError<AuthN::NegotiateError,
-                             ShutdownError<ShutdownNego::StartError,
-                                           ShutdownNego::NegotiateError>>
+        Option<Types::AuthNSession>,
+        SessionNegoStepError<Types::AuthNegoError,
+                             ShutdownError<Types::ShutdownStartError,
+                                           Types::ShutdownNegoError>>
     >
     where Addr: Display + Eq + Hash
     {
@@ -1697,26 +1586,10 @@ impl FlowsRetry {
     }
 }
 
-impl<Flow, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
-    FlowsEntry<Flow, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm>
+impl<Flow, Types> FlowsEntry<Flow, Types>
 where
     Flow: Session,
-    Sock: Receiver + Sender + Source,
-    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
-    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-    ShutdownNego: NegotiatorStart<(), Flow>,
-    InboundNego::NegotiateError: ScopedError,
-    OutboundNego::NegotiateError: ScopedError,
-    ShutdownNego::NegotiateError: ScopedError,
-    AuthN: SessionAuthN<Flow, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrm,
-    Xfrm::LocalAddr: From<Sock::Addr>,
-    Xfrm::PeerAddr: From<Flow::PeerAddr>,
-    Xfrm::Error: ScopedError
+    Types: FlowsEntryTypes<Flow>
 {
     /// Create a new `FlowsEntry` from a [Flows].
     ///
@@ -1725,7 +1598,8 @@ where
     /// - `flows`: The [Flows] to use.
     #[inline]
     fn new(
-        flows: Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
+        flows: Flows<Flow, Types::Sock, Types::InboundNego,
+                     Types::OutboundNego, Types::Xfrm>,
     ) -> Self {
         let sessions = HashMap::new();
 
@@ -1745,7 +1619,8 @@ where
     /// - `nsessions`: Size hint for the sessions table.
     #[inline]
     fn with_capacity(
-        flows: Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
+        flows: Flows<Flow, Types::Sock, Types::InboundNego,
+                     Types::OutboundNego, Types::Xfrm>,
         nsessions: usize
     ) -> Self {
         let sessions = HashMap::with_capacity(nsessions);
@@ -1803,23 +1678,23 @@ where
     ///   are pending, or failed and will be retried later.
     fn req_flow(
         &mut self,
-        shutdown: &ShutdownNego,
-        shutdown_param: &ShutdownNego::Param,
-        authn: &AuthN,
+        shutdown: &Types::ShutdownNego,
+        shutdown_param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
-        out_param: &OutboundNego::Param,
-        endpoint: &Xfrm::PeerAddr,
+        out_param: &Types::OutParam,
+        endpoint: &Types::PeerAddr,
     ) -> Result<
-        RetryResult<Option<AuthN::AuthNSession>>,
+        RetryResult<Option<Types::AuthNSession>>,
         FlowStateGetFlowError<
-            AuthN::NegotiateError,
-            AuthN::StartError,
+            Types::AuthNegoError,
+            Types::AuthStartError,
             FlowsFlowError<
-                OutboundNego::StartError,
-                OutboundNego::NegotiateError
+                Types::OutStartError,
+                Types::OutNegoError
             >,
-            ShutdownError<ShutdownNego::StartError,
-                          ShutdownNego::NegotiateError>
+            ShutdownError<Types::ShutdownStartError,
+                          Types::ShutdownNegoError>
         >
     > {
         let now = Instant::now();
@@ -1870,16 +1745,16 @@ where
     /// - `endpoint`: The counterparty's address.
     fn shutdown_flow(
         &mut self,
-        shutdown: &ShutdownNego,
-        param: &ShutdownNego::Param,
-        session: AuthN::AuthNSession,
-        endpoint: Flow::PeerAddr
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        session: Types::AuthNSession,
+        endpoint: Types::PeerAddr
     ) -> Result<
         (),
-        SessionShutdownError<ShutdownNego::StartError,
-                             ShutdownNego::NegotiateError>
+        SessionShutdownError<Types::ShutdownStartError,
+                             Types::ShutdownNegoError>
     > {
-        let endpoint = Xfrm::PeerAddr::from(endpoint);
+        let endpoint = Types::PeerAddr::from(endpoint);
 
         match self.sessions.entry(endpoint.clone()) {
             Entry::Vacant(_) => Err(SessionShutdownError::None),
@@ -1928,23 +1803,23 @@ where
     /// - `param`: Parameter used by the inbound negotiator.
     fn listen(
         &mut self,
-        ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
-        sessions: &mut Vec<AuthN::AuthNSession>,
-        shutdown: &ShutdownNego,
-        shutdown_param: &ShutdownNego::Param,
-        authn: &AuthN,
+        ext_endpoints: &mut HashSet<Types::PeerAddr>,
+        sessions: &mut Vec<Types::AuthNSession>,
+        shutdown: &Types::ShutdownNego,
+        shutdown_param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
-        param: &InboundNego::Param,
+        param: &Types::InParam,
     ) -> Result<
         (),
         SessionListenError<
-            FlowsListenError<Xfrm::Error, InboundNego::StartError,
-                             InboundNego::NegotiateError,
-                             OutboundNego::NegotiateError>,
-            AuthN::StartError,
-            AuthN::NegotiateError,
-            ShutdownError<ShutdownNego::StartError,
-                          ShutdownNego::NegotiateError>
+            FlowsListenError<Types::XfrmError, Types::InStartError,
+                             Types::InNegoError,
+                             Types::OutNegoError>,
+            Types::AuthStartError,
+            Types::AuthNegoError,
+            ShutdownError<Types::ShutdownStartError,
+                          Types::ShutdownNegoError>
         >
     > {
         let mut endpoints = HashSet::new();
@@ -2111,16 +1986,16 @@ where
 
     fn shutdown_step(
         &mut self,
-        shutdown: &ShutdownNego,
-        param: &InboundNego::Param,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::InParam,
     ) -> Result<
         (),
         SessionShutdownStepError<
-            FlowsListenError<Xfrm::Error, InboundNego::StartError,
-                             InboundNego::NegotiateError,
-                             OutboundNego::NegotiateError>,
-            ShutdownError<ShutdownNego::StartError,
-                          ShutdownNego::NegotiateError>
+            FlowsListenError<Types::XfrmError, Types::InStartError,
+                             Types::InNegoError,
+                             Types::OutNegoError>,
+            ShutdownError<Types::ShutdownStartError,
+                          Types::ShutdownNegoError>
         >
     > {
         let mut endpoints = HashSet::new();
@@ -2205,27 +2080,10 @@ where
     }
 }
 
-impl<Flow, Sock, InboundNego, OutboundNego, ShutdownNego, AuthN, Xfrm> Source
-    for FlowsEntry<Flow, Sock, InboundNego, OutboundNego,
-                   ShutdownNego, AuthN, Xfrm>
+impl<Flow, Types> Source for FlowsEntry<Flow, Types>
 where
     Flow: Session,
-    Sock: Receiver + Sender + Source,
-    Sock::Addr: TryFrom<Xfrm::LocalAddr>,
-    <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-    OutboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
-    ShutdownNego: NegotiatorStart<(), Flow>,
-    InboundNego::NegotiateError: ScopedError,
-    OutboundNego::NegotiateError: ScopedError,
-    ShutdownNego::NegotiateError: ScopedError,
-    AuthN: SessionAuthN<Flow, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrm,
-    Xfrm::LocalAddr: From<Sock::Addr>,
-    Xfrm::PeerAddr: From<Flow::PeerAddr>,
-    Xfrm::Error: ScopedError
+    Types: FlowsEntryTypes<Flow>
 {
     #[inline]
     fn register(
@@ -2256,28 +2114,10 @@ where
     }
 }
 
-impl<Channel, AuthN, Xfrm, InnerXfrm>
-    AcquiredEntry<Channel, AuthN, Xfrm, InnerXfrm>
+impl<Types> AcquiredEntry<Types>
 where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
-    AuthN: Clone + SessionAuthN<Channel::Flow, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::PeerAddr: From<<Channel::Flow as Session>::PeerAddr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    InnerXfrm::CreateParam: Clone,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Types: FarChannelsTypes
+{
     /// Create a new `AcquiredEntry`.
     ///
     /// This creates a new `AcquiredEntry` from its configurations,
@@ -2332,24 +2172,24 @@ where
     fn create<Ctx, I>(
         tokgen: &mut I,
         caches: &mut Ctx,
-        channel: &mut Channel,
+        channel: &mut Types::Channel,
         flows_config: &FlowsConfig,
         resolve_config: &ResolverConfig,
         policy: &SocketAddrPolicy,
-        xfrm_param: &InnerXfrm::CreateParam,
-        acquired: Channel::Acquired,
+        xfrm_param: &Types::InnerXfrmCreateParam,
+        acquired: Types::Acquired,
         nflows_hint: Option<usize>,
     ) -> Result<
-        RetryResult<(Self, Option<Instant>), WithRetryWhen<Channel::Acquired>>,
+        RetryResult<(Self, Option<Instant>), WithRetryWhen<Types::Acquired>>,
         AcquiredEntryCreateError<
-            <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+            Types::ResolverError,
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
+            Types::WrapError
         >
     >
     where
@@ -2390,7 +2230,8 @@ where
                                    "establishing flows for {}",
                                    addr);
 
-                            let xfrm = InnerXfrm::create(&addr, xfrm_param);
+                            let xfrm = Types::InnerXfrm::create(&addr,
+                                                                xfrm_param);
                             let session = channel
                                 .flows(flows_config.clone(), addr.clone(), xfrm)
                                 .map_err(|err| AcquiredEntryCreateError::Flows {
@@ -2432,7 +2273,7 @@ where
                            "establishing flows for {}",
                                addr);
 
-                    let xfrm = InnerXfrm::create(addr, xfrm_param);
+                    let xfrm = Types::InnerXfrm::create(addr, xfrm_param);
                     let session = channel
                         .flows(flows_config.clone(), addr.clone(), xfrm)
                         .map_err(|err| AcquiredEntryCreateError::Flows {
@@ -2459,7 +2300,7 @@ where
                        "establishing flows for {}",
                        param);
 
-                let xfrm = InnerXfrm::create(param, xfrm_param);
+                let xfrm = Types::InnerXfrm::create(param, xfrm_param);
                 let session = channel
                     .flows(flows_config.clone(), param.clone(), xfrm)
                     .map_err(|err| AcquiredEntryCreateError::Flows {
@@ -2579,39 +2420,39 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel: &Channel,
-        shutdown: &Channel::ShutdownNego,
-        shutdown_param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
-        authn: &AuthN,
+        channel: &Types::Channel,
+        shutdown: &Types::ShutdownNego,
+        shutdown_param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         policy: &SocketAddrPolicy,
         retry: &Retry,
-        channel_param: &Channel::Param,
-        nego_param: &<Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
-        endpoint: &Xfrm::PeerAddr,
+        channel_param: &Types::ChannelParam,
+        nego_param: &Types::OutParam,
+        endpoint: &Types::PeerAddr,
     ) -> Result<
         RetryResult<(
-            Option<AuthN::AuthNSession>,
-            Option<Vec<Channel::Param>>,
+            Option<Types::AuthNSession>,
+            Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
         AcquiredEntryFlowError<
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError,
+            Types::WrapError,
             FlowStateGetFlowError<
-                AuthN::NegotiateError,
-                AuthN::StartError,
+                Types::AuthNegoError,
+                Types::AuthStartError,
                 FlowsFlowError<
-                    <Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
-                    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                    Types::OutStartError,
+                    Types::OutNegoError
                 >,
                 ShutdownError<
-                    <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
-                    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                    Types::ShutdownStartError,
+                    Types::ShutdownNegoError
                 >
             >
         >
@@ -2680,18 +2521,18 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel: &Channel,
+        channel: &Types::Channel,
         policy: &SocketAddrPolicy
     ) -> Result<
-        RetryResult<(Option<Vec<Channel::Param>>, Option<Instant>)>,
+        RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
         FarChannelsRefreshError<
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
+            Types::WrapError
         >
     >
     where I: Iterator<Item = Token>
@@ -2767,26 +2608,26 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel: &Channel,
+        channel: &Types::Channel,
         policy: &SocketAddrPolicy,
-        shutdown: &Channel::ShutdownNego,
-        param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
-        channel_param: &Channel::Param,
-        session: AuthN::AuthNSession,
-        peer: <Channel::Flow as Session>::PeerAddr
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        channel_param: &Types::ChannelParam,
+        session: Types::AuthNSession,
+        peer: Types::PeerAddr
     ) -> Result<
         RetryResult<(
-            Option<Vec<Channel::Param>>,
+            Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
         AcquiredEntryShutdownError<
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError,
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError,
+            Types::WrapError,
         >
     >
     where I: Iterator<Item = Token>
@@ -2842,18 +2683,18 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel: &Channel,
+        channel: &Types::Channel,
         policy: &SocketAddrPolicy
     ) -> Result<
-        RetryResult<(Vec<Channel::Param>, Option<Instant>)>,
+        RetryResult<(Vec<Types::ChannelParam>, Option<Instant>)>,
         FarChannelsRefreshError<
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
+            Types::WrapError
         >
     >
     where I: Iterator<Item = Token>
@@ -2922,41 +2763,41 @@ where
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
     fn listen<I>(
         &mut self,
-        ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
-        sessions: &mut Vec<AuthN::AuthNSession>,
+        ext_endpoints: &mut HashSet<Types::PeerAddr>,
+        sessions: &mut Vec<Types::AuthNSession>,
         tokgen: &mut I,
         registry: &Registry,
-        channel: &Channel,
+        channel: &Types::Channel,
         policy: &SocketAddrPolicy,
-        shutdown: &Channel::ShutdownNego,
-        shutdown_param: &<Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
-        authn: &AuthN,
+        shutdown: &Types::ShutdownNego,
+        shutdown_param: &Types::ShutdownParam,
+        authn: &Types::AuthN,
         retry: &Retry,
-        param: &<Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
+        param: &Types::InParam,
         tokens: &HashSet<Token>,
     ) -> Result<
-        RetryResult<(Option<Vec<Channel::Param>>, Option<Instant>)>,
+        RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
         AcquiredEntryListenError<
             FarChannelsRefreshError<
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError
+                Types::WrapError
             >,
             FlowsListenError<
-                Xfrm::Error,
-                <Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
-                <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError,
-                <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                Types::XfrmError,
+                Types::InStartError,
+                Types::InNegoError,
+                Types::OutNegoError
             >,
-            AuthN::StartError,
-            AuthN::NegotiateError,
+            Types::AuthStartError,
+            Types::AuthNegoError,
             ShutdownError<
-                <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
-                <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
             >
         >
     >
@@ -2983,19 +2824,19 @@ where
         &mut self,
         tokens: &mut T,
         registry: &Registry,
-        channel: &Channel,
+        channel: &Types::Channel,
         policy: &SocketAddrPolicy,
         resolved: I,
     ) -> Result<
-        Vec<Channel::Param>,
+        Vec<Types::ChannelParam>,
         FarChannelsRefreshError<
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
+            Types::WrapError
         >
     >
     where
@@ -3040,7 +2881,8 @@ where
 
                         let token = tokens.next()
                             .ok_or(FarChannelsRefreshError::NoTokens)?;
-                        let xfrm = InnerXfrm::create(&addr, &self.xfrm_param);
+                        let xfrm = Types::InnerXfrm::create(&addr,
+                                                            &self.xfrm_param);
                         let flows = channel
                             .flows(self.flows_config.clone(),
                                    addr.clone(),
@@ -3113,25 +2955,23 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel: &Channel,
+        channel: &Types::Channel,
         policy: &SocketAddrPolicy,
-        param: &Channel::Param,
+        param: &Types::ChannelParam,
     ) -> Result<
         RetryResult<(
-            &mut FlowsEntry<Channel::Flow, Channel::Socket,
-                            Channel::InboundNego, Channel::OutboundNego,
-                            Channel::ShutdownNego, AuthN, Xfrm>,
-            Option<Vec<Channel::Param>>,
+            &mut FlowsEntry<Types::Flow, Types>,
+            Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
         AcquiredEntryFlowsError<
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError,
+            Types::WrapError,
         >
     >
     where I: Iterator<Item = Token>
@@ -3153,28 +2993,10 @@ where
     }
 }
 
-impl<Channel, AuthN, Xfrm, InnerXfrm>
-    ChannelEntry<Channel, AuthN, Xfrm, InnerXfrm>
+impl<Types> ChannelEntry<Types>
 where
-    Channel: FarChannelFlows<Xfrm, InnerXfrm> + FarChannelCreate,
-    <Channel::Socket as Socket>::Addr: TryFrom<Xfrm::LocalAddr>,
-    <<Channel::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
-        Display,
-    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError: ScopedError,
-    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError: ScopedError,
-    AuthN: Clone + SessionAuthN<Channel::Flow, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    AuthN::StartError: ScopedError,
-    Xfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    Xfrm::CreateParam: Clone + Default,
-    Xfrm::LocalAddr: From<<Channel::Socket as Socket>::Addr>,
-    Xfrm::PeerAddr: From<<Channel::Flow as Session>::PeerAddr>,
-    Xfrm::Error: ScopedError,
-    InnerXfrm: DatagramXfrmCreate<Addr = Channel::Param>,
-    InnerXfrm::CreateParam: Clone,
-    Channel::Acquired: FarChannelAcquiredResolve<Resolved = Channel::Param>,
-    Channel::Param: Clone + Display + Eq + Hash + PartialEq {
+    Types: FarChannelsTypes
+{
     /// Create a new `ChannelEntry`.
     ///
     /// This will attempt to perform acquire negotiations on
@@ -3226,30 +3048,30 @@ where
         gentok: &mut I,
         namectx: &mut Ctx,
         registry: &Registry,
-        channel: Channel,
-        shutdown_param: <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::Param,
-        authn: AuthN,
+        channel: Types::Channel,
+        shutdown_param: Types::ShutdownParam,
+        authn: Types::AuthN,
         flows_config: FlowsConfig,
         resolve_config: ResolverConfig,
         addr_policy: SocketAddrPolicy,
-        xfrm_param: InnerXfrm::CreateParam,
+        xfrm_param: Types::InnerXfrmCreateParam,
         retry: Retry,
         nflows_hint: Option<usize>
     ) -> Result<
         (Self, Option<Instant>),
         ChannelEntryCreateError<
-            Channel::AcquireError,
-            Channel::ShutdownNegoError,
-            Channel::NegotiateError,
+            Types::AcquireError,
+            Types::ShutdownNegoCreateError,
+            Types::AcquireNegoError,
             AcquiredEntryCreateError<
-                <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+                Types::ResolverError,
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError
+                Types::WrapError
             >
         >
     >
@@ -3297,16 +3119,16 @@ where
         tokens: &mut I,
         registry: &Registry,
     ) -> Result<
-        RetryResult<(Vec<Channel::Param>, Option<Instant>)>,
+        RetryResult<(Vec<Types::ChannelParam>, Option<Instant>)>,
         ChannelEntryAddrsError<
             FarChannelsRefreshError<
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError
+                Types::WrapError
             >
         >
     >
@@ -3374,34 +3196,34 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel_param: &Channel::Param,
-        nego_param: &<Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
-        endpoint: &Xfrm::PeerAddr,
+        channel_param: &Types::ChannelParam,
+        nego_param: &Types::OutParam,
+        endpoint: &Types::PeerAddr,
     ) -> Result<
         RetryResult<(
-            Option<AuthN::AuthNSession>,
-            Option<Vec<Channel::Param>>,
+            Option<Types::AuthNSession>,
+            Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
         ChannelEntryReqFlowError<
             AcquiredEntryFlowError<
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError,
+                Types::WrapError,
                 FlowStateGetFlowError<
-                    AuthN::NegotiateError,
-                    AuthN::StartError,
+                    Types::AuthNegoError,
+                    Types::AuthStartError,
                     FlowsFlowError<
-                        <Channel::OutboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
-                        <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                        Types::OutStartError,
+                        Types::OutNegoError
                     >,
                     ShutdownError<
-                        <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
-                        <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                        Types::ShutdownStartError,
+                        Types::ShutdownNegoError
                     >
                 >
             >
@@ -3465,22 +3287,22 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel_param: &Channel::Param,
-        session: AuthN::AuthNSession,
+        channel_param: &Types::ChannelParam,
+        session: Types::AuthNSession,
     ) -> Result<
         RetryResult<(
-            Option<Vec<Channel::Param>>,
+            Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
         ChannelEntryShutdownFlowError<
             AcquiredEntryShutdownError<
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError,
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError,
+                Types::WrapError,
             >
         >
     >
@@ -3516,49 +3338,49 @@ where
         &mut self,
         namectx: &mut Ctx,
         gentok: &mut I,
-        ext_endpoints: &mut HashSet<Xfrm::PeerAddr>,
-        sessions: &mut Vec<AuthN::AuthNSession>,
+        ext_endpoints: &mut HashSet<Types::PeerAddr>,
+        sessions: &mut Vec<Types::AuthNSession>,
         registry: &Registry,
-        param: &<Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::Param,
+        param: &Types::InParam,
         tokens: &HashSet<Token>,
     ) -> Result<
-        RetryResult<(Option<Vec<Channel::Param>>, Option<Instant>)>,
+        RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
         ChannelEntryListenError<
             AcquiredEntryListenError<
                 FarChannelsRefreshError<
                     FarChannelFlowsError<
-                        Channel::SocketError,
-                        Channel::XfrmError,
-                        Channel::InboundNegoError,
-                        Channel::OutboundNegoError
+                        Types::SocketError,
+                        Types::XfrmCreateError,
+                        Types::InboundNegoCreateError,
+                        Types::OutboundNegoCreateError
                     >,
-                    <Channel::Acquired as FarChannelAcquired>::WrapError
+                    Types::WrapError
                 >,
                 FlowsListenError<
-                    Xfrm::Error,
-                    <Channel::InboundNego as NegotiatorStart<Channel::Flow, BufferedFlow<Channel::Socket, Xfrm>>>::StartError,
-                    <Channel::InboundNego as Negotiator<Channel::Flow>>::NegotiateError,
-                    <Channel::OutboundNego as Negotiator<Channel::Flow>>::NegotiateError
+                    Types::XfrmError,
+                    Types::InStartError,
+                    Types::InNegoError,
+                    Types::OutNegoError
                 >,
-                AuthN::StartError,
-                AuthN::NegotiateError,
+                Types::AuthStartError,
+                Types::AuthNegoError,
                 ShutdownError<
-                    <Channel::ShutdownNego as NegotiatorStart<(), Channel::Flow>>::StartError,
-                    <Channel::ShutdownNego as Negotiator<()>>::NegotiateError
+                    Types::ShutdownStartError,
+                    Types::ShutdownNegoError
                 >
             >,
             AcquiredEntryCreateError<
-                <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+                Types::ResolverError,
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError
+                Types::WrapError
             >,
-            Channel::NegotiateError,
-            Channel::ShutdownNegotiateError
+            Types::AcquireNegoError,
+            Types::AcquireShutdownNegoError
         >
     >
     where
@@ -3661,17 +3483,17 @@ where
     ) -> Result<
         Option<Instant>,
         ChannelEntryAcquireError<
-            Channel::AcquireError,
-            Channel::NegotiateError,
+            Types::AcquireError,
+            Types::AcquireNegoError,
             AcquiredEntryCreateError<
-                <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+                Types::ResolverError,
                 FarChannelFlowsError<
-                    Channel::SocketError,
-                    Channel::XfrmError,
-                    Channel::InboundNegoError,
-                    Channel::OutboundNegoError
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
                 >,
-                <Channel::Acquired as FarChannelAcquired>::WrapError
+                Types::WrapError
             >
         >
     >
@@ -3743,18 +3565,18 @@ where
         &mut self,
         gentok: &mut I,
         namectx: &mut Ctx,
-        acquired: Channel::Acquired
+        acquired: Types::Acquired
     ) -> Result<
         Option<Instant>,
         AcquiredEntryCreateError<
-            <Channel::Acquired as FarChannelAcquiredResolve>::ResolverError,
+            Types::ResolverError,
             FarChannelFlowsError<
-                Channel::SocketError,
-                Channel::XfrmError,
-                Channel::InboundNegoError,
-                Channel::OutboundNegoError
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
             >,
-            <Channel::Acquired as FarChannelAcquired>::WrapError
+            Types::WrapError
         >
     >
     where
