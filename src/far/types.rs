@@ -16,13 +16,17 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use std::convert::Infallible;
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::marker::PhantomData;
+use std::net::SocketAddr;
 
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
+use constellation_common::config::Create;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
@@ -32,8 +36,10 @@ use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Session;
 use constellation_common::net::Socket;
+use constellation_common::unix::UnixSocketPath;
 use mio::event::Source;
 
+use crate::far::AcquiredResolveStaticError;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -41,6 +47,37 @@ use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::compound::CompoundAcquiredShutdownNegotiatePending;
+use crate::far::compound::CompoundInboundNegoError;
+use crate::far::compound::CompoundOutboundNegoError;
+use crate::far::compound::CompoundFarChannel;
+use crate::far::compound::CompoundFarChannelAcquired;
+use crate::far::compound::CompoundFarChannelAcquiredResolverError;
+use crate::far::compound::CompoundFarChannelAcquireError;
+use crate::far::compound::CompoundFarChannelAcquireNegoError;
+use crate::far::compound::CompoundFarChannelAcquireNegoPending;
+use crate::far::compound::CompoundFarChannelAddr;
+use crate::far::compound::CompoundFarChannelParam;
+use crate::far::compound::CompoundFarChannelShutdownAcquiredError;
+use crate::far::compound::CompoundFarChannelShutdownAcquiredNegoError;
+use crate::far::compound::CompoundFarChannelSocket;
+use crate::far::compound::CompoundFarChannelSocketError;
+use crate::far::compound::CompoundFarChannelXfrm;
+use crate::far::compound::CompoundFarChannelXfrmError;
+use crate::far::compound::CompoundFarChannelXfrmPeerAddr;
+use crate::far::compound::CompoundFarChannelXfrmWrapError;
+use crate::far::compound::CompoundFlow;
+use crate::far::compound::CompoundInboundNegotiator;
+use crate::far::compound::CompoundInboundNegotiatorPending;
+use crate::far::compound::CompoundOutboundNegotiator;
+use crate::far::compound::CompoundOutboundNegotiatorParam;
+use crate::far::compound::CompoundOutboundNegotiatorPending;
+use crate::far::compound::CompoundNegotiateError;
+use crate::far::compound::CompoundNegotiatorStartError;
+use crate::far::compound::CompoundShutdownError;
+use crate::far::compound::CompoundShutdownNegotiator;
+use crate::far::compound::CompoundShutdownNegotiatorPending;
+use crate::config::CompoundXfrmCreateParam;
 use crate::far::flows::BufferedFlow;
 
 pub trait FlowAuthNShutdownTypes<Flow>
@@ -116,8 +153,7 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
     type InnerXfrmError: Debug + Display + ScopedError;
     type ResolverError: Debug + Display + ScopedError;
     type WrapError: Debug + Display + ScopedError;
-    type Acquired: Clone + Eq + Hash
-        + FarChannelAcquired<
+    type Acquired: FarChannelAcquired<
             WrapError = Self::WrapError,
         > + FarChannelAcquiredResolve<
             Resolved = Self::ChannelParam,
@@ -143,7 +179,7 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
         AcquireError = Self::AcquireError,
         NegotiateError = Self::AcquireNegoError,
         ShutdownPending = Self::AcquireShutdownPending,
-        ShutdownError = Self::AcquireError,
+        ShutdownError = Self::AcquireShutdownError,
         ShutdownNegotiateError = Self::AcquireShutdownNegoError
     > + FarChannelFlows<
         Self::Xfrm, Self::InnerXfrm,
@@ -161,10 +197,163 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
     > + FarChannelXfrm<
         Self::Xfrm, Self::InnerXfrm,
         XfrmError = Self::XfrmCreateError
-    >
-
-        + FarChannelCreate;
+    > + FarChannelCreate;
 }
 
-#[derive(Clone, Debug)]
-pub struct CompoundFarChannelsTypes;
+#[derive(Debug)]
+pub struct CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{
+    authn: PhantomData<AuthN>,
+    unix: PhantomData<Unix>,
+    udp: PhantomData<UDP>
+}
+
+impl<AuthN, Unix, UDP> Clone for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        CompoundFarChannelsTypes {
+            authn: self.authn,
+            unix: self.unix,
+            udp: self.udp
+        }
+    }
+}
+
+unsafe impl<AuthN, Unix, UDP> Send
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{}
+
+unsafe impl<AuthN, Unix, UDP> Sync
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{}
+
+impl<AuthN, Unix, UDP> FlowAuthNShutdownTypes<CompoundFlow<Unix, UDP>>
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{
+    type Prin = AuthN::Prin;
+    type AuthNSession = AuthN::AuthNSession;
+    type AuthPending = AuthN::Pending;
+    type AuthStartError = AuthN::StartError;
+    type AuthNegoError = AuthN::NegotiateError;
+    type AuthN = AuthN;
+    type ShutdownParam = ();
+    type ShutdownPending = CompoundShutdownNegotiatorPending<Unix, UDP>;
+    type ShutdownStartError = CompoundNegotiatorStartError;
+    type ShutdownNegoError = CompoundShutdownError;
+    type ShutdownNego = CompoundShutdownNegotiator<Unix, UDP>;
+}
+
+impl<AuthN, Unix, UDP> FlowsEntryTypes<CompoundFlow<Unix, UDP>>
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{
+    type LocalAddr = CompoundFarChannelAddr;
+    type PeerAddr = CompoundFarChannelXfrmPeerAddr;
+    type SockAddr = CompoundFarChannelAddr;
+    type ConvertError = Infallible;
+    type Sock = CompoundFarChannelSocket;
+    type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
+    type XfrmError = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
+    type OutParam = CompoundOutboundNegotiatorParam;
+    type OutPending = CompoundOutboundNegotiatorPending<Unix, UDP>;
+    type OutStartError = CompoundNegotiatorStartError;
+    type OutNegoError = CompoundNegotiateError;
+    type OutboundNego = CompoundOutboundNegotiator;
+    type InParam = ();
+    type InPending = CompoundInboundNegotiatorPending<Unix, UDP>;
+    type InStartError = CompoundNegotiatorStartError;
+    type InNegoError = CompoundNegotiateError;
+    type InboundNego = CompoundInboundNegotiator;
+}
+
+impl<AuthN, Unix, UDP> FarChannelsTypes
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+where
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone,
+    UDP::CreateParam: Clone,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError
+{
+    type InnerXfrmCreateParam = CompoundXfrmCreateParam<Unix::CreateParam,
+                                                        UDP::CreateParam>;
+    type InnerXfrm = CompoundFarChannelXfrm<Unix, UDP>;
+    type InnerXfrmError = CompoundFarChannelXfrmWrapError<Unix::Error,
+                                                          UDP::Error>;
+    type ResolverError = CompoundFarChannelAcquiredResolverError;
+    type WrapError = AcquiredResolveStaticError;
+    type Acquired = CompoundFarChannelAcquired;
+    type Flow = CompoundFlow<Unix, UDP>;
+    type AcquirePending = CompoundFarChannelAcquireNegoPending;
+    type AcquireShutdownPending = CompoundAcquiredShutdownNegotiatePending;
+    type ChannelParam = CompoundFarChannelParam;
+    type AcquireError = CompoundFarChannelAcquireError;
+    type AcquireNegoError = CompoundFarChannelAcquireNegoError;
+    type AcquireShutdownError = CompoundFarChannelShutdownAcquiredError;
+    type AcquireShutdownNegoError = CompoundFarChannelShutdownAcquiredNegoError;
+    type InboundNegoCreateError = CompoundInboundNegoError;
+    type OutboundNegoCreateError = CompoundOutboundNegoError;
+    type ShutdownNegoCreateError = Infallible;
+    type XfrmCreateError = CompoundFarChannelXfrmError;
+    type SocketError = CompoundFarChannelSocketError;
+    type Channel = CompoundFarChannel;
+}
