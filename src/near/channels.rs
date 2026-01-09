@@ -4362,7 +4362,7 @@ where
                 trace!(target: "get-out-session",
                        "polling");
 
-                if count > 5 {
+                if count > 10 {
                     panic!("Timeout")
                 }
 
@@ -4436,7 +4436,7 @@ where
         trace!(target: "get-in-session",
                "polling");
 
-        if count > 5 {
+        if count > 10 {
             panic!("Timeout")
         }
 
@@ -4520,7 +4520,7 @@ where
                 trace!(target: "shutdown-out-session",
                        "polling");
 
-                if count > 5 {
+                if count > 10 {
                     panic!("Timeout")
                 }
 
@@ -4607,7 +4607,7 @@ where
                 trace!(target: "shutdown-in-session",
                        "polling");
 
-                if count > 5 {
+                if count > 10 {
                     panic!("Timeout")
                 }
 

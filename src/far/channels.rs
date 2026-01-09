@@ -248,6 +248,9 @@ where
     resolve_config: ResolverConfig,
     /// Address policy.
     addr_policy: SocketAddrPolicy,
+    in_param: Types::InParam,
+    out_param: Types::OutParam,
+    channel_param: Types::ChannelParam,
     /// Parameter used to create the basic [DatagramXfrm].
     xfrm_param: Types::InnerXfrmCreateParam,
     /// Retry configuration.
@@ -342,6 +345,7 @@ pub enum SessionNegoToAuthError<AuthN, Start> {
     NotSession
 }
 
+#[derive(Debug)]
 pub enum FlowStateGetFlowError<AuthN, Start, Flow, Shutdown> {
     /// Error occurred shutting down the stream
     Shutdown {
@@ -936,6 +940,10 @@ where
             }
             // Negotiations stopped in a pending state.
             Ok(NegotiatorResult::Pending(pending)) => {
+                debug!(target: "flows-nego-state",
+                       "continuing negotiations with {}",
+                       addr);
+
                 self.state = Some(SessionState::Pending {
                     pending: pending
                 });
@@ -1187,6 +1195,10 @@ where
     where
         Types: FlowsEntryTypes<Flow>
     {
+         debug!(target: "flows-nego-state",
+               "creating new flow with {}",
+               addr);
+
         if let Some(state) = &self.state {
             match state {
                 // Negotiations are pending, there is no session.
@@ -1256,6 +1268,10 @@ where
     >
     where Addr: Display
     {
+         debug!(target: "flows-nego-state",
+               "receiving incoming flow with {}",
+               peer);
+
         let state = self.state.take();
 
         match state {
@@ -1270,6 +1286,9 @@ where
             // A pending negotiation exists; advance it to the
             // authentication stage.
             Some(SessionState::Pending { pending }) => {
+                trace!(target: "flows-nego-state",
+                       "pending negotiation exists");
+
                 let res = pending.to_auth(authn, flow);
 
                 self.handle_to_auth_result(
@@ -1291,6 +1310,9 @@ where
             // XXX Possibly rate-limit incoming connections to
             // avoid DoS?
             Some(SessionState::Shutdown { .. }) | None => {
+                trace!(target: "flows-nego-state",
+                       "no pending negotiation exists");
+
                 let res = SessionNegoState::auth(authn, flow);
 
                 self.handle_to_auth_result(
@@ -1394,6 +1416,10 @@ where
     >
     where Addr: Display
     {
+        debug!(target: "flows-nego-state",
+               "shutting down session with {}",
+               addr);
+
         match &self.state {
             // This is what we expect.
             Some(SessionState::Active) => {
@@ -1523,11 +1549,18 @@ where
     >
     where Addr: Display + Eq + Hash
     {
+        debug!(target: "flows-nego-state",
+               "stepping session with {}",
+               addr);
+
         let state = self.state.take();
 
         match state {
             // A pending negotiation exists; step it.
             Some(SessionState::Pending { pending }) => {
+                trace!(target: "flows-nego-state",
+                       "session is pending");
+
                 let res = pending.step_auth(authn);
 
                 self.handle_to_auth_result(
@@ -1546,11 +1579,17 @@ where
             }
             // There's already an active session, but this isn't an error.
             Some(SessionState::Active) => {
+                trace!(target: "flows-nego-state",
+                       "session is active, recording endpoint");
+
                 ext_endpoints.insert(addr);
 
                 Ok(None)
             }
             Some(SessionState::Shutdown { pending }) => {
+                trace!(target: "flows-nego-state",
+                       "session is shutting down");
+
                 let res = shutdown
                     .complete_negotiate(pending)
                     .map_err(|err| SessionNegoStepError::Shutdown {
@@ -1565,7 +1604,7 @@ where
             }
             // No existing state at all; ignore this.
             None => {
-                debug!(target: "flows-nego-state",
+                trace!(target: "flows-nego-state",
                       "attempting to step inactive session with {}",
                       addr);
 
@@ -2993,6 +3032,17 @@ where
     }
 }
 
+#[derive(Debug)]
+pub enum ChannelEntryShutdownError<Start, Nego> {
+    Start {
+        err: Start
+    },
+    Nego {
+        err: Nego
+    },
+    Active
+}
+
 impl<Types> ChannelEntry<Types>
 where
     Types: FarChannelsTypes
@@ -3054,6 +3104,9 @@ where
         flows_config: FlowsConfig,
         resolve_config: ResolverConfig,
         addr_policy: SocketAddrPolicy,
+        in_param: Types::InParam,
+        out_param: Types::OutParam,
+        channel_param: Types::ChannelParam,
         xfrm_param: Types::InnerXfrmCreateParam,
         retry: Retry,
         nflows_hint: Option<usize>
@@ -3086,6 +3139,9 @@ where
             flows_config: flows_config,
             resolve_config: resolve_config,
             addr_policy: addr_policy,
+            in_param: in_param,
+            out_param: out_param,
+            channel_param: channel_param,
             xfrm_param: xfrm_param,
             shutdown: shutdown,
             shutdown_param: shutdown_param,
@@ -3097,6 +3153,27 @@ where
             .map_err(|err| ChannelEntryCreateError::Acquire { err: err })?;
 
         Ok((out, when))
+    }
+
+    /// Indicate whether this `ChannelEntry` has finished acquisition.
+    #[inline]
+    fn is_acquired(&self) -> bool {
+        matches!(&self.acquired, Some(RetryResult::Success(_)))
+    }
+
+    #[inline]
+    fn is_shutdown(&self) -> bool {
+        self.acquired.is_none()
+    }
+
+    #[inline]
+    fn is_shutdown_safe(&self) -> bool {
+        match &self.acquired {
+            Some(RetryResult::Success(AcquireState::Active { acquired })) =>
+                acquired.is_shutdown_safe(),
+            None | Some(RetryResult::Retry(_)) => true,
+            _ => false
+        }
     }
 
     /// Obtain a snapshot of the current set of addresses.
@@ -3196,8 +3273,6 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel_param: &Types::ChannelParam,
-        nego_param: &Types::OutParam,
         endpoint: &Types::PeerAddr,
     ) -> Result<
         RetryResult<(
@@ -3237,7 +3312,8 @@ where
                 acquired.req_flow(tokens, registry, &self.channel,
                                   &self.shutdown, &self.shutdown_param,
                                   &self.authn, &self.addr_policy, &self.retry,
-                                  channel_param, nego_param, endpoint)
+                                  &self.channel_param, &self.out_param,
+                                  endpoint)
                 .map_err(|err| ChannelEntryReqFlowError::Flow {
                     err: err
                 }),
@@ -3287,7 +3363,6 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
-        channel_param: &Types::ChannelParam,
         session: Types::AuthNSession,
     ) -> Result<
         RetryResult<(
@@ -3319,7 +3394,7 @@ where
                 acquired.shutdown_flow(tokens, registry, &self.channel,
                                        &self.addr_policy, &self.shutdown,
                                        &self.shutdown_param,
-                                       channel_param, session, addr)
+                                       &self.channel_param, session, addr)
                 .map_err(|err| ChannelEntryShutdownFlowError::Flow {
                     err: err
                 }),
@@ -3334,6 +3409,48 @@ where
         }
     }
 
+    fn shutdown(
+        &mut self,
+        registry: &Registry,
+    ) -> Result<
+        bool,
+        ChannelEntryShutdownError<
+            Types::AcquireShutdownError,
+            Types::AcquireShutdownNegoError
+        >
+    > {
+        match self.acquired.take() {
+            Some(RetryResult::Success(AcquireState::Active { acquired }))
+                if acquired.is_shutdown_safe() => {
+                    let state = self.channel.shutdown(acquired.acquired)
+                        .map_err(|err| ChannelEntryShutdownError::Start {
+                            err: err
+                        })?;
+
+                    match self.channel.shutdown_negotiate(registry, state)
+                        .map_err(|err| ChannelEntryShutdownError::Nego {
+                            err: err
+                        })? {
+                        // Shutdown completed immediately.
+                        NegotiatorResult::Complete(()) => Ok(true),
+                        NegotiatorResult::Pending(pending) => {
+                            let state = AcquireState::Shutdown {
+                                pending: pending
+                            };
+
+                            self.acquired = Some(RetryResult::Success(state));
+
+                            Ok(false)
+                        },
+                    }
+                },
+            // We were already shut down.
+            None | Some(RetryResult::Retry(_)) => Ok(true),
+            // It's not safe to shut down yet.
+            _ => Err(ChannelEntryShutdownError::Active)
+        }
+    }
+
     fn listen<Ctx, I>(
         &mut self,
         namectx: &mut Ctx,
@@ -3341,7 +3458,6 @@ where
         ext_endpoints: &mut HashSet<Types::PeerAddr>,
         sessions: &mut Vec<Types::AuthNSession>,
         registry: &Registry,
-        param: &Types::InParam,
         tokens: &HashSet<Token>,
     ) -> Result<
         RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
@@ -3386,26 +3502,29 @@ where
     where
         I: Iterator<Item = Token>,
         Ctx: NSNameCachesCtx {
-        match self.acquired.take()
-            .ok_or(ChannelEntryListenError::None)? {
+        match self.acquired.take().ok_or(ChannelEntryListenError::None)? {
             RetryResult::Success(AcquireState::Pending { state }) => match self
-                .channel.complete_negotiate(state)
-                .map_err(|err| ChannelEntryListenError::Nego {
-                    err: err
-                })? {
-                NegotiatorResult::Pending(state) => {
+                .channel.complete_negotiate(state) {
+                Ok(NegotiatorResult::Pending(state)) => {
                     let state = AcquireState::Pending { state: state };
 
                     self.acquired = Some(RetryResult::Success(state));
 
                     Ok(RetryResult::Success((None, None)))
                 }
-                NegotiatorResult::Complete(acquired) =>
+                Ok(NegotiatorResult::Complete(acquired)) =>
                     self.handle_acquired(gentok, namectx, acquired)
                         .map_err(|err| ChannelEntryListenError::Entry {
                             err: err
                         })
                         .map(|when| RetryResult::Success((None, when))),
+                Err(err) => {
+                    error!(target: "channel-entry",
+                           "error completing negotiations: {}",
+                           err);
+
+                    Ok(RetryResult::Success((None, None)))
+                }
             }
             RetryResult::Success(AcquireState::Acquired { acquired, when }) =>
                 if when <= Instant::now() {
@@ -3425,43 +3544,51 @@ where
                     Ok(RetryResult::Success((None, Some(when))))
                 }
             RetryResult::Success(AcquireState::Active { mut acquired }) =>
-                match acquired
-                    .listen(ext_endpoints, sessions, gentok, registry,
-                            &self.channel, &self.addr_policy, &self.shutdown,
-                            &self.shutdown_param, &self.authn, &self.retry,
-                            param, tokens)
-                    .map_err(|err| ChannelEntryListenError::Listen {
-                        err: err
-                    })? {
-                    RetryResult::Success((refreshed, when)) => {
+                match acquired.listen(ext_endpoints, sessions, gentok, registry,
+                                      &self.channel, &self.addr_policy,
+                                      &self.shutdown, &self.shutdown_param,
+                                      &self.authn, &self.retry, &self.in_param,
+                                      tokens) {
+                    Ok(RetryResult::Success((refreshed, when))) => {
                         let state = AcquireState::Active { acquired: acquired };
 
                         self.acquired = Some(RetryResult::Success(state));
 
                         Ok(RetryResult::Success((refreshed, when)))
                     }
-                    RetryResult::Retry(when) => {
+                    Ok(RetryResult::Retry(when)) => {
                         let state = AcquireState::Active { acquired: acquired };
 
                         self.acquired = Some(RetryResult::Success(state));
 
                         Ok(RetryResult::Retry(when))
                     }
+                    Err(err) => {
+                        error!(target: "channel-entry",
+                               "error listening: {}",
+                               err);
+
+                        Ok(RetryResult::Success((None, None)))
+                    }
                 }
             RetryResult::Success(AcquireState::Shutdown { pending }) =>
                 match self.channel
-                    .complete_shutdown_negotiate(registry, pending)
-                    .map_err(|err| ChannelEntryListenError::Shutdown {
-                        err: err
-                    })? {
+                    .complete_shutdown_negotiate(registry, pending) {
                     // Shutdown is complete; there's nothing more to return.
-                    NegotiatorResult::Complete(()) =>
+                    Ok(NegotiatorResult::Complete(())) =>
                         Ok(RetryResult::Success((None, None))),
                     // Shutdown is still pending.
-                    NegotiatorResult::Pending(pending) => {
+                    Ok(NegotiatorResult::Pending(pending)) => {
                         let state = AcquireState::Shutdown { pending: pending };
 
                         self.acquired = Some(RetryResult::Success(state));
+
+                        Ok(RetryResult::Success((None, None)))
+                    }
+                    Err(err) => {
+                        error!(target: "channel-entry",
+                               "error completing shutdown negotiations: {}",
+                               err);
 
                         Ok(RetryResult::Success((None, None)))
                     }
@@ -4344,6 +4471,349 @@ where Flow: Display
                 write!(f, "shutdown negotiations are pending"),
             ChannelEntryReqFlowError::None =>
                 write!(f, "no current acquire state"),
+        }
+    }
+}
+
+#[cfg(test)]
+use std::iter::empty;
+#[cfg(test)]
+use std::iter::once;
+#[cfg(test)]
+use std::time::Duration;
+#[cfg(test)]
+use std::thread::sleep;
+
+#[cfg(test)]
+use mio::Events;
+#[cfg(test)]
+use mio::Poll;
+
+#[cfg(test)]
+fn get_acquired<Types, Ctx>(
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+    endpoints: &mut HashSet<Types::PeerAddr>,
+    sessions: &mut Vec<Types::AuthNSession>,
+    channel: Types::Channel,
+    shutdown_param: Types::ShutdownParam,
+    authn: Types::AuthN,
+    flows_config: FlowsConfig,
+    resolve_config: ResolverConfig,
+    addr_policy: SocketAddrPolicy,
+    xfrm_param: Types::InnerXfrmCreateParam,
+    in_param: Types::InParam,
+    out_param: Types::OutParam,
+    channel_param: Types::ChannelParam,
+    token: Token
+) -> (ChannelEntry<Types>, Vec<Types::ChannelParam>, Option<Instant>)
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx {
+    let (mut ent, _) =
+        ChannelEntry::create(&mut once(token), ctx, poll.registry(), channel,
+                             shutdown_param, authn, flows_config,
+                             resolve_config, addr_policy, in_param, out_param,
+                             channel_param, xfrm_param, Retry::default(), None)
+        .expect("Expected success");
+
+    if ent.is_acquired() {
+        loop {
+            match ent.addrs(&mut empty(), poll.registry())
+                .expect("Expected success") {
+                RetryResult::Success((params, when)) => {
+                    return (ent, params, when);
+                }
+                RetryResult::Retry(when) => {
+                    let now = Instant::now();
+
+                    if now < when {
+                        sleep(when - now)
+                    }
+                }
+            }
+        }
+    } else {
+        let mut events = Events::with_capacity(2);
+        let mut count = 0;
+        let mut live = HashSet::new();
+
+        loop {
+            trace!(target: "get-acquired",
+                   "polling");
+
+            if count > 10 {
+                panic!("Timeout")
+            }
+
+            poll.poll(&mut events, Some(Duration::from_secs(1)))
+                .expect("Expected success");
+
+            count += 1;
+
+            trace!(target: "get-acquired",
+                   "polling returned");
+
+            for event in events.iter() {
+                trace!(target: "get-acquired",
+                       "event for token {:?}", event.token());
+
+                live.insert(event.token());
+            }
+
+            trace!(target: "get-acquired",
+                   "listening");
+
+            if let RetryResult::Success((Some(params), when)) = ent
+                .listen(ctx, &mut empty(), endpoints, sessions,
+                        poll.registry(), &live)
+                .expect("Expected success") {
+
+                return (ent, params, when)
+            }
+
+            live.clear();
+            assert!(endpoints.is_empty());
+            assert!(sessions.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+fn get_in_session<Ctx, Types>(
+    ent: &mut ChannelEntry<Types>,
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+    endpoints: &mut HashSet<Types::PeerAddr>,
+) -> Types::AuthNSession
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx {
+    let mut sessions = Vec::new();
+    let mut events = Events::with_capacity(2);
+    let mut count = 0;
+    let mut live = HashSet::new();
+
+    while sessions.is_empty() {
+        trace!(target: "get-in-session",
+               "polling");
+
+        if count > 10 {
+            panic!("Timeout")
+        }
+
+        poll.poll(&mut events, Some(Duration::from_secs(1)))
+            .expect("Expected success");
+
+        count += 1;
+
+        trace!(target: "get-in-session",
+               "polling returned");
+
+        for event in events.iter() {
+            trace!(target: "get-in-session",
+                   "event for token {:?}", event.token());
+
+            live.insert(event.token());
+        }
+
+        trace!(target: "get-in-session",
+               "listening");
+
+        ent.listen(ctx, &mut empty(), endpoints, &mut sessions,
+                   poll.registry(), &live)
+            .expect("");
+
+        live.clear();
+        assert!(endpoints.is_empty());
+        assert!(sessions.is_empty());
+    }
+
+    sessions.pop().expect("Expected some")
+}
+
+#[cfg(test)]
+fn get_out_session<Ctx, Types>(
+    ent: &mut ChannelEntry<Types>,
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+    endpoints: &mut HashSet<Types::PeerAddr>,
+    endpoint: &Types::PeerAddr,
+) -> Types::AuthNSession
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx
+{
+    match ent.req_flow(&mut empty(), poll.registry(), endpoint)
+        .expect("Expected success") {
+        RetryResult::Success((Some(out), params, _)) => {
+            trace!(target: "get-out-session",
+                   "got outbound session immediately");
+
+            assert!(params.is_none());
+
+            out
+        },
+        RetryResult::Success((None, params, _)) => {
+            let mut sessions = Vec::new();
+            let mut events = Events::with_capacity(2);
+            let mut count = 0;
+            let mut live = HashSet::new();
+
+            assert!(params.is_none());
+
+            while sessions.is_empty() {
+                trace!(target: "get-out-session",
+                       "polling");
+
+                if count > 10 {
+                    panic!("Timeout")
+                }
+
+                poll.poll(&mut events, Some(Duration::from_secs(1)))
+                    .expect("Expected success");
+
+                count += 1;
+
+                trace!(target: "get-out-session",
+                       "polling returned");
+
+                for event in events.iter() {
+                    trace!(target: "get-out-session",
+                           "event for token {:?}", event.token());
+
+                    live.insert(event.token());
+                }
+
+                trace!(target: "get-out-session",
+                       "listening");
+
+                ent.listen(ctx, &mut empty(), endpoints, &mut sessions,
+                           poll.registry(), &live)
+                    .expect("");
+
+                live.clear();
+                assert!(endpoints.is_empty());
+                assert!(sessions.is_empty());
+            }
+
+            sessions.pop().expect("Expected some")
+        },
+        _ => panic!("Should not see retry delay here")
+    }
+}
+
+#[cfg(test)]
+fn shutdown_session<Ctx, Types>(
+    ent: &mut ChannelEntry<Types>,
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+    session: Types::AuthNSession,
+)
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx
+{
+    match ent.shutdown_flow(&mut empty(), poll.registry(), session)
+        .expect("Expected success") {
+        RetryResult::Success((params, _)) => {
+            assert!(params.is_none());
+        }
+        _ => panic!("Should not see retry delay here")
+    }
+
+    let mut sessions = Vec::new();
+    let mut events = Events::with_capacity(2);
+    let mut count = 0;
+    let mut live = HashSet::new();
+    let mut endpoints = HashSet::new();
+
+    while !ent.is_shutdown_safe() {
+        trace!(target: "shutdown-session",
+               "polling");
+
+        if count > 10 {
+            panic!("Timeout")
+        }
+
+        poll.poll(&mut events, Some(Duration::from_secs(1)))
+            .expect("Expected success");
+
+        count += 1;
+
+        trace!(target: "shutdown-session",
+               "polling returned");
+
+        for event in events.iter() {
+            trace!(target: "shutdown-session",
+                   "event for token {:?}", event.token());
+
+            live.insert(event.token());
+        }
+
+        trace!(target: "shutdown-session",
+               "listening");
+
+        ent.listen(ctx, &mut empty(), &mut endpoints, &mut sessions,
+                   poll.registry(), &live)
+            .expect("");
+
+        live.clear();
+        assert!(endpoints.is_empty());
+        assert!(sessions.is_empty());
+    }
+}
+
+#[cfg(test)]
+fn shutdown_entry<Ctx, Types>(
+    ent: &mut ChannelEntry<Types>,
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+)
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx
+{
+    if !ent.shutdown(poll.registry()).expect("Expected success") {
+        let mut sessions = Vec::new();
+        let mut events = Events::with_capacity(2);
+        let mut count = 0;
+        let mut live = HashSet::new();
+        let mut endpoints = HashSet::new();
+
+        while !ent.is_shutdown() {
+            trace!(target: "shutdown-entry",
+                   "polling");
+
+            if count > 10 {
+                panic!("Timeout")
+            }
+
+            poll.poll(&mut events, Some(Duration::from_secs(1)))
+                .expect("Expected success");
+
+            count += 1;
+
+            trace!(target: "shutdown-entry",
+                   "polling returned");
+
+            for event in events.iter() {
+                trace!(target: "shutdown-entry",
+                       "event for token {:?}", event.token());
+
+                live.insert(event.token());
+            }
+
+            trace!(target: "shutdown-entry",
+                   "listening");
+
+            ent.listen(ctx, &mut empty(), &mut endpoints, &mut sessions,
+                       poll.registry(), &live)
+                .expect("");
+
+            live.clear();
+            assert!(endpoints.is_empty());
+            assert!(sessions.is_empty());
         }
     }
 }
