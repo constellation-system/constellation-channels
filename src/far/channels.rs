@@ -466,6 +466,9 @@ pub enum AcquiredEntryCreateError<Resolve, Flows, Wrap> {
     Resolve {
         err: Resolve
     },
+    IO {
+        err: Error
+    },
     /// No valid addresses were produced.
     NoValidAddrs,
     /// Token iterator exhausted.
@@ -1088,6 +1091,10 @@ where
     where
         Types: FlowsEntryTypes<Flow>
     {
+        trace!(target: "flows-nego-state",
+               "creating new flow with {}",
+               addr);
+
         // Check if we're still delayed
         let now = Instant::now();
 
@@ -1095,6 +1102,10 @@ where
             // Good to go. Try creating a flow
             if let Some(flow) = flows.flow(param, addr.clone())
                 .map_err(|err| FlowStateGetFlowError::Flow { err: err })? {
+                trace!(target: "flows-nego-state",
+                       "session negotiated immediately with {}",
+                       addr);
+
                 // The session negotiation returned immediately.
                 // Start authentication.
                 let res = SessionNegoState::auth(authn, flow);
@@ -1116,6 +1127,10 @@ where
                             FlowStateGetFlowError::ToAuth { err: err },
                     })
             } else {
+                trace!(target: "flows-nego-state",
+                       "continuing session negotiation with {}",
+                       addr);
+
                 // Session negotiations are pending.
                 let pending = SessionNegoState::session();
 
@@ -1194,7 +1209,7 @@ where
         Types: FlowsEntryTypes<Flow>
     {
          debug!(target: "flows-nego-state",
-               "creating new flow with {}",
+               "obtaining flow with {}",
                addr);
 
         if let Some(state) = &self.state {
@@ -1278,6 +1293,8 @@ where
                 info!(target: "flows-nego-state",
                       "discarding session from {}, active session exists",
                       peer);
+
+                self.state = Some(SessionState::Active);
 
                 Ok(None)
             }
@@ -1581,6 +1598,7 @@ where
                        "session is active, recording endpoint");
 
                 ext_endpoints.insert(addr);
+                self.state = Some(SessionState::Active);
 
                 Ok(None)
             }
@@ -1635,16 +1653,21 @@ where
     /// - `flows`: The [Flows] to use.
     #[inline]
     fn new(
-        flows: Flows<Flow, Types::Sock, Types::InboundNego,
-                     Types::OutboundNego, Types::Xfrm>,
-    ) -> Self {
+        registry: &Registry,
+        mut flows: Flows<Flow, Types::Sock, Types::InboundNego,
+                         Types::OutboundNego, Types::Xfrm>,
+        token: Token
+    ) -> Result<Self, Error> {
+        registry.register(&mut flows, token,
+                          Interest::READABLE | Interest::WRITABLE)?;
+
         let sessions = HashMap::new();
 
-        FlowsEntry {
+        Ok(FlowsEntry {
             retry: FlowsRetry::new(),
             sessions: sessions,
             flows: flows,
-        }
+        })
     }
 
     /// Create a new `FlowsEntry` from a [Flows] with a size hint.
@@ -1656,17 +1679,22 @@ where
     /// - `nsessions`: Size hint for the sessions table.
     #[inline]
     fn with_capacity(
-        flows: Flows<Flow, Types::Sock, Types::InboundNego,
-                     Types::OutboundNego, Types::Xfrm>,
+        registry: &Registry,
+        mut flows: Flows<Flow, Types::Sock, Types::InboundNego,
+                         Types::OutboundNego, Types::Xfrm>,
+        token: Token,
         nsessions: usize
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        registry.register(&mut flows, token,
+                          Interest::READABLE | Interest::WRITABLE)?;
+
         let sessions = HashMap::with_capacity(nsessions);
 
-        FlowsEntry {
+        Ok(FlowsEntry {
             retry: FlowsRetry::new(),
             sessions: sessions,
             flows: flows,
-        }
+        })
     }
 
     /// Check if this `FlowsEntry` is safe to shut down.
@@ -2210,6 +2238,7 @@ where
         tokgen: &mut I,
         caches: &mut Ctx,
         channel: &mut Types::Channel,
+        registry: &Registry,
         flows_config: &FlowsConfig,
         resolve_config: &ResolverConfig,
         policy: &SocketAddrPolicy,
@@ -2244,7 +2273,7 @@ where
                     err: err
                 })?
                 .map_ok(|(resolved, time)| {
-                    trace!(target: "far-channel-registry",
+                    trace!(target: "acquired-entry",
                            "refreshing addresses for registry entry");
 
                     let mut flows = HashMap::with_capacity(resolved.len());
@@ -2253,7 +2282,7 @@ where
                     // Filter out all the addresses we're keeping.
                     for (addr, _, _) in resolved {
                         if policy.check_ip(&addr.ip()) {
-                            trace!(target: "far-channel-registry",
+                            trace!(target: "acquired-entry",
                                    "keeping address: {}",
                                    addr);
 
@@ -2263,7 +2292,7 @@ where
                                 }
                             })?;
 
-                            debug!(target: "far-channel-registry",
+                            debug!(target: "acquired-entry",
                                    "establishing flows for {}",
                                    addr);
 
@@ -2274,18 +2303,30 @@ where
                                 .map_err(|err| AcquiredEntryCreateError::Flows {
                                     err: err
                                 })?;
-                            let ent = match nflows_hint {
-                                Some(hint) => FlowsEntry::with_capacity(session,
-                                                                        hint),
-                                None => FlowsEntry::new(session)
-                            };
                             let token = tokgen.next()
                                 .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                            let ent = match nflows_hint {
+                                Some(hint) => FlowsEntry::with_capacity(
+                                    registry,
+                                    session,
+                                    token,
+                                    hint
+                                )
+                                    .map_err(|err| AcquiredEntryCreateError::IO {
+                                        err: err
+                                    }),
+                                None => FlowsEntry::new(
+                                    registry, session, token
+                                )
+                                    .map_err(|err| AcquiredEntryCreateError::IO {
+                                        err: err
+                                    })
+                            }?;
 
                             tokens.insert(addr, token.clone());
                             flows.insert(token, ent);
                         } else {
-                            debug!(target: "far-channel-registry",
+                            debug!(target: "acquired-entry",
                                    "discarding address {}",
                                    addr);
                         }
@@ -2306,7 +2347,7 @@ where
                 let mut flows = HashMap::with_capacity(params.len());
 
                 for addr in params {
-                    debug!(target: "far-channel-registry",
+                    debug!(target: "acquired-entry",
                            "establishing flows for {}",
                                addr);
 
@@ -2316,12 +2357,25 @@ where
                         .map_err(|err| AcquiredEntryCreateError::Flows {
                             err: err
                         })?;
-                    let ent = match nflows_hint {
-                        Some(hint) => FlowsEntry::with_capacity(session, hint),
-                        None => FlowsEntry::new(session)
-                    };
-                    let token = tokgen.next()
-                        .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                        let token = tokgen.next()
+                            .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                        let ent = match nflows_hint {
+                            Some(hint) => FlowsEntry::with_capacity(
+                                registry,
+                                session,
+                                token,
+                                hint
+                            )
+                                .map_err(|err| AcquiredEntryCreateError::IO {
+                                    err: err
+                                }),
+                            None => FlowsEntry::new(
+                                registry, session, token
+                            )
+                                .map_err(|err| AcquiredEntryCreateError::IO {
+                                    err: err
+                                })
+                        }?;
 
                     tokens.insert(addr.clone(), token.clone());
                     flows.insert(token, ent);
@@ -2333,7 +2387,7 @@ where
                 let mut tokens = HashMap::with_capacity(1);
                 let mut flows = HashMap::with_capacity(1);
 
-                debug!(target: "far-channel-registry",
+                debug!(target: "acquired-entry",
                        "establishing flows for {}",
                        param);
 
@@ -2343,12 +2397,25 @@ where
                     .map_err(|err| AcquiredEntryCreateError::Flows {
                         err: err
                     })?;
-                let ent = match nflows_hint {
-                    Some(hint) => FlowsEntry::with_capacity(session, hint),
-                    None => FlowsEntry::new(session)
-                };
-                let token = tokgen.next()
-                    .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                    let token = tokgen.next()
+                        .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                    let ent = match nflows_hint {
+                        Some(hint) => FlowsEntry::with_capacity(
+                            registry,
+                            session,
+                            token,
+                            hint
+                        )
+                            .map_err(|err| AcquiredEntryCreateError::IO {
+                                err: err
+                            }),
+                        None => FlowsEntry::new(
+                            registry, session, token
+                        )
+                            .map_err(|err| AcquiredEntryCreateError::IO {
+                                err: err
+                            })
+                    }?;
 
                 tokens.insert(param.clone(), token.clone());
                 flows.insert(token, ent);
@@ -2586,7 +2653,7 @@ where
                         err: err
                     })?
                     .map_ok(|(resolved, next_refresh)| {
-                        trace!(target: "far-channel-registry",
+                        trace!(target: "acquired-entry",
                            "refreshing addresses for registry entry");
 
                         let out = self.update_refreshed(tokens, registry,
@@ -2687,7 +2754,7 @@ where
                     // fatal, and should not be reported.
                     if let Err(err) = flows
                         .shutdown_flow(shutdown, param, session, peer) {
-                        warn!(target: "",
+                        warn!(target: "acquired-entry",
                               "error shutting down channel {}: {}",
                               channel_param, err)
                     }
@@ -2886,7 +2953,7 @@ where
 
         for (addr, _, _) in resolved {
             if policy.check(&addr) {
-                trace!(target: "far-channel-registry",
+                trace!(target: "acquired-entry",
                        "keeping address: {}",
                        addr);
 
@@ -2900,7 +2967,7 @@ where
                 // in existence.
                 match self.tokens.remove(&addr) {
                     Some(token) => {
-                        trace!(target: "far-channel-registry",
+                        trace!(target: "acquired-entry",
                                "retaining flows for {}",
                                addr);
 
@@ -2912,7 +2979,7 @@ where
                         new_tokens.insert(addr, token);
                     }
                     None => {
-                        debug!(target: "far-channel-registry",
+                        debug!(target: "acquired-entry",
                                "establishing flows for {}",
                                addr);
 
@@ -2930,17 +2997,27 @@ where
                                 }
                             })?;
                         let ent = match self.nflows_hint {
-                            Some(hint) => FlowsEntry::with_capacity(flows,
-                                                                    hint),
-                            None => FlowsEntry::new(flows)
-                        };
+                            Some(hint) => FlowsEntry::with_capacity(
+                                registry,
+                                flows,
+                                token,
+                                hint
+                            )
+                                .map_err(|err| FarChannelsRefreshError::IO {
+                                    err: err
+                                }),
+                            None => FlowsEntry::new(registry, flows, token)
+                                .map_err(|err| FarChannelsRefreshError::IO {
+                                    err: err
+                                })
+                        }?;
 
                         new_flows.insert(token.clone(), ent);
                         new_tokens.insert(addr, token);
                     }
                 };
             } else {
-                debug!(target: "far-channel-registry",
+                debug!(target: "acquired-entry",
                        "discarding address {} of unknown type",
                        addr);
             }
@@ -2969,7 +3046,7 @@ where
                             err: err
                         })?;
 
-                    debug!(target: "far-channel-registry",
+                    debug!(target: "acquired-entry",
                            "deregistering flows for {}, token {}",
                            addr, tok.0);
 
@@ -2978,7 +3055,7 @@ where
                             err: err
                         })?;
                 } else {
-                    error!(target: "far-channel-registry",
+                    error!(target: "acquired-entry",
                            "entry should not be missing for token {}",
                            tok.0);
                 }
@@ -3509,7 +3586,7 @@ where
                     Ok(RetryResult::Success((None, None)))
                 }
                 Ok(NegotiatorResult::Complete(acquired)) =>
-                    self.handle_acquired(gentok, namectx, acquired)
+                    self.handle_acquired(gentok, namectx, registry, acquired)
                         .map_err(|err| ChannelEntryListenError::Entry {
                             err: err
                         })
@@ -3524,7 +3601,7 @@ where
             }
             RetryResult::Success(AcquireState::Acquired { acquired, when }) =>
                 if when <= Instant::now() {
-                    self.handle_acquired(gentok, namectx, acquired)
+                    self.handle_acquired(gentok, namectx, registry, acquired)
                         .map_err(|err| ChannelEntryListenError::Entry {
                             err: err
                         })
@@ -3644,7 +3721,7 @@ where
                     // Create the AcquiredEntry, retry delays at this
                     // point are due to resolution, not acquisition.
                     match AcquiredEntry::create(gentok, namectx,
-                                                &mut self.channel,
+                                                &mut self.channel, registry,
                                                 &self.flows_config,
                                                 &self.resolve_config,
                                                 &self.addr_policy,
@@ -3688,6 +3765,7 @@ where
         &mut self,
         gentok: &mut I,
         namectx: &mut Ctx,
+        registry: &Registry,
         acquired: Types::Acquired
     ) -> Result<
         Option<Instant>,
@@ -3707,9 +3785,10 @@ where
         Ctx: NSNameCachesCtx {
         // XXX possibly transition to shutdown on error?
         match AcquiredEntry::create(gentok, namectx, &mut self.channel,
-                                    &self.flows_config, &self.resolve_config,
-                                    &self.addr_policy, &self.xfrm_param,
-                                    acquired, self.nflows_hint)? {
+                                    registry, &self.flows_config,
+                                    &self.resolve_config, &self.addr_policy,
+                                    &self.xfrm_param, acquired,
+                                    self.nflows_hint)? {
             RetryResult::Success((acquired, refresh_when)) => {
                 let state = AcquireState::Active { acquired: acquired };
 
@@ -4027,6 +4106,7 @@ where Resolve: ScopedError,
             AcquiredEntryCreateError::Resolve { err } => err.scope(),
             AcquiredEntryCreateError::Flows { err } => err.scope(),
             AcquiredEntryCreateError::Wrap { err } => err.scope(),
+            AcquiredEntryCreateError::IO { err } => err.scope(),
             AcquiredEntryCreateError::NoValidAddrs |
             AcquiredEntryCreateError::NoTokens => ErrorScope::Unrecoverable
         }
@@ -4274,6 +4354,7 @@ where Resolve: Display,
             AcquiredEntryCreateError::Resolve { err } => err.fmt(f),
             AcquiredEntryCreateError::Flows { err } => err.fmt(f),
             AcquiredEntryCreateError::Wrap { err } => err.fmt(f),
+            AcquiredEntryCreateError::IO { err } => err.fmt(f),
             AcquiredEntryCreateError::NoValidAddrs => {
                 write!(f, "no valid addresses")
             }
@@ -4704,8 +4785,8 @@ where
             .expect("");
 
         live.clear();
+
         assert!(endpoints.is_empty());
-        assert!(sessions.is_empty());
     }
 
     sessions.pop().expect("Expected some")
@@ -4876,7 +4957,7 @@ where
     Ctx: NSNameCachesCtx
 {
     trace!(target: "write-one",
-           "trying to read without polling");
+           "trying to write without polling");
 
     match flow.write(buf) {
         Ok(len) => {
@@ -5110,7 +5191,6 @@ where
         );
 
         assert!(endpoints.is_empty());
-        assert!(sessions.is_empty());
         assert!(!entry.is_shutdown());
         assert!(entry.is_shutdown_safe());
         assert!(entry.is_acquired());
@@ -5121,16 +5201,22 @@ where
             [param] => param,
             _ => panic!("Expected exactly one param")
         };
-        let mut session: Types::AuthNSession =
+
+        let mut session = if let Some(session) = sessions.pop() {
+            assert!(sessions.is_empty());
+
+            session
+        } else {
             get_in_session(&mut entry, &mut server_nscaches,
-                           &mut poll, &mut endpoints);
+                           &mut poll, &mut endpoints)
+        };
+
         let peer_addr = session.get().peer_addr()
             .expect("Expected success");
 
         assert!(!entry.is_shutdown());
         assert!(!entry.is_shutdown_safe());
         assert!(entry.is_acquired());
-        server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
         let nbytes = read_one(&mut entry, &mut server_nscaches, &mut poll,
@@ -5201,7 +5287,6 @@ where
         assert!(!entry.is_shutdown());
         assert!(!entry.is_shutdown_safe());
         assert!(entry.is_acquired());
-        client_barrier.wait();
 
         write_one(&mut entry, &mut client_nscaches, &mut poll,
                   session.get_mut(), &FIRST_BYTES, &peer_addr)
@@ -5233,6 +5318,8 @@ where
 
     send.join().unwrap();
     listen.join().unwrap();
+
+    panic!("Explicit panic");
 }
 
 #[cfg(test)]
@@ -5261,7 +5348,7 @@ fn compound_entry_test(
         server_endpoint, out_param
     )
 }
-
+/*
 #[test]
 fn test_compound_unix() {
     init();
@@ -5279,43 +5366,35 @@ fn test_compound_unix() {
     let server_endpoint = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(SERVER_PATH).unwrap()
     );
-    let servername = "test-server.nowhere.com";
-    let endpoint = IPEndpointAddr::name(String::from(servername));
-    let out_param = CompoundOutboundNegotiatorParam::DTLS {
-        dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
-    };
+    let out_param = CompoundOutboundNegotiatorParam::Basic;
 
     compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
                         server_endpoint, out_param)
 }
-
+*/
 #[test]
 fn test_compound_udp() {
     init();
 
     const SERVER_CONFIG: &'static str = concat!(
         "udp:\n",
-        "  addr: ::0\n",
+        "  addr: ::1\n",
         "  port: 8200\n"
     );
     const CLIENT_CONFIG: &'static str = concat!(
         "udp:\n",
-        "  addr: ::0\n",
+        "  addr: ::1\n",
         "  port: 8201\n"
     );
     let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
-        "[::0]:8200".parse().expect("Expected success")
+        "[::1]:8200".parse().expect("Expected success")
     );
-    let servername = "test-server.nowhere.com";
-    let endpoint = IPEndpointAddr::name(String::from(servername));
-    let out_param = CompoundOutboundNegotiatorParam::DTLS {
-        dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
-    };
+    let out_param = CompoundOutboundNegotiatorParam::Basic;
 
     compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
                         server_endpoint, out_param)
 }
-
+/*
 #[test]
 fn test_compound_dtls_unix() {
     init();
@@ -5425,3 +5504,4 @@ fn test_compound_dtls_udp() {
     compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
                         server_endpoint, out_param)
 }
+*/

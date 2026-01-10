@@ -785,7 +785,7 @@ where
             Entry::Vacant(ent) => {
                 // We need to create a new entry.
                 debug!(target: "flows",
-                       "creating new flow from {} on {}",
+                       "creating new flow with {} on {}",
                        addr, local_addr);
 
                 let buf = match self.bufsize {
@@ -806,6 +806,10 @@ where
             outbuf: self.outbuf.clone(),
             inbuf: buf.clone()
         };
+
+        trace!(target: "flows",
+               "starting session negotiations with {} on {}",
+               addr, local_addr);
 
         let nego = self.outbound_nego.start(param, flow)
             .map_err(|err| FlowsFlowError::Start { err: err })?;
