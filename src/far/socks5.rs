@@ -1216,6 +1216,13 @@ where
     }
 
     #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> <Self::InboundNego as NegotiatorStart<Self::Flow, BufferedFlow<Self::Socket, Xfrm>>>::Param {
+        self.datagram.inbound_nego_param()
+    }
+
+    #[inline]
     fn outbound_negotiator(
         &self
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -1227,6 +1234,13 @@ where
         &self
     ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
         self.datagram.shutdown_negotiator()
+    }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<(), Self::Flow>>::Param {
+        self.datagram.shutdown_nego_param()
     }
 }
 

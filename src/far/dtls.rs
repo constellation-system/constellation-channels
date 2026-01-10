@@ -65,17 +65,15 @@ use openssl::error::ErrorStack;
 use openssl::ssl::SslAcceptor;
 use openssl::ssl::SslConnector;
 use openssl::ssl::Error;
-use openssl::ssl::ErrorCode;
 use openssl::ssl::HandshakeError;
 use openssl::ssl::MidHandshakeSslStream;
-use openssl::ssl::ShutdownResult;
 use openssl::ssl::SslStream;
 
+use crate::config::DTLSFarChannelConfig;
 use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
 use crate::config::tls::TLSPeerConfig;
-use crate::config::DTLSFarChannelConfig;
 use crate::far::flows::BufferedFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelFlows;
@@ -276,19 +274,6 @@ pub enum DTLSOutboundNegoError<Inner> {
     NoName
 }
 
-#[derive(Debug)]
-pub enum DTLSInboundNegoError<Inner> {
-    Inner {
-        err: Inner
-    },
-    /// Error loading TLS configuration.
-    TLSLoad {
-        /// The error that occurred while loading the TLS
-        /// configuration.
-        err: TLSLoadConfigError
-    },
-}
-
 impl<Inner> DTLSOutboundParam<Inner> {
     #[inline]
     pub fn new(
@@ -300,6 +285,19 @@ impl<Inner> DTLSOutboundParam<Inner> {
             inner: inner
         }
     }
+}
+
+#[derive(Debug)]
+pub enum DTLSInboundNegoError<Inner> {
+    Inner {
+        err: Inner
+    },
+    /// Error loading TLS configuration.
+    TLSLoad {
+        /// The error that occurred while loading the TLS
+        /// configuration.
+        err: TLSLoadConfigError
+    },
 }
 
 impl<Inner> ScopedError for DTLSNegotiateError<Inner>
@@ -537,6 +535,13 @@ where
     }
 
     #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> <Self::InboundNego as NegotiatorStart<Self::Flow, BufferedFlow<Self::Socket, Xfrm>>>::Param {
+        self.inner.inbound_nego_param()
+    }
+
+    #[inline]
     fn outbound_negotiator(
         &self,
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -557,6 +562,13 @@ where
 
         Ok(DTLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
                                        self.shutdown_timeout))
+    }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<(), Self::Flow>>::Param {
+        ()
     }
 }
 

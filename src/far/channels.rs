@@ -249,8 +249,6 @@ where
     /// Address policy.
     addr_policy: SocketAddrPolicy,
     in_param: Types::InParam,
-    out_param: Types::OutParam,
-    channel_param: Types::ChannelParam,
     /// Parameter used to create the basic [DatagramXfrm].
     xfrm_param: Types::InnerXfrmCreateParam,
     /// Retry configuration.
@@ -3099,14 +3097,10 @@ where
         namectx: &mut Ctx,
         registry: &Registry,
         channel: Types::Channel,
-        shutdown_param: Types::ShutdownParam,
         authn: Types::AuthN,
         flows_config: FlowsConfig,
         resolve_config: ResolverConfig,
         addr_policy: SocketAddrPolicy,
-        in_param: Types::InParam,
-        out_param: Types::OutParam,
-        channel_param: Types::ChannelParam,
         xfrm_param: Types::InnerXfrmCreateParam,
         retry: Retry,
         nflows_hint: Option<usize>
@@ -3133,6 +3127,8 @@ where
         Ctx: NSNameCachesCtx {
         let shutdown = channel.shutdown_negotiator()
             .map_err(|err| ChannelEntryCreateError::Shutdown { err: err })?;
+        let in_param = channel.inbound_nego_param();
+        let shutdown_param = channel.shutdown_nego_param();
         let mut out = ChannelEntry {
             authn: authn,
             channel: channel,
@@ -3140,8 +3136,6 @@ where
             resolve_config: resolve_config,
             addr_policy: addr_policy,
             in_param: in_param,
-            out_param: out_param,
-            channel_param: channel_param,
             xfrm_param: xfrm_param,
             shutdown: shutdown,
             shutdown_param: shutdown_param,
@@ -3273,7 +3267,9 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
+        param: &Types::ChannelParam,
         endpoint: &Types::PeerAddr,
+        out_param: &Types::OutParam,
     ) -> Result<
         RetryResult<(
             Option<Types::AuthNSession>,
@@ -3312,8 +3308,7 @@ where
                 acquired.req_flow(tokens, registry, &self.channel,
                                   &self.shutdown, &self.shutdown_param,
                                   &self.authn, &self.addr_policy, &self.retry,
-                                  &self.channel_param, &self.out_param,
-                                  endpoint)
+                                  param, &out_param, endpoint)
                 .map_err(|err| ChannelEntryReqFlowError::Flow {
                     err: err
                 }),
@@ -3363,6 +3358,7 @@ where
         &mut self,
         tokens: &mut I,
         registry: &Registry,
+        channel_param: &Types::ChannelParam,
         session: Types::AuthNSession,
     ) -> Result<
         RetryResult<(
@@ -3394,7 +3390,7 @@ where
                 acquired.shutdown_flow(tokens, registry, &self.channel,
                                        &self.addr_policy, &self.shutdown,
                                        &self.shutdown_param,
-                                       &self.channel_param, session, addr)
+                                       channel_param, session, addr)
                 .map_err(|err| ChannelEntryShutdownFlowError::Flow {
                     err: err
                 }),
@@ -4476,18 +4472,106 @@ where Flow: Display
 }
 
 #[cfg(test)]
+use std::convert::TryFrom;
+#[cfg(test)]
+use std::io::ErrorKind;
+#[cfg(test)]
+use std::io::Read;
+#[cfg(test)]
+use std::io::Write;
+#[cfg(test)]
 use std::iter::empty;
 #[cfg(test)]
 use std::iter::once;
 #[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
+#[cfg(test)]
 use std::time::Duration;
 #[cfg(test)]
 use std::thread::sleep;
+#[cfg(test)]
+use std::thread::spawn;
 
+#[cfg(test)]
+use constellation_auth::authn::TrivialAuthN;
+#[cfg(test)]
+use constellation_common::net::PassthruDatagramXfrm;
+#[cfg(test)]
+use constellation_common::net::IPEndpointAddr;
+#[cfg(test)]
+use constellation_common::unix::UnixSocketPath;
 #[cfg(test)]
 use mio::Events;
 #[cfg(test)]
 use mio::Poll;
+
+#[cfg(test)]
+use crate::init;
+#[cfg(test)]
+use crate::config::AddrKind;
+#[cfg(test)]
+use crate::config::CompoundFarChannelConfig;
+#[cfg(test)]
+use crate::config::CompoundXfrmCreateParam;
+#[cfg(test)]
+use crate::far::compound::CompoundFlow;
+#[cfg(test)]
+use crate::far::compound::CompoundFarChannelSessionCred;
+#[cfg(test)]
+use crate::far::compound::CompoundFarChannel;
+#[cfg(test)]
+use crate::far::compound::CompoundFarChannelXfrm;
+#[cfg(test)]
+use crate::far::compound::CompoundFarChannelXfrmPeerAddr;
+#[cfg(test)]
+use crate::far::compound::CompoundOutboundNegotiatorParam;
+#[cfg(test)]
+use crate::far::dtls::DTLSOutboundParam;
+#[cfg(test)]
+use crate::far::types::CompoundFarChannelsTypes;
+#[cfg(test)]
+use crate::far::udp::UDPDatagramXfrm;
+#[cfg(test)]
+use crate::far::unix::UnixDatagramXfrm;
+#[cfg(test)]
+use crate::resolve::cache::SharedNSNameCaches;
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, PartialOrd)]
+struct TestPrin;
+
+#[cfg(test)]
+type TestFarChannelsTypes = CompoundFarChannelsTypes<
+    TrivialAuthN<
+        TestPrin,
+        CompoundFlow<
+            PassthruDatagramXfrm<UnixSocketPath>,
+            PassthruDatagramXfrm<SocketAddr>
+        >
+    >,
+    PassthruDatagramXfrm<UnixSocketPath>,
+    PassthruDatagramXfrm<SocketAddr>
+>;
+
+#[cfg(test)]
+impl From<CompoundFarChannelSessionCred> for TestPrin {
+    #[inline]
+    fn from(_val: CompoundFarChannelSessionCred) -> TestPrin {
+        TestPrin
+    }
+}
+
+#[cfg(test)]
+impl Display for TestPrin {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        write!(f, "test principal")
+    }
+}
 
 #[cfg(test)]
 fn get_acquired<Types, Ctx>(
@@ -4496,15 +4580,11 @@ fn get_acquired<Types, Ctx>(
     endpoints: &mut HashSet<Types::PeerAddr>,
     sessions: &mut Vec<Types::AuthNSession>,
     channel: Types::Channel,
-    shutdown_param: Types::ShutdownParam,
     authn: Types::AuthN,
     flows_config: FlowsConfig,
     resolve_config: ResolverConfig,
     addr_policy: SocketAddrPolicy,
     xfrm_param: Types::InnerXfrmCreateParam,
-    in_param: Types::InParam,
-    out_param: Types::OutParam,
-    channel_param: Types::ChannelParam,
     token: Token
 ) -> (ChannelEntry<Types>, Vec<Types::ChannelParam>, Option<Instant>)
 where
@@ -4512,9 +4592,8 @@ where
     Ctx: NSNameCachesCtx {
     let (mut ent, _) =
         ChannelEntry::create(&mut once(token), ctx, poll.registry(), channel,
-                             shutdown_param, authn, flows_config,
-                             resolve_config, addr_policy, in_param, out_param,
-                             channel_param, xfrm_param, Retry::default(), None)
+                             authn, flows_config, resolve_config, addr_policy,
+                             xfrm_param, Retry::default(), None)
         .expect("Expected success");
 
     if ent.is_acquired() {
@@ -4639,12 +4718,15 @@ fn get_out_session<Ctx, Types>(
     poll: &mut Poll,
     endpoints: &mut HashSet<Types::PeerAddr>,
     endpoint: &Types::PeerAddr,
+    channel_param: &Types::ChannelParam,
+    out_param: &Types::OutParam,
 ) -> Types::AuthNSession
 where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx
 {
-    match ent.req_flow(&mut empty(), poll.registry(), endpoint)
+    match ent.req_flow(&mut empty(), poll.registry(),
+                       channel_param, endpoint, out_param)
         .expect("Expected success") {
         RetryResult::Success((Some(out), params, _)) => {
             trace!(target: "get-out-session",
@@ -4704,17 +4786,173 @@ where
 }
 
 #[cfg(test)]
+fn read_one<Ctx, Types>(
+    ent: &mut ChannelEntry<Types>,
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+    flow: &mut Types::Flow,
+    buf: &mut [u8],
+    endpoint: &Types::PeerAddr,
+) -> Result<usize, Error>
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx
+{
+    trace!(target: "read-one",
+           "trying to read without polling");
+
+    match flow.read(buf) {
+        Ok(len) => {
+            trace!(target: "read-one",
+                   "successfully read");
+
+            Ok(len)
+        }
+        Err(err) => match err.kind() {
+            ErrorKind::WouldBlock => {
+                let mut sessions = Vec::new();
+                let mut endpoints = HashSet::new();
+                let mut events = Events::with_capacity(2);
+                let mut count = 0;
+                let mut live = HashSet::new();
+
+                loop {
+                    trace!(target: "read-one",
+                           "polling");
+
+                    if count > 10 {
+                        panic!("Timeout")
+                    }
+
+                    poll.poll(&mut events, Some(Duration::from_secs(1)))
+                        .expect("Expected success");
+
+                    count += 1;
+
+                    trace!(target: "read-one",
+                           "polling returned");
+
+                    for event in events.iter() {
+                        trace!(target: "read-one",
+                               "event for token {:?}", event.token());
+
+                        live.insert(event.token());
+                    }
+
+                    trace!(target: "read-one",
+                           "listening");
+
+                    ent.listen(ctx, &mut empty(), &mut endpoints,
+                               &mut sessions, poll.registry(), &live)
+                        .expect("");
+
+                    live.clear();
+
+                    assert!(sessions.is_empty());
+
+                    if endpoints.contains(endpoint) {
+                        break
+                    }
+                }
+
+                flow.read(buf)
+            }
+            _ => Err(err)
+        }
+    }
+}
+
+#[cfg(test)]
+fn write_one<Ctx, Types>(
+    ent: &mut ChannelEntry<Types>,
+    ctx: &mut Ctx,
+    poll: &mut Poll,
+    flow: &mut Types::Flow,
+    buf: &[u8],
+    endpoint: &Types::PeerAddr,
+) -> Result<usize, Error>
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx
+{
+    trace!(target: "write-one",
+           "trying to read without polling");
+
+    match flow.write(buf) {
+        Ok(len) => {
+            trace!(target: "write-one",
+                   "successfully wrote");
+
+            Ok(len)
+        }
+        Err(err) => match err.kind() {
+            ErrorKind::WouldBlock => {
+                let mut sessions = Vec::new();
+                let mut endpoints = HashSet::new();
+                let mut events = Events::with_capacity(2);
+                let mut count = 0;
+                let mut live = HashSet::new();
+
+                loop {
+                    trace!(target: "write-one",
+                           "polling");
+
+                    if count > 10 {
+                        panic!("Timeout")
+                    }
+
+                    poll.poll(&mut events, Some(Duration::from_secs(1)))
+                        .expect("Expected success");
+
+                    count += 1;
+
+                    trace!(target: "write-one",
+                           "polling returned");
+
+                    for event in events.iter() {
+                        trace!(target: "write-one",
+                               "event for token {:?}", event.token());
+
+                        live.insert(event.token());
+                    }
+
+                    trace!(target: "write-one",
+                           "listening");
+
+                    ent.listen(ctx, &mut empty(), &mut endpoints,
+                               &mut sessions, poll.registry(), &live)
+                        .expect("");
+
+                    live.clear();
+
+                    assert!(sessions.is_empty());
+
+                    if endpoints.contains(endpoint) {
+                        break
+                    }
+                }
+
+                flow.write(buf)
+            }
+            _ => Err(err)
+        }
+    }
+}
+
+#[cfg(test)]
 fn shutdown_session<Ctx, Types>(
     ent: &mut ChannelEntry<Types>,
     ctx: &mut Ctx,
     poll: &mut Poll,
+    channel_param: &Types::ChannelParam,
     session: Types::AuthNSession,
 )
 where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx
 {
-    match ent.shutdown_flow(&mut empty(), poll.registry(), session)
+    match ent.shutdown_flow(&mut empty(), poll.registry(),
+                            channel_param, session)
         .expect("Expected success") {
         RetryResult::Success((params, _)) => {
             assert!(params.is_none());
@@ -4816,4 +5054,374 @@ where
             assert!(sessions.is_empty());
         }
     }
+}
+
+#[cfg(test)]
+const FIRST_BYTES: [u8; 8] =
+    [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+
+#[cfg(test)]
+const SECOND_BYTES: [u8; 8] =
+    [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
+
+#[cfg(test)]
+fn entry_test<Types, Ctx>(
+    nscaches: &mut Ctx,
+    server_config: Types::Config,
+    client_config: Types::Config,
+    server_authn: Types::AuthN,
+    client_authn: Types::AuthN,
+    flows_config: FlowsConfig,
+    resolve_config: ResolverConfig,
+    xfrm_param: Types::InnerXfrmCreateParam,
+    server_endpoint: Types::PeerAddr,
+    out_param: Types::OutParam
+)
+where
+    Types: FarChannelsTypes,
+    Ctx: 'static + Clone + NSNameCachesCtx + Send,
+    Types::AuthN: 'static + Send,
+    Types::Config: 'static + Send,
+    Types::ChannelParam: 'static + Send,
+    Types::InnerXfrmCreateParam: 'static + Send,
+    Types::OutParam: 'static + Send,
+    Types::PeerAddr: 'static + Send,
+{
+    let addr_kinds = &[AddrKind::IPv6, AddrKind::IPv4];
+    let barrier = Arc::new(Barrier::new(2));
+
+    let mut server_nscaches = nscaches.clone();
+    let server_flows_config = flows_config.clone();
+    let server_resolve_config = resolve_config.clone();
+    let server_xfrm_param = xfrm_param.clone();
+    let server_barrier = barrier.clone();
+    let listen = spawn(move || {
+        let policy = SocketAddrPolicy::create(addr_kinds);
+        let mut poll = Poll::new().expect("Expected success");
+        let listener = Types::Channel::create(&mut server_nscaches,
+                                              &mut empty(), server_config)
+                .expect("Expected success");
+        let mut endpoints: HashSet<Types::PeerAddr> = HashSet::new();
+        let mut sessions: Vec<Types::AuthNSession> = Vec::new();
+        let (mut entry, params, _) = get_acquired::<Types, _>(
+            &mut server_nscaches, &mut poll, &mut endpoints, &mut sessions,
+            listener, server_authn, server_flows_config, server_resolve_config,
+            policy, server_xfrm_param, Token(0)
+        );
+
+        assert!(endpoints.is_empty());
+        assert!(sessions.is_empty());
+        assert!(!entry.is_shutdown());
+        assert!(entry.is_shutdown_safe());
+        assert!(entry.is_acquired());
+
+        server_barrier.wait();
+
+        let param = match &params[..] {
+            [param] => param,
+            _ => panic!("Expected exactly one param")
+        };
+        let mut session: Types::AuthNSession =
+            get_in_session(&mut entry, &mut server_nscaches,
+                           &mut poll, &mut endpoints);
+        let peer_addr = session.get().peer_addr()
+            .expect("Expected success");
+
+        assert!(!entry.is_shutdown());
+        assert!(!entry.is_shutdown_safe());
+        assert!(entry.is_acquired());
+        server_barrier.wait();
+
+        let mut buf = [0; FIRST_BYTES.len()];
+        let nbytes = read_one(&mut entry, &mut server_nscaches, &mut poll,
+                              session.get_mut(), &mut buf, &peer_addr)
+            .expect("Expected success");
+
+        write_one(&mut entry, &mut server_nscaches, &mut poll,
+                  session.get_mut(), &SECOND_BYTES, &peer_addr)
+            .expect("Expected success");
+
+        server_barrier.wait();
+
+        shutdown_session(&mut entry, &mut server_nscaches,
+                         &mut poll, &param, session);
+
+        assert!(!entry.is_shutdown());
+        assert!(entry.is_shutdown_safe());
+        assert!(entry.is_acquired());
+
+        shutdown_entry(&mut entry, &mut server_nscaches, &mut poll);
+
+        assert!(entry.is_shutdown());
+        assert!(entry.is_shutdown_safe());
+        assert!(!entry.is_acquired());
+
+        assert_eq!(FIRST_BYTES.len(), nbytes);
+        assert_eq!(FIRST_BYTES, buf);
+    });
+
+    let mut client_nscaches = nscaches.clone();
+    let client_barrier = barrier;
+    let send = spawn(move || {
+        let policy = SocketAddrPolicy::create(addr_kinds);
+        let mut poll = Poll::new().expect("Expected success");
+        let conn = Types::Channel::create(&mut client_nscaches,
+                                          &mut empty(), client_config)
+                .expect("Expected success");
+        let mut endpoints: HashSet<Types::PeerAddr> = HashSet::new();
+        let mut sessions: Vec<Types::AuthNSession> = Vec::new();
+        let (mut entry, params, _) = get_acquired::<Types, _>(
+            &mut client_nscaches, &mut poll,
+            &mut endpoints, &mut sessions,
+            conn, client_authn,
+            flows_config, resolve_config,
+            policy, xfrm_param,
+            Token(0)
+        );
+
+        assert!(endpoints.is_empty());
+        assert!(sessions.is_empty());
+        assert!(!entry.is_shutdown());
+        assert!(entry.is_shutdown_safe());
+        assert!(entry.is_acquired());
+
+        client_barrier.wait();
+
+        let param = match &params[..] {
+            [param] => param,
+            _ => panic!("Expected exactly one param")
+        };
+        let mut session: Types::AuthNSession =
+            get_out_session(&mut entry, &mut client_nscaches,
+                            &mut poll, &mut endpoints, &server_endpoint,
+                            &param, &out_param);
+        let peer_addr = session.get().peer_addr()
+            .expect("Expected success");
+
+        assert!(!entry.is_shutdown());
+        assert!(!entry.is_shutdown_safe());
+        assert!(entry.is_acquired());
+        client_barrier.wait();
+
+        write_one(&mut entry, &mut client_nscaches, &mut poll,
+                  session.get_mut(), &FIRST_BYTES, &peer_addr)
+            .expect("Expected success");
+
+        let mut buf = [0; SECOND_BYTES.len()];
+        let nbytes = read_one(&mut entry, &mut client_nscaches, &mut poll,
+                              session.get_mut(), &mut buf, &peer_addr)
+            .expect("Expected success");
+
+        client_barrier.wait();
+
+        shutdown_session(&mut entry, &mut client_nscaches,
+                         &mut poll, &param, session);
+
+        assert!(!entry.is_shutdown());
+        assert!(entry.is_shutdown_safe());
+        assert!(entry.is_acquired());
+
+        shutdown_entry(&mut entry, &mut client_nscaches, &mut poll);
+
+        assert!(entry.is_shutdown());
+        assert!(entry.is_shutdown_safe());
+        assert!(!entry.is_acquired());
+
+        assert_eq!(SECOND_BYTES.len(), nbytes);
+        assert_eq!(SECOND_BYTES, buf);
+    });
+
+    send.join().unwrap();
+    listen.join().unwrap();
+}
+
+#[cfg(test)]
+fn compound_entry_test(
+    server_conf: &str,
+    client_conf: &str,
+    server_endpoint: CompoundFarChannelXfrmPeerAddr,
+    out_param: CompoundOutboundNegotiatorParam
+) {
+    init();
+
+    let mut nscaches = SharedNSNameCaches::new();
+    let server_config: CompoundFarChannelConfig =
+        serde_yaml::from_str(server_conf).unwrap();
+    let client_config: CompoundFarChannelConfig =
+        serde_yaml::from_str(client_conf).unwrap();
+    let flows_config = FlowsConfig::default();
+    let resolver_config = ResolverConfig::default();
+    let server_authn = TrivialAuthN::default();
+    let client_authn = TrivialAuthN::default();
+    let xfrm_param = CompoundXfrmCreateParam::default();
+
+    entry_test::<TestFarChannelsTypes, _>(
+        &mut nscaches, server_config, client_config, server_authn,
+        client_authn, flows_config, resolver_config, xfrm_param,
+        server_endpoint, out_param
+    )
+}
+
+#[test]
+fn test_compound_unix() {
+    init();
+
+    const SERVER_PATH: &'static str = "test_far_channels_unix_server.sock";
+    const CLIENT_PATH: &'static str = "test_far_channels_unix_client.sock";
+    const SERVER_CONFIG: &'static str = concat!(
+        "unix-datagram:\n",
+        "  path: test_far_channels_unix_server.sock\n",
+    );
+    const CLIENT_CONFIG: &'static str = concat!(
+        "unix-datagram:\n",
+        "  path: test_far_channels_unix_client.sock\n",
+    );
+    let server_endpoint = CompoundFarChannelXfrmPeerAddr::unix(
+        UnixSocketPath::try_from(SERVER_PATH).unwrap()
+    );
+    let servername = "test-server.nowhere.com";
+    let endpoint = IPEndpointAddr::name(String::from(servername));
+    let out_param = CompoundOutboundNegotiatorParam::DTLS {
+        dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
+    };
+
+    compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
+                        server_endpoint, out_param)
+}
+
+#[test]
+fn test_compound_udp() {
+    init();
+
+    const SERVER_CONFIG: &'static str = concat!(
+        "udp:\n",
+        "  addr: ::0\n",
+        "  port: 8200\n"
+    );
+    const CLIENT_CONFIG: &'static str = concat!(
+        "udp:\n",
+        "  addr: ::0\n",
+        "  port: 8201\n"
+    );
+    let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
+        "[::0]:8200".parse().expect("Expected success")
+    );
+    let servername = "test-server.nowhere.com";
+    let endpoint = IPEndpointAddr::name(String::from(servername));
+    let out_param = CompoundOutboundNegotiatorParam::DTLS {
+        dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
+    };
+
+    compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
+                        server_endpoint, out_param)
+}
+
+#[test]
+fn test_compound_dtls_unix() {
+    init();
+
+    const SERVER_PATH: &'static str = "test_far_channels_dtls_unix_server.sock";
+    const CLIENT_PATH: &'static str = "test_far_channels_dtls_unix_client.sock";
+    const SERVER_CONFIG: &'static str = concat!(
+        "dtls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - P-384\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/client/ca_cert.pem\n",
+        "    crls: []\n",
+        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  unix-datagram:\n",
+        "    path: test_far_channels_dtls_unix_server.sock\n",
+    );
+    const CLIENT_CONFIG: &'static str = concat!(
+        "dtls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - P-384\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/server/ca_cert.pem\n",
+        "    crls: []\n",
+        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  unix-datagram:\n",
+        "    path: test_far_channels_dtls_unix_client.sock\n",
+    );
+    let server_endpoint = CompoundFarChannelXfrmPeerAddr::unix(
+        UnixSocketPath::try_from(SERVER_PATH).unwrap()
+    );
+    let servername = "test-server.nowhere.com";
+    let endpoint = IPEndpointAddr::name(String::from(servername));
+    let out_param = CompoundOutboundNegotiatorParam::DTLS {
+        dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
+    };
+
+    compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
+                        server_endpoint, out_param)
+}
+
+#[test]
+fn test_compound_dtls_udp() {
+    init();
+
+    const SERVER_CONFIG: &'static str = concat!(
+        "dtls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - P-384\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/client/ca_cert.pem\n",
+        "    crls: []\n",
+        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  udp:\n",
+        "    addr: ::0\n",
+        "    port: 8210\n"
+    );
+    const CLIENT_CONFIG: &'static str = concat!(
+        "dtls:\n",
+        "  cipher-suites:\n",
+        "    - TLS_AES_256_GCM_SHA384\n",
+        "    - TLS_CHACHA20_POLY1305_SHA256\n",
+        "  key-exchange-groups:\n",
+        "    - P-384\n",
+        "    - X25519\n",
+        "    - P-256\n",
+        "  trust-root:\n",
+        "    root-certs:\n",
+        "      - test/data/certs/server/ca_cert.pem\n",
+        "    crls: []\n",
+        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  udp:\n",
+        "    addr: ::0\n",
+        "    port: 8211\n"
+    );
+    let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
+        "[::0]:8210".parse().expect("Expected success")
+    );
+    let servername = "test-server.nowhere.com";
+    let endpoint = IPEndpointAddr::name(String::from(servername));
+    let out_param = CompoundOutboundNegotiatorParam::DTLS {
+        dtls: Box::new(DTLSOutboundParam::new(endpoint, CompoundOutboundNegotiatorParam::Basic))
+    };
+
+    compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
+                        server_endpoint, out_param)
 }

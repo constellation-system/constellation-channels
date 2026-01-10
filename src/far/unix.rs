@@ -393,6 +393,13 @@ where UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
     }
 
     #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
+
+    #[inline]
     fn outbound_negotiator(
         &self
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -404,6 +411,13 @@ where UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
         &self
     ) -> Result<Self::ShutdownNego, Self::OutboundNegoError> {
         Ok(TrivialNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> () {
+        ()
     }
 }
 

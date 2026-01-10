@@ -3630,14 +3630,14 @@ where
     ) -> Result<Self::State, Self::StartError> {
         match (self, param) {
             (CompoundOutboundNegotiator::Basic,
-             CompoundOutboundNegotiatorParam::Basic)=> {
+            CompoundOutboundNegotiatorParam::Basic)=> {
                 let flow = CompoundFlow::Basic { flow: stream };
                 let Ok(state) = PassthruNegotiator.start(&(), flow);
 
                 Ok(CompoundOutboundNegotiatorState::Unix { unix: state })
             },
             (CompoundOutboundNegotiator::DTLS { dtls },
-             CompoundOutboundNegotiatorParam::DTLS { dtls: param })=> {
+             CompoundOutboundNegotiatorParam::DTLS { dtls: param }) => {
                 let state = dtls.start(param, stream)
                     .map_err(|err| CompoundNegotiatorStartError::DTLS {
                         dtls: Box::new(err)
@@ -4064,14 +4064,14 @@ where
     ) -> Result<Self::State, Self::StartError> {
         match (self, param) {
             (CompoundOutboundNegotiator::Basic,
-             CompoundOutboundNegotiatorParam::Basic)=> {
+            CompoundOutboundNegotiatorParam::Basic) => {
                 let flow = CompoundIPFlow::Basic { flow: stream };
                 let Ok(state) = PassthruNegotiator.start(&(), flow);
 
                 Ok(CompoundIPOutboundNegotiatorState::UDP { udp: state })
             },
             (CompoundOutboundNegotiator::DTLS { dtls },
-             CompoundOutboundNegotiatorParam::DTLS { dtls: param })=> {
+             CompoundOutboundNegotiatorParam::DTLS { dtls: param }) => {
                 let state = dtls.start(param, stream)
                     .map_err(|err| CompoundNegotiatorStartError::DTLS {
                         dtls: Box::new(err)
@@ -4299,6 +4299,13 @@ where
         }
     }
 
+    #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
+
     fn outbound_negotiator(
         &self,
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -4351,6 +4358,13 @@ where
                 })
         }
     }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
 }
 
 impl<Unix, UDP> FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>,
@@ -4379,6 +4393,13 @@ where
     }
 
     #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
+
+    #[inline]
     fn outbound_negotiator(
         &self,
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -4396,6 +4417,13 @@ where
          FarChannelFlows<CompoundFarChannelXfrm<Unix, UDP>,
                          CompoundFarChannelXfrm<Unix, UDP>>>
             ::shutdown_negotiator(self.as_ref())
+    }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> () {
+        ()
     }
 }
 
@@ -4442,6 +4470,13 @@ where
                 })
             }
         }
+    }
+
+    #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> () {
+        ()
     }
 
     fn outbound_negotiator(
@@ -4498,6 +4533,13 @@ where
                 }),
         }
     }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
 }
 
 impl<UDP> FarChannelFlows<CompoundFarIPChannelXfrm<UDP>,
@@ -4524,6 +4566,13 @@ where
     }
 
     #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
+
+    #[inline]
     fn outbound_negotiator(
         &self,
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -4539,6 +4588,13 @@ where
         <CompoundFarIPChannel as FarChannelFlows<CompoundFarIPChannelXfrm<UDP>,
                                                  CompoundFarIPChannelXfrm<UDP>>>
             ::shutdown_negotiator(self.as_ref())
+    }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> () {
+        ()
     }
 }
 

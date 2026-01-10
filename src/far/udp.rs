@@ -397,6 +397,13 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
     }
 
     #[inline]
+    fn inbound_nego_param(
+        &self
+    ) -> () {
+        ()
+    }
+
+    #[inline]
     fn outbound_negotiator(
         &self
     ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
@@ -408,6 +415,13 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
         &self
     ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
         Ok(TrivialNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_nego_param(
+        &self
+    ) -> () {
+        ()
     }
 }
 

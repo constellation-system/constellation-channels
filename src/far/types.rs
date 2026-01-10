@@ -21,6 +21,8 @@ use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::io::Read;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 
@@ -39,6 +41,8 @@ use constellation_common::net::Socket;
 use constellation_common::unix::UnixSocketPath;
 use mio::event::Source;
 
+use crate::config::CompoundFarChannelConfig;
+use crate::config::CompoundXfrmCreateParam;
 use crate::far::AcquiredResolveStaticError;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
@@ -57,6 +61,7 @@ use crate::far::compound::CompoundFarChannelAcquireError;
 use crate::far::compound::CompoundFarChannelAcquireNegoError;
 use crate::far::compound::CompoundFarChannelAcquireNegoPending;
 use crate::far::compound::CompoundFarChannelAddr;
+use crate::far::compound::CompoundFarChannelCreateError;
 use crate::far::compound::CompoundFarChannelParam;
 use crate::far::compound::CompoundFarChannelShutdownAcquiredError;
 use crate::far::compound::CompoundFarChannelShutdownAcquiredNegoError;
@@ -77,7 +82,6 @@ use crate::far::compound::CompoundNegotiatorStartError;
 use crate::far::compound::CompoundShutdownError;
 use crate::far::compound::CompoundShutdownNegotiator;
 use crate::far::compound::CompoundShutdownNegotiatorPending;
-use crate::config::CompoundXfrmCreateParam;
 use crate::far::flows::BufferedFlow;
 
 pub trait FlowAuthNShutdownTypes<Flow>
@@ -144,6 +148,8 @@ where Flow: Session {
 
 pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
 {
+    type Config;
+    type CreateError: Debug + Display + ScopedError;
     type InnerXfrmCreateParam: Clone;
     type InnerXfrm: DatagramXfrmCreate<
         Addr = Self::ChannelParam,
@@ -159,7 +165,8 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
             Resolved = Self::ChannelParam,
             ResolverError = Self::ResolverError
           >;
-    type Flow: Session<LocalAddr = Self::LocalAddr, PeerAddr = Self::PeerAddr>;
+    type Flow: Session<LocalAddr = Self::LocalAddr, PeerAddr = Self::PeerAddr>
+        + Read + Write;
     type AcquirePending;
     type AcquireShutdownPending;
     type ChannelParam: Clone + Display + Eq + Hash;
@@ -172,8 +179,7 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
     type ShutdownNegoCreateError: Debug + Display + ScopedError;
     type XfrmCreateError: Debug + Display + ScopedError;
     type SocketError: Debug + Display + ScopedError;
-    type Channel:
-    FarChannel<
+    type Channel: FarChannel<
         Acquired = Self::Acquired,
         AcquirePending = Self::AcquirePending,
         AcquireError = Self::AcquireError,
@@ -197,7 +203,10 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
     > + FarChannelXfrm<
         Self::Xfrm, Self::InnerXfrm,
         XfrmError = Self::XfrmCreateError
-    > + FarChannelCreate;
+    > + FarChannelCreate<
+        Config = Self::Config,
+        CreateError = Self::CreateError
+    >;
 }
 
 #[derive(Debug)]
@@ -334,6 +343,8 @@ where
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
 {
+    type Config = CompoundFarChannelConfig;
+    type CreateError = CompoundFarChannelCreateError;
     type InnerXfrmCreateParam = CompoundXfrmCreateParam<Unix::CreateParam,
                                                         UDP::CreateParam>;
     type InnerXfrm = CompoundFarChannelXfrm<Unix, UDP>;

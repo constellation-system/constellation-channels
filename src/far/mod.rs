@@ -534,6 +534,10 @@ where
         &self
     ) -> Result<Self::InboundNego, Self::InboundNegoError>;
 
+    fn inbound_nego_param(
+        &self
+    ) -> <Self::InboundNego as NegotiatorStart<Self::Flow, BufferedFlow<Self::Socket, Xfrm>>>::Param;
+
     /// Create a negotiator for establishing a traffic splitter instance.
     fn outbound_negotiator(
         &self
@@ -543,6 +547,10 @@ where
     fn shutdown_negotiator(
         &self
     ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError>;
+
+    fn shutdown_nego_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<(), Self::Flow>>::Param;
 
     /// Create a traffic splitter instance around a socket created by
     /// this channel.
