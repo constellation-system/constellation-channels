@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::hash_map::Iter;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Error;
@@ -61,13 +62,14 @@ use crate::resolve::cache::NSNameCachesCtx;
 
 /// Newtype wrapper for IDs created to refer to specific channels.
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct NearChannelID(Token);
+pub struct NearChannelID(usize);
 
 /// Generic type used in duplex channels.
 ///
 /// This is necessary as unlike [FarChannel](crate::far::FarChannel)s,
 /// [NearChannel]s have distinct types for inbound and outbound
 /// sessions.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum DuplexValue<Accept, Conn> {
     /// Value associated with the inbound (accepting) channel.
     Accept(Accept),
@@ -299,11 +301,11 @@ where
 {
     /// Map from names to `NearChannelID`s.
     ids: HashMap<String, NearChannelID>,
-    tokens: HashMap<Token, NearChannelID>,
     /// Reverse map from `NearChannelID`s to names.
     names: Vec<String>,
     /// Array of registry entries for each channel.
-    channels: Vec<ChannelEntry<Types>>
+    channels: Vec<ChannelEntry<Types>>,
+    tokens: HashMap<Token, NearChannelID>,
 }
 
 /// Result of a step.
@@ -448,6 +450,14 @@ pub enum ConnectorEntryStepError<Start, Connect, Step> {
     Step {
         err: Step
     }
+}
+
+#[derive(Debug)]
+pub enum ChannelModeShutdownError {
+    IO {
+        err: std::io::Error
+    },
+    NotEmpty
 }
 
 #[derive(Debug)]
@@ -1917,6 +1927,20 @@ where
         }
     }
 
+    pub (crate) fn shutdown(
+        mut self,
+        registry: &Registry
+    ) -> Result<(), ChannelModeShutdownError> {
+        if self.is_empty() {
+            self.acceptor.deregister(registry)
+                .map_err(|err| ChannelModeShutdownError::IO {
+                    err
+                })
+        } else {
+            Err(ChannelModeShutdownError::NotEmpty)
+        }
+    }
+
     /// Request a stream for a given endpoint.
     ///
     /// This will attempt to negotiate and authenticate a session with
@@ -2268,11 +2292,17 @@ where
     ) -> Result<
         Option<Token>,
         ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::OutShutdownStartError,
-                Types::OutShutdownNegoError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError,
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError,
+                >
             >,
-            Types::OutEndpoint
+            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
         >
     > {
         let session_endpoint = stream
@@ -2289,7 +2319,7 @@ where
                 .ok_or(ChannelEntryShutdownError::Inconsistent)? {
                 let delete = conn.shutdown(registry, stream)
                     .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                        err: err
+                        err: DuplexValue::Conn(err)
                     })?;
 
                 if delete {
@@ -2323,7 +2353,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: session_endpoint.clone()
+                endpoint: DuplexValue::Conn(session_endpoint.clone())
             })
         }?;
 
@@ -2363,11 +2393,17 @@ where
     ) -> Result<
         Option<Token>,
         ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::InShutdownStartError,
-                Types::InShutdownNegoError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError,
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError,
+                >
             >,
-            Types::InEndpoint
+            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
         >
     > {
         let endpoint = stream
@@ -2385,13 +2421,13 @@ where
                 .ok_or(ChannelEntryShutdownError::Inconsistent)? {
                 let newaccept = accept.take()
                     .ok_or(ChannelEntryShutdownError::NotFound {
-                        endpoint: endpoint.clone()
+                        endpoint: DuplexValue::Accept(endpoint.clone())
                     })?
                     .shutdown(registry, &self.shutdown,
                               &self.acceptor.shutdown_param(),
                               stream)
                     .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                        err: err
+                        err: DuplexValue::Accept(err)
                     })?;
 
                 if newaccept.is_some() {
@@ -2424,7 +2460,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: endpoint
+                endpoint: DuplexValue::Accept(endpoint)
             })
         }
     }
@@ -2663,6 +2699,17 @@ where
 
                 false
             }
+        }
+    }
+
+    pub (crate) fn shutdown(
+        self,
+        _registry: &Registry
+    ) -> Result<(), ChannelModeShutdownError> {
+        if self.is_empty() {
+            Ok(())
+        } else {
+            Err(ChannelModeShutdownError::NotEmpty)
         }
     }
 
@@ -2918,11 +2965,17 @@ where
     ) -> Result<
         Option<Token>,
         ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::OutShutdownStartError,
-                Types::OutShutdownNegoError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError,
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError,
+                >
             >,
-            Types::OutEndpoint
+            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
         >
     > {
         let session_endpoint = stream
@@ -2939,7 +2992,7 @@ where
                 .ok_or(ChannelEntryShutdownError::Inconsistent)?;
             let delete = conn.shutdown(registry, stream)
                 .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                    err: err
+                    err: DuplexValue::Conn(err)
                 })?;
 
             if delete {
@@ -2965,7 +3018,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: session_endpoint.clone()
+                endpoint: DuplexValue::Conn(session_endpoint.clone())
             })
         }?;
 
@@ -3174,6 +3227,20 @@ where
         }
     }
 
+    pub (crate) fn shutdown(
+        mut self,
+        registry: &Registry
+    ) -> Result<(), ChannelModeShutdownError> {
+        if self.is_empty() {
+            self.acceptor.deregister(registry)
+                .map_err(|err| ChannelModeShutdownError::IO {
+                    err
+                })
+        } else {
+            Err(ChannelModeShutdownError::NotEmpty)
+        }
+    }
+
     /// Listen for incoming traffic and new sessions for this channel.
     ///
     /// This will fully exhaust all incoming traffic corresponding to
@@ -3358,11 +3425,17 @@ where
     ) -> Result<
         Option<Token>,
         ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::InShutdownStartError,
-                Types::InShutdownNegoError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError,
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError,
+                >
             >,
-            Types::InEndpoint
+            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
         >
     > {
         let endpoint = stream
@@ -3378,12 +3451,12 @@ where
                 .ok_or(ChannelEntryShutdownError::Inconsistent)?;
             let newaccept = accept.take()
                 .ok_or(ChannelEntryShutdownError::NotFound {
-                    endpoint: endpoint.clone()
+                    endpoint: DuplexValue::Accept(endpoint.clone())
                 })?
                 .shutdown(registry, &self.shutdown,
                           &self.acceptor.shutdown_param(), stream)
                 .map_err(|err| ChannelEntryShutdownError::Shutdown {
-                    err: err
+                    err: DuplexValue::Accept(err)
                 })?;
 
             if newaccept.is_some() {
@@ -3413,7 +3486,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: endpoint
+                endpoint: DuplexValue::Accept(endpoint)
             })
         }
     }
@@ -3704,6 +3777,17 @@ where
         }
     }
 
+    pub (crate) fn shutdown(
+        self,
+        registry: &Registry
+    ) -> Result<(), ChannelModeShutdownError> {
+        match self.mode {
+            ChannelMode::Duplex(ent) => ent.shutdown(&registry),
+            ChannelMode::Outbound(ent) => ent.shutdown(&registry),
+            ChannelMode::Inbound(ent) => ent.shutdown(&registry)
+        }
+    }
+
     /// Request a stream for a given endpoint.
     ///
     /// This will attempt to negotiate and authenticate a session with
@@ -3824,6 +3908,12 @@ where
     /// - `registry`: [Registry] to use to register nonblocking I/O.
     ///
     /// - `live`: All [Token]s that have pending read traffic.
+    ///
+    /// # Return Value
+    ///
+    /// A pair of `Vec`s, the first containing [Token]s that were
+    /// registered, and the second containing `Token`s that were
+    /// deregistered.
     fn listen<I>(
         &mut self,
         gentok: &mut Peekable<I>,
@@ -3853,7 +3943,7 @@ where
         }
     }
 
-    /// Shut down an outbound (connected) session.
+    /// Shut down a session.
     ///
     /// This will consume `stream` and attempt to run shutdown
     /// negotiations as far as possible.  Once `stream` is shut down,
@@ -3865,28 +3955,169 @@ where
     ///   sessions.
     ///
     /// - `stream`: The [Session] to shut down.
-    fn shutdown_conn(
+    fn shutdown_stream(
         &mut self,
         registry: &Registry,
-        stream: Types::OutConn,
+        stream: DuplexValue<Types::InConn, Types::OutConn>,
     ) -> Result<
         Option<Token>,
         ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::OutShutdownStartError,
-                Types::OutShutdownNegoError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError,
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError,
+                >
             >,
-            Types::OutEndpoint
+            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
         >
     > {
-        match &mut self.mode {
-            ChannelMode::Duplex(ent) => ent.shutdown_conn(registry, stream),
-            ChannelMode::Outbound(ent) => ent.shutdown_conn(registry, stream),
-            ChannelMode::Inbound(_) => Err(ChannelEntryShutdownError::Mismatch)
+        match (&mut self.mode, stream) {
+            (ChannelMode::Duplex(ent), DuplexValue::Conn(stream)) =>
+                ent.shutdown_conn(registry, stream),
+            (ChannelMode::Duplex(ent), DuplexValue::Accept(stream)) =>
+                ent.shutdown_accept(registry, stream),
+            (ChannelMode::Outbound(ent), DuplexValue::Conn(stream))  =>
+                ent.shutdown_conn(registry, stream),
+            (ChannelMode::Inbound(ent), DuplexValue::Accept(stream)) =>
+                ent.shutdown_accept(registry, stream),
+            _ => Err(ChannelEntryShutdownError::Mismatch)
         }
     }
+}
 
-    /// Shut down an inbound (accepted) session.
+impl<Types> NearChannels<Types>
+where
+    Types: NearDuplexNegoTypes
+{
+    /// Get the [FarChannelID] for a given channel name.
+    #[inline]
+    pub fn id(
+        &self,
+        name: &str
+    ) -> Option<NearChannelID> {
+        self.ids.get(name).cloned()
+    }
+
+    /// Get an iterator over all names and channel IDs.
+    #[inline]
+    pub fn ids(&self) -> Iter<'_, String, NearChannelID> {
+        self.ids.iter()
+    }
+
+    /// Get the name associated with a [FarChannelID].
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: [FarChannelID] for which to get the channel name.
+    #[inline]
+    pub fn name(
+        &self,
+        id: &NearChannelID
+    ) -> &str {
+        let idx: usize = id.0;
+
+        &self.names[idx]
+    }
+
+    /// Get all the channel names.
+    #[inline]
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Request a stream for a given endpoint.
+    ///
+    /// This will attempt to negotiate and authenticate a session with
+    /// the given endpoint.  If negotiations can be concluded
+    /// immediately, then the authenticated session will be returned.
+    /// Otherwise, the request will remain active and will eventually
+    /// be returned by [listen](ChannelEntry::listen).  Subsequent calls
+    /// to this function with the same `endpoint` will return an
+    /// error.
+    ///
+    /// If a session is obtained from a call to this function, it must
+    /// be shut down with [shutdown_conn](FlowsEntry::shutdown_conn)
+    /// to properly handle shutdown negotiations and cleanup.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution
+    ///   caches.
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `ctx`: Context from which to obtain name resolution caches.
+    ///
+    /// - `gentok`: Generator for [Token]s.
+    ///
+    /// - `registry`: [Registry] to use to register nonblocking I/O.
+    ///
+    /// - `channel`: ID of the channel on which to request the session.
+    ///
+    /// - `endpoint`: Counterparty's address.
+    ///
+    /// - `verify_endpoint`: Override to use for SSL verification.
+    ///
+    /// # Return Value
+    ///
+    /// - `RetryResult::Success(Some(session))`: The session was fully
+    ///   negotiated.
+    ///
+    /// - `RetryResult::Success(None))`: Session negotiations are
+    ///   still pending and the session will eventually be reported by
+    ///   [listen](ChannelEntry::listen).
+    pub(crate) fn req_stream<Ctx, I>(
+        &mut self,
+        ctx: &mut Ctx,
+        gentok: &mut Peekable<I>,
+        registry: &Registry,
+        channel: NearChannelID,
+        endpoint: Types::OutEndpoint,
+        param: Types::OutParam
+    ) -> Result<
+        RetryResult<Option<Types::OutAuthNSession>>,
+        ChannelEntryReqError<
+            Types::OutCreateError,
+            ConnectorEntryCreateError<
+                Types::OutSessionStartError,
+                SessionCreateError<
+                    NegoEntrySessionError<
+                        Types::OutSessionNegoError,
+                        SessionEntryAuthNError<Types::OutAuthStartError,
+                                               Types::OutAuthNegoError>
+                    >,
+                    SessionEntryShutdownError<
+                        Types::OutShutdownStartError,
+                        Types::OutShutdownNegoError,
+                    >
+                >
+            >
+        >
+    >
+    where
+        I: Iterator<Item = Token>,
+        Ctx: NSNameCachesCtx
+    {
+        Ok(self.channels[channel.0]
+           .req_stream(ctx, gentok, registry, endpoint, param)?
+           .map(|(token, out)| {
+               if let Some(curr) = self.tokens.insert(token, channel) {
+                   error!(target: "near-channels",
+                          "tokens table contains entry for {:?} ({})",
+                          token, curr);
+               }
+
+               out
+           }))
+    }
+
+    /// Shut down a session.
     ///
     /// This will consume `stream` and attempt to run shutdown
     /// negotiations as far as possible.  Once `stream` is shut down,
@@ -3897,26 +4128,124 @@ where
     /// - `registry`: The [Registry] to use to unregister shut down
     ///   sessions.
     ///
+    /// - `channel`: ID of the channel from which `stream` originates.
+    ///
     /// - `stream`: The [Session] to shut down.
-    fn shutdown_accept(
+    #[inline]
+    fn shutdown_stream(
         &mut self,
         registry: &Registry,
-        stream: Types::InConn,
+        channel: &NearChannelID,
+        stream: DuplexValue<Types::InConn, Types::OutConn>,
     ) -> Result<
         Option<Token>,
         ChannelEntryShutdownError<
-            SessionEntryShutdownError<
-                Types::InShutdownStartError,
-                Types::InShutdownNegoError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError,
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError,
+                >
             >,
-            Types::InEndpoint
+            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
         >
     > {
-        match &mut self.mode {
-            ChannelMode::Duplex(ent) => ent.shutdown_accept(registry, stream),
-            ChannelMode::Inbound(ent) => ent.shutdown_accept(registry, stream),
-            ChannelMode::Outbound(_) => Err(ChannelEntryShutdownError::Mismatch)
+        self.channels[channel.0].shutdown_stream(registry, stream)
+    }
+
+    /// Listen for incoming traffic and new sessions for this channel.
+    ///
+    /// This will fully exhaust all incoming traffic corresponding to
+    /// any [Token] in `tokens`.  All pending negotiations will be
+    /// updated, and any new sessions will be reported.  If any new
+    /// connections are found, then negotiations will begin for them.
+    ///
+    /// New authenticated sessions will be reported in `in_sessions`
+    /// and `out_sessions`.  Traffic on existing active sessions will
+    /// be reported in `in_endpoints` and `out_endpoints`.  Any
+    /// sessions that are shut down will be unregistered.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `I`: Type of generator for [Token]s.
+    ///
+    /// # Parameters
+    ///
+    /// - `gentok`: Generator for [Token]s.
+    ///
+    /// - `out_sessions`: Buffer for new authenticated outbound sessions.
+    ///
+    /// - `in_sessions`: Buffer for new authenticated inbound sessions.
+    ///
+    /// - `out_endpoints`: Set of all active outbound sessions that
+    ///   have pending traffic.
+    ///
+    /// - `in_endpoints`: Set of all active inbound sessions that have
+    ///   pending traffic.
+    ///
+    /// - `registry`: [Registry] to use to register nonblocking I/O.
+    ///
+    /// - `live`: All [Token]s that have pending read traffic.
+    ///
+    /// # Return Value
+    ///
+    /// A pair of `Vec`s, the first containing [Token]s that were
+    /// registered, and the second containing `Token`s that were
+    /// deregistered.
+    fn listen<I>(
+        &mut self,
+        gentok: &mut Peekable<I>,
+        out_sessions: &mut Vec<Types::OutAuthNSession>,
+        in_sessions: &mut Vec<Types::InAuthNSession>,
+        out_endpoints: &mut HashSet<Types::OutEndpoint>,
+        in_endpoints: &mut HashSet<Types::InEndpoint>,
+        registry: &Registry,
+        live: &HashSet<Token>,
+    ) -> Result<
+        (),
+        ChannelEntryListenError<Types::InSessionStartError>
+    >
+    where
+        I: Iterator<Item = Token>
+    {
+        // First, figure out which channels to visit.
+        let lives: Vec<NearChannelID> = self.tokens.iter()
+            .flat_map(|(token, id)| if live.contains(token) {
+                Some(id.clone())
+            } else {
+                None
+            }).collect();
+
+        for id in lives {
+            let (creates, deletes) = self.channels[id.0]
+                .listen(gentok, out_sessions, in_sessions, out_endpoints,
+                        in_endpoints, registry, live)?;
+
+            if let Some(deletes) = deletes {
+                for token in deletes {
+                    if self.tokens.remove(&token).is_none() {
+                        error!(target: "near-channels",
+                               "token {:?} was not present in tokens table",
+                               token);
+                    }
+                }
+            }
+
+            if let Some(creates) = creates {
+                for token in creates {
+                    if let Some(curr) = self.tokens.insert(token, id.clone()) {
+                        error!(target: "near-channels",
+                               "tokens table contains entry for {:?} ({})",
+                               token, curr);
+                    }
+                }
+            }
         }
+
+        Ok(())
     }
 }
 
@@ -4039,7 +4368,7 @@ impl Display for NearChannelID {
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
-        write!(f, "{}", self.0.0)
+        write!(f, "near channel {}", self.0)
     }
 }
 
@@ -4163,6 +4492,19 @@ where Session: Display,
             SessionCreateError::IO { err } => err.fmt(f),
             SessionCreateError::Session { err } => err.fmt(f),
             SessionCreateError::Shutdown { err } => err.fmt(f),
+        }
+    }
+}
+
+impl Display for ChannelModeShutdownError {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ChannelModeShutdownError::IO { err } => err.fmt(f),
+            ChannelModeShutdownError::NotEmpty =>
+                write!(f, "channel still has active sessions")
         }
     }
 }
@@ -4499,7 +4841,7 @@ where
     let (_, stream) = stream.take();
 
     match entry
-        .shutdown_conn(poll.registry(), stream)
+        .shutdown_stream(poll.registry(), DuplexValue::Conn(stream))
         .expect("Expected success") {
         Some(deadtok) => {
                 trace!(target: "shutdown-out-session",
@@ -4586,7 +4928,7 @@ where
     let (_, stream) = stream.take();
 
     match entry
-        .shutdown_accept(poll.registry(), stream)
+        .shutdown_stream(poll.registry(), DuplexValue::Accept(stream))
         .expect("Expected success") {
         Some(deadtok) => {
                 trace!(target: "shutdown-in-session",

@@ -33,15 +33,11 @@ use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
-use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Negotiator;
-use constellation_common::net::Receiver;
-use constellation_common::net::Sender;
-use constellation_common::net::Socket;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
@@ -4112,6 +4108,8 @@ where
     ///
     /// - `registry`: [Registry] to use to deregister expired [Flows].
     ///
+    /// - `channel`: ID of the channel from which `stream` originates.
+    ///
     /// - `channel_param`: Channel parameter indicating the specific
     ///   [Flows] from which `session` was obtained.
     ///
@@ -4583,6 +4581,15 @@ where Flows: ScopedError,
             AcquiredEntryFlowError::Flows { err } => err.scope(),
             AcquiredEntryFlowError::Flow { err } => err.scope(),
         }
+    }
+}
+
+impl Display for FarChannelID {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        write!(f, "far channel {}", self.0)
     }
 }
 
