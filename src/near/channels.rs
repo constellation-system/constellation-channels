@@ -4832,7 +4832,7 @@ fn test_tcp() {
         "tcp:",
     );
     let endpoint = CompoundNearNameAddr::TCP {
-        tcp: "[::0]:8100".parse()
+        tcp: "[::1]:8100".parse()
             .expect("Expected success")
     };
 
@@ -4938,7 +4938,7 @@ fn test_tls_tcp() {
         "  verify-endpoint: test-server.nowhere.com",
     );
     let endpoint = CompoundNearNameAddr::TCP {
-        tcp: "[::0]:8101".parse()
+        tcp: "[::1]:8101".parse()
             .expect("Expected success")
     };
 

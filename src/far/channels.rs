@@ -142,7 +142,9 @@ where Flow: Session,
     /// negotiations.
     state: Option<SessionState<Flow, Types>>,
     /// Retry information for establishing this flow.
-    retry: FlowsRetry
+    retry: FlowsRetry,
+    /// Whether to delete this once it shuts down.
+    live: bool
 }
 
 /// Representation of a [Flows], and all of its [Flow] sessions and
@@ -838,7 +840,8 @@ where
     {
         let mut new = FlowNegoState {
             state: None,
-            retry: FlowsRetry::new()
+            retry: FlowsRetry::new(),
+            live: true
         };
         let res = new.recv_flow(shutdown, param, authn, retry, flow, peer)?;
 
@@ -849,6 +852,11 @@ where
     #[inline]
     fn is_shutdown(&self) -> bool {
         self.state.is_none()
+    }
+
+    #[inline]
+    fn is_live(&self) -> bool {
+        !self.live && self.state.is_none()
     }
 
     /// Step the state forward as indicated by an authentication result.
@@ -1015,7 +1023,7 @@ where
         match res {
             NegotiatorResult::Complete(()) => {
                 info!(target: "flows-nego-state",
-                      "shutdown session with {}",
+                      "shut down session with {}",
                       addr);
 
                 self.state = None;
@@ -1444,6 +1452,8 @@ where
 
                 let (_, session) = session.take();
 
+                self.live = false;
+
                 self.do_shutdown_session(shutdown, param, addr, session)
                     .map_err(|err| SessionShutdownError::Session {
                         err: err
@@ -1781,7 +1791,8 @@ where
             Entry::Vacant(ent) => {
                 let ent = ent.insert(FlowNegoState {
                     state: None,
-                    retry: FlowsRetry::new()
+                    retry: FlowsRetry::new(),
+                    live: true
                 });
 
                 let out = ent.get_flow(&mut self.flows,
@@ -2019,22 +2030,33 @@ where
                        endpoint);
 
                 // Look up the session.
-                if let Some(ent) = self.sessions.get_mut(&endpoint) {
+                if let Entry::Occupied(mut ent) = self.sessions
+                    .entry(endpoint.clone()) {
                     read = true;
 
                     // Step negotiations.
-                    if let Some(session) = ent
+                    if let Some(session) = ent.get_mut()
                         .step(ext_endpoints, shutdown, shutdown_param,
-                              authn, retry, endpoint)
+                              authn, retry, endpoint.clone())
                         .map_err(|err| SessionListenError::Step {
                             err: err
                         })? {
+
                         debug!(target: "flows-nego-state",
                                "reporting completed session");
 
                         // Session negotiations complete; report it out.
                         sessions.push(session);
                     }
+
+                    if !ent.get().is_live() {
+                        trace!(target: "flows-nego-state",
+                               "removing entry for {}",
+                               endpoint);
+
+                        ent.remove();
+                    }
+
                 } else {
                     error!(target: "flows-nego-state",
                            "no session entry for {}",
@@ -4851,13 +4873,11 @@ where
                 trace!(target: "get-out-session",
                        "listening");
 
-                ent.listen(ctx, &mut empty(), endpoints, &mut sessions,
-                           poll.registry(), &live)
-                    .expect("");
+                let _ = ent.listen(ctx, &mut empty(), endpoints, &mut sessions,
+                                   poll.registry(), &live);
 
                 live.clear();
                 assert!(endpoints.is_empty());
-                assert!(sessions.is_empty());
             }
 
             sessions.pop().expect("Expected some")
@@ -5318,8 +5338,6 @@ where
 
     send.join().unwrap();
     listen.join().unwrap();
-
-    panic!("Explicit panic");
 }
 
 #[cfg(test)]
@@ -5348,7 +5366,7 @@ fn compound_entry_test(
         server_endpoint, out_param
     )
 }
-/*
+
 #[test]
 fn test_compound_unix() {
     init();
@@ -5371,19 +5389,19 @@ fn test_compound_unix() {
     compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
                         server_endpoint, out_param)
 }
-*/
+
 #[test]
 fn test_compound_udp() {
     init();
 
     const SERVER_CONFIG: &'static str = concat!(
         "udp:\n",
-        "  addr: ::1\n",
+        "  addr: ::0\n",
         "  port: 8200\n"
     );
     const CLIENT_CONFIG: &'static str = concat!(
         "udp:\n",
-        "  addr: ::1\n",
+        "  addr: ::0\n",
         "  port: 8201\n"
     );
     let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
@@ -5394,7 +5412,7 @@ fn test_compound_udp() {
     compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
                         server_endpoint, out_param)
 }
-/*
+
 #[test]
 fn test_compound_dtls_unix() {
     init();
@@ -5493,7 +5511,7 @@ fn test_compound_dtls_udp() {
         "    port: 8211\n"
     );
     let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
-        "[::0]:8210".parse().expect("Expected success")
+        "[::1]:8210".parse().expect("Expected success")
     );
     let servername = "test-server.nowhere.com";
     let endpoint = IPEndpointAddr::name(String::from(servername));
@@ -5504,4 +5522,3 @@ fn test_compound_dtls_udp() {
     compound_entry_test(SERVER_CONFIG, CLIENT_CONFIG,
                         server_endpoint, out_param)
 }
-*/
