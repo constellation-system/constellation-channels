@@ -174,7 +174,7 @@ pub struct TCPResolvingNearConnector {
     endpoint: IPEndpoint,
     nretries: usize,
     when: Instant,
-    retry: Retry,
+    retry: Retry
 }
 
 pub struct TCPNearConnector {
@@ -182,7 +182,7 @@ pub struct TCPNearConnector {
     endpoint: SocketAddr,
     nretries: usize,
     when: Instant,
-    retry: Retry,
+    retry: Retry
 }
 
 /// Errors that can occur when converting a [TCPResolvingNearConnectorConfig]
@@ -389,16 +389,18 @@ impl Source for TCPNearAcceptor {
 }
 
 impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
-    type State = (TCPStream, SocketAddr);
-    type Pending = Infallible;
     type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (TCPStream, SocketAddr);
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         Ok(NegotiatorResult::Complete(state))
     }
 
@@ -406,15 +408,17 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         panic!("This should never be called!")
     }
 }
 
 impl NearChannel for TCPNearAcceptor {
-    type Endpoint = SocketAddr;
     type Conn = TCPStream;
+    type Endpoint = SocketAddr;
     type ShutdownNego = PassthruNegotiator;
     type ShutdownValue = TCPStream;
     type StartError = Error;
@@ -431,23 +435,22 @@ impl NearChannel for TCPNearAcceptor {
             inner: stream
         };
 
-        registry.register(&mut stream, token,
-                          Interest::READABLE | Interest::WRITABLE)?;
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
 
         Ok(RetryResult::Success((stream, addr)))
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         PassthruNegotiator
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -497,16 +500,18 @@ impl NearChannelCreate for TCPNearAcceptor {
 }
 
 impl Negotiator<(TCPStream, SocketAddr)> for TCPResolvingNearConnector {
-    type State = (TCPStream, SocketAddr);
-    type Pending = Infallible;
     type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (TCPStream, SocketAddr);
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         Ok(NegotiatorResult::Complete(state))
     }
 
@@ -514,15 +519,17 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPResolvingNearConnector {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         panic!("This should never be called!")
     }
 }
 
 impl NearChannel for TCPResolvingNearConnector {
-    type Endpoint = SocketAddr;
     type Conn = TCPStream;
+    type Endpoint = SocketAddr;
     type ShutdownNego = PassthruNegotiator;
     type ShutdownValue = TCPStream;
     type StartError = Error;
@@ -553,14 +560,16 @@ impl NearChannel for TCPResolvingNearConnector {
                             }
                         }
                         let mut stream = TCPStream {
-                            unsafe_allow_ip_addr_creds:
-                            self.unsafe_allow_ip_addr_creds,
+                            unsafe_allow_ip_addr_creds: self
+                                .unsafe_allow_ip_addr_creds,
                             inner: stream
                         };
 
-                        registry.register(&mut stream, token,
-                                          Interest::READABLE |
-                                          Interest::WRITABLE)?;
+                        registry.register(
+                            &mut stream,
+                            token,
+                            Interest::READABLE | Interest::WRITABLE
+                        )?;
 
                         return Ok(RetryResult::Success((stream, addr)));
                     }
@@ -593,16 +602,12 @@ impl NearChannel for TCPResolvingNearConnector {
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         PassthruNegotiator
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -628,12 +633,18 @@ impl NearChannelCreate for TCPResolvingNearConnector {
     where
         Ctx: NSNameCachesCtx {
         let (endpoint, resolve, retry, unsafe_opts) = config.take();
-        let partial =
-            TCPResolvingNearConnectorPartialConfig
-            ::new_with_unsafe(resolve, retry, unsafe_opts);
+        let partial = TCPResolvingNearConnectorPartialConfig::new_with_unsafe(
+            resolve,
+            retry,
+            unsafe_opts
+        );
 
-        TCPResolvingNearConnector::create_with_endpoint(caches, partial,
-                                                        endpoint, ())
+        TCPResolvingNearConnector::create_with_endpoint(
+            caches,
+            partial,
+            endpoint,
+            ()
+        )
     }
 
     #[inline]
@@ -644,9 +655,9 @@ impl NearChannelCreate for TCPResolvingNearConnector {
 
 impl NearChannelCreateWithEndpoint for TCPResolvingNearConnector {
     type Config = TCPResolvingNearConnectorPartialConfig;
+    type CreateError = TCPResolvingNearConnectorError;
     type EndpointConfig = IPEndpoint;
     type Param = ();
-    type CreateError = TCPResolvingNearConnectorError;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
@@ -680,14 +691,15 @@ impl NearChannelCreateWithEndpoint for TCPResolvingNearConnector {
             addrs: addrs,
             retry: retry,
             nretries: 0,
-            when: Instant::now(),
+            when: Instant::now()
         })
     }
 }
 
 impl NearConnector for TCPResolvingNearConnector {
     /// Type of endpoint references.
-    type EndpointRef<'a> = &'a IPEndpoint
+    type EndpointRef<'a>
+        = &'a IPEndpoint
     where
         Self: 'a;
 
@@ -703,16 +715,18 @@ impl NearConnector for TCPResolvingNearConnector {
 }
 
 impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
-    type State = (TCPStream, SocketAddr);
-    type Pending = Infallible;
     type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (TCPStream, SocketAddr);
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         Ok(NegotiatorResult::Complete(state))
     }
 
@@ -720,15 +734,17 @@ impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         panic!("This should never be called!")
     }
 }
 
 impl NearChannel for TCPNearConnector {
-    type Endpoint = SocketAddr;
     type Conn = TCPStream;
+    type Endpoint = SocketAddr;
     type ShutdownNego = PassthruNegotiator;
     type ShutdownValue = TCPStream;
     type StartError = Error;
@@ -741,9 +757,11 @@ impl NearChannel for TCPNearConnector {
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         let mut stream = TcpStream::connect(self.endpoint)?;
 
-        registry.register(&mut stream, token,
-                          Interest::READABLE |
-                          Interest::WRITABLE)?;
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
 
         let stream = TCPStream {
             unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
@@ -756,16 +774,12 @@ impl NearChannel for TCPNearConnector {
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         PassthruNegotiator
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -781,9 +795,9 @@ impl NearChannel for TCPNearConnector {
 
 impl NearChannelCreateWithEndpoint for TCPNearConnector {
     type Config = TCPNearConnectorPartialConfig;
+    type CreateError = Infallible;
     type EndpointConfig = SocketAddr;
     type Param = ();
-    type CreateError = Infallible;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
@@ -809,14 +823,15 @@ impl NearChannelCreateWithEndpoint for TCPNearConnector {
             endpoint: endpoint,
             retry: retry,
             nretries: 0,
-            when: Instant::now(),
+            when: Instant::now()
         })
     }
 }
 
 impl NearConnector for TCPNearConnector {
     /// Type of endpoint references.
-    type EndpointRef<'a> = &'a SocketAddr
+    type EndpointRef<'a>
+        = &'a SocketAddr
     where
         Self: 'a;
 
@@ -830,8 +845,6 @@ impl NearConnector for TCPNearConnector {
         Ok(())
     }
 }
-
-
 
 impl Display for TCPResolvingNearConnectorError {
     fn fmt(
@@ -866,15 +879,15 @@ use mio::Poll;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
-#[cfg(test)]
 use crate::near::accept_one;
+#[cfg(test)]
+use crate::near::negotiate_one;
 #[cfg(test)]
 use crate::near::read_one;
 #[cfg(test)]
 use crate::near::write_one;
 #[cfg(test)]
-use crate::near::negotiate_one;
+use crate::resolve::cache::SharedNSNameCaches;
 
 #[test]
 fn test_send_recv() {
@@ -904,15 +917,16 @@ fn test_send_recv() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -932,22 +946,25 @@ fn test_send_recv() {
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
-        let mut conn =
-            TCPResolvingNearConnector::create(&mut client_nscaches,
-                                              connect_config)
-                .expect("expected success");
+        let mut conn = TCPResolvingNearConnector::create(
+            &mut client_nscaches,
+            connect_config
+        )
+        .expect("expected success");
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");

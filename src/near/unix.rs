@@ -266,16 +266,18 @@ impl Source for UnixNearAcceptor {
 }
 
 impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearAcceptor {
-    type State = (UnixStream, UnixSocketAddr);
-    type Pending = Infallible;
     type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (UnixStream, UnixSocketAddr);
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         Ok(NegotiatorResult::Complete(state))
     }
 
@@ -283,15 +285,17 @@ impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearAcceptor {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         panic!("This should never be called!")
     }
 }
 
 impl NearChannel for UnixNearAcceptor {
-    type Endpoint = UnixSocketAddr;
     type Conn = UnixStream;
+    type Endpoint = UnixSocketAddr;
     type ShutdownNego = PassthruNegotiator;
     type ShutdownValue = UnixStream;
     type StartError = Error;
@@ -305,23 +309,22 @@ impl NearChannel for UnixNearAcceptor {
         let (mut stream, addr) = self.listener.accept()?;
         let addr = UnixSocketAddr::from(addr);
 
-        registry.register(&mut stream, token,
-                          Interest::READABLE | Interest::WRITABLE)?;
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
 
         Ok(RetryResult::Success((stream, addr)))
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         PassthruNegotiator
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -358,16 +361,18 @@ impl NearChannelCreate for UnixNearAcceptor {
 }
 
 impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearConnector {
-    type State = (UnixStream, UnixSocketAddr);
-    type Pending = Infallible;
     type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (UnixStream, UnixSocketAddr);
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         Ok(NegotiatorResult::Complete(state))
     }
 
@@ -375,15 +380,17 @@ impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearConnector {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
         panic!("This should never be called!")
     }
 }
 
 impl NearChannel for UnixNearConnector {
-    type Endpoint = UnixSocketAddr;
     type Conn = UnixStream;
+    type Endpoint = UnixSocketAddr;
     type ShutdownNego = PassthruNegotiator;
     type ShutdownValue = UnixStream;
     type StartError = Error;
@@ -401,23 +408,22 @@ impl NearChannel for UnixNearConnector {
         let mut stream = UnixStream::connect(&self.path)?;
         let addr = UnixSocketAddr::try_from(&self.path)?;
 
-        registry.register(&mut stream, token,
-                          Interest::READABLE | Interest::WRITABLE)?;
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
 
         Ok(RetryResult::Success((stream, addr)))
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         PassthruNegotiator
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -444,7 +450,9 @@ impl NearChannelCreate for UnixNearConnector {
         Ctx: NSNameCachesCtx {
         let path = config.take();
 
-        Ok(UnixNearConnector { path: UnixSocketPath::from(path) })
+        Ok(UnixNearConnector {
+            path: UnixSocketPath::from(path)
+        })
     }
 
     #[inline]
@@ -455,9 +463,9 @@ impl NearChannelCreate for UnixNearConnector {
 
 impl NearChannelCreateWithEndpoint for UnixNearConnector {
     type Config = UnixNearConnectorPartialConfig;
+    type CreateError = Error;
     type EndpointConfig = UnixSocketAddr;
     type Param = ();
-    type CreateError = Error;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
@@ -476,7 +484,8 @@ impl NearChannelCreateWithEndpoint for UnixNearConnector {
 
 impl NearConnector for UnixNearConnector {
     /// Type of endpoint references.
-    type EndpointRef<'a> = &'a UnixSocketPath
+    type EndpointRef<'a>
+        = &'a UnixSocketPath
     where
         Self: 'a;
 
@@ -506,15 +515,15 @@ use mio::Poll;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
-#[cfg(test)]
 use crate::near::accept_one;
+#[cfg(test)]
+use crate::near::negotiate_one;
 #[cfg(test)]
 use crate::near::read_one;
 #[cfg(test)]
 use crate::near::write_one;
 #[cfg(test)]
-use crate::near::negotiate_one;
+use crate::resolve::cache::SharedNSNameCaches;
 
 #[test]
 fn test_send_recv() {
@@ -547,15 +556,16 @@ fn test_send_recv() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -576,23 +586,27 @@ fn test_send_recv() {
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
-        let mut conn =
-            UnixNearConnector::create_with_endpoint(&mut client_nscaches,
-                                                    connect_config,
-                                                    endpoint, ())
-            .expect("expected success");
+        let mut conn = UnixNearConnector::create_with_endpoint(
+            &mut client_nscaches,
+            connect_config,
+            endpoint,
+            ()
+        )
+        .expect("expected success");
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");
@@ -641,15 +655,16 @@ fn test_send_close() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -668,23 +683,27 @@ fn test_send_close() {
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
-        let mut conn =
-            UnixNearConnector::create_with_endpoint(&mut client_nscaches,
-                                                    connect_config,
-                                                    endpoint, ())
-            .expect("expected success");
+        let mut conn = UnixNearConnector::create_with_endpoint(
+            &mut client_nscaches,
+            connect_config,
+            endpoint,
+            ()
+        )
+        .expect("expected success");
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");
@@ -732,15 +751,16 @@ fn test_recv_close() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -759,23 +779,27 @@ fn test_recv_close() {
     let send = spawn(move || {
         let session = Token(0);
         let mut poll = Poll::new().expect("Expected success");
-        let mut conn =
-            UnixNearConnector::create_with_endpoint(&mut client_nscaches,
-                                                    connect_config,
-                                                    endpoint, ())
-            .expect("expected success");
+        let mut conn = UnixNearConnector::create_with_endpoint(
+            &mut client_nscaches,
+            connect_config,
+            endpoint,
+            ()
+        )
+        .expect("expected success");
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");

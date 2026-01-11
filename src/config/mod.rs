@@ -151,18 +151,17 @@ pub struct AddrsConfig {
 ///
 ///  - `channels`: An array of [ChannelRegistryEntryConfig] structures.
 ///
-///  - `default-resolve`: An [AddrsConfig] structure.  This is
-///    optional, and set to the default value if not present.
+///  - `default-resolve`: An [AddrsConfig] structure.  This is optional, and set
+///    to the default value if not present.
 ///
-///  - `default-flows-params`: A configuration object for creating the
-///    type of traffic splitters used for managing flows. This is
-///    optional, and set to the default value if not present.
+///  - `default-flows-params`: A configuration object for creating the type of
+///    traffic splitters used for managing flows. This is optional, and set to
+///    the default value if not present.
 ///
-///  - `default-transform-params`: A configuration object for creating
-///    the type of base
-///    [DatagramXfrm](constellation_common::net::DatagramXfrm) used to
-///    create flows.  This is optional, and set to the default value
-///    if not present.
+///  - `default-transform-params`: A configuration object for creating the type
+///    of base [DatagramXfrm](constellation_common::net::DatagramXfrm) used to
+///    create flows.  This is optional, and set to the default value if not
+///    present.
 ///
 /// ## Examples
 ///
@@ -184,12 +183,13 @@ pub struct AddrsConfig {
 #[serde(rename = "channel-registry")]
 #[serde(rename_all = "kebab-case")]
 pub struct FarChannelRegistryConfig<Channel, Flows, Shutdown, Xfrm>
-where Flows: Default,
-      Shutdown: Default,
-      Xfrm: Default,
-{
+where
+    Flows: Default,
+    Shutdown: Default,
+    Xfrm: Default {
     /// Configuration of all channels.
-    channels: Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
+    channels:
+        Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
     /// Resolver configuration.
     #[serde(default)]
     default_resolve: AddrsConfig,
@@ -258,10 +258,10 @@ where
 #[serde(rename = "far-channel-entry")]
 #[serde(rename_all = "kebab-case")]
 pub struct FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
-where Flows: Default,
-      Shutdown: Default,
-      Xfrm: Default,
-{
+where
+    Flows: Default,
+    Shutdown: Default,
+    Xfrm: Default {
     /// Unique name of the channel.
     id: String,
     /// Channel configuration.
@@ -396,10 +396,12 @@ pub enum CompoundFarIPChannelConfig {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_udp: Box<SOCKS5AssocConfig<
-            CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
-            CompoundFarIPChannelConfig
-        >>
+        socks5_udp: Box<
+            SOCKS5AssocConfig<
+                CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
+                CompoundFarIPChannelConfig
+            >
+        >
     }
 }
 
@@ -609,10 +611,12 @@ pub enum CompoundFarChannelConfig {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_udp: Box<SOCKS5AssocConfig<
-            CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
-            CompoundFarIPChannelConfig
-        >>
+        socks5_udp: Box<
+            SOCKS5AssocConfig<
+                CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
+                CompoundFarIPChannelConfig
+            >
+        >
     }
 }
 
@@ -865,8 +869,8 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
 pub enum CompoundResolvingNearConnectorConfig<TLS>
-where TLS: TLSLoadClient
-{
+where
+    TLS: TLSLoadClient {
     /// UNIX socket channel.
     ///
     /// The service will run as a separate process, and will
@@ -922,12 +926,10 @@ where TLS: TLSLoadClient
 /// The YAML format has four options, each corresponding to the four
 /// different channel types:
 ///
-/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and
-///   creates a
+/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and creates a
 ///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
 ///
-/// - `tcp`: Contains a [TCPResolvingNearConnectorPartialConfig], and
-///   creates a
+/// - `tcp`: Contains a [TCPResolvingNearConnectorPartialConfig], and creates a
 ///   [TCPResolvingNearConnector](crate::near::tcp::TCPResolvingNearConnector).
 ///
 /// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
@@ -1075,7 +1077,9 @@ pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_tcp: SOCKS5ConnectPartialConfig<Box<CompoundResolvingNearConnectorConfig<TLS>>>
+        socks5_tcp: SOCKS5ConnectPartialConfig<
+            Box<CompoundResolvingNearConnectorConfig<TLS>>
+        >
     }
 }
 
@@ -1100,8 +1104,7 @@ pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
 /// The YAML format has four options, each corresponding to the four
 /// different channel types:
 ///
-/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and
-///   creates a
+/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and creates a
 ///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
 ///
 /// - `tcp`: Contains a [TCPNearConnectorPartialConfig], and creates a
@@ -1253,7 +1256,9 @@ pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_tcp: SOCKS5ConnectPartialConfig<Box<CompoundResolvingNearConnectorConfig<TLS>>>
+        socks5_tcp: SOCKS5ConnectPartialConfig<
+            Box<CompoundResolvingNearConnectorConfig<TLS>>
+        >
     }
 }
 
@@ -1996,7 +2001,9 @@ pub struct TCPResolvingNearConnectorConfig {
     resolve: AddrsConfig
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename_all = "kebab-case")]
 #[serde(default)]
 pub struct TCPResolvingNearConnectorPartialConfig {
@@ -2024,7 +2031,9 @@ pub struct TCPNearConnectorConfig {
     retry: Retry
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename_all = "kebab-case")]
 #[serde(default)]
 pub struct TCPNearConnectorPartialConfig {
@@ -2052,10 +2061,14 @@ pub struct TLSChannelConfig<TLS, Underlying> {
     /// Configuration for the underlying channel.
     underlying: Underlying,
     /// Retry configuration for shutdown negotiations.
-    #[serde(default = "TLSChannelConfig::<TLS, Underlying>::default_shutdown_retry")]
+    #[serde(
+        default = "TLSChannelConfig::<TLS, Underlying>::default_shutdown_retry"
+    )]
     shutdown_retry: Retry,
     /// Maximum duration of shutdown negotiations.
-    #[serde(default = "TLSChannelConfig::<TLS, Underlying>::default_shutdown_timeout")]
+    #[serde(
+        default = "TLSChannelConfig::<TLS, Underlying>::default_shutdown_timeout"
+    )]
     #[serde(deserialize_with = "Retry::deserialize_time")]
     #[serde(serialize_with = "Retry::serialize_time")]
     shutdown_timeout: Duration
@@ -2201,7 +2214,9 @@ pub type TLSNearAcceptorConfig<Endpoint> =
 pub type TLSNearConnectorConfig<Endpoint> =
     TLSChannelConfig<TLSClientConfig, Endpoint>;
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename_all = "kebab-case")]
 #[serde(default)]
 pub struct TLSParam<Inner> {
@@ -2381,7 +2396,9 @@ pub struct UnixNearConnectorConfig {
     retry: Retry
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename = "unix-connector-partial")]
 #[serde(rename_all = "kebab-case")]
 #[serde(default)]
@@ -2393,15 +2410,15 @@ pub struct UnixNearConnectorPartialConfig {
 
 #[derive(Clone)]
 struct CompoundNearConnectorPartialConfigVisitor<TLS>
-where TLS: TLSLoadClient
-{
+where
+    TLS: TLSLoadClient {
     tls: PhantomData<TLS>
 }
 
 #[derive(Clone)]
 struct CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
-where TLS: TLSLoadClient
-{
+where
+    TLS: TLSLoadClient {
     tls: PhantomData<TLS>
 }
 
@@ -2419,24 +2436,22 @@ const COMPOUND_NEAR_CHANNEL_TYPES: &[&str] =
     &["unix-stream", "tcp", "tls", "socks5-tcp"];
 
 impl<TLS> Default for CompoundNearConnectorPartialConfigVisitor<TLS>
-where TLS: TLSLoadClient
+where
+    TLS: TLSLoadClient
 {
     #[inline]
     fn default() -> Self {
-        CompoundNearConnectorPartialConfigVisitor {
-            tls: PhantomData
-        }
+        CompoundNearConnectorPartialConfigVisitor { tls: PhantomData }
     }
 }
 
 impl<TLS> Default for CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
-where TLS: TLSLoadClient
+where
+    TLS: TLSLoadClient
 {
     #[inline]
     fn default() -> Self {
-        CompoundResolvingNearConnectorPartialConfigVisitor {
-            tls: PhantomData
-        }
+        CompoundResolvingNearConnectorPartialConfigVisitor { tls: PhantomData }
     }
 }
 
@@ -2454,14 +2469,16 @@ impl<'de> Visitor<'de> for CompoundNearChannelVariantVisitor {
         self,
         s: &str
     ) -> Result<Self::Value, E>
-    where E: serde::de::Error {
+    where
+        E: serde::de::Error {
         match s {
             "unix-stream" => Ok(CompoundNearChannelVariant::Unix),
             "tcp" => Ok(CompoundNearChannelVariant::TCP),
             "tls" => Ok(CompoundNearChannelVariant::TLS),
             "socks5-tcp" => Ok(CompoundNearChannelVariant::SOCKS5),
             _ => Err(serde::de::Error::unknown_variant(
-                s, COMPOUND_NEAR_CHANNEL_TYPES
+                s,
+                COMPOUND_NEAR_CHANNEL_TYPES
             ))
         }
     }
@@ -2471,7 +2488,8 @@ impl<'de> Visitor<'de> for CompoundNearChannelVariantVisitor {
         self,
         s: &'de str
     ) -> Result<Self::Value, E>
-    where E: serde::de::Error {
+    where
+        E: serde::de::Error {
         self.visit_str(s)
     }
 
@@ -2480,23 +2498,23 @@ impl<'de> Visitor<'de> for CompoundNearChannelVariantVisitor {
         self,
         s: String
     ) -> Result<Self::Value, E>
-    where E: serde::de::Error {
+    where
+        E: serde::de::Error {
         self.visit_str(s.as_str())
     }
 }
 
 impl<'de> Deserialize<'de> for CompoundNearChannelVariant {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
-
-        deserializer.deserialize_identifier(
-            CompoundNearChannelVariantVisitor
-        )
+    where
+        D: Deserializer<'de> {
+        deserializer.deserialize_identifier(CompoundNearChannelVariantVisitor)
     }
 }
 
 impl<'de, TLS> Visitor<'de> for CompoundNearConnectorPartialConfigVisitor<TLS>
-where TLS: TLSLoadClient + Deserialize<'de>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
 {
     type Value = CompoundNearConnectorPartialConfig<TLS>;
 
@@ -2511,35 +2529,41 @@ where TLS: TLSLoadClient + Deserialize<'de>
         self,
         mut map: V
     ) -> Result<Self::Value, V::Error>
-    where V: MapAccess<'de> {
+    where
+        V: MapAccess<'de> {
         match map.next_key()? {
-            Some(CompoundNearChannelVariant::Unix) =>
+            Some(CompoundNearChannelVariant::Unix) => {
                 Ok(CompoundNearConnectorPartialConfig::Unix {
                     unix_stream: map.next_value()?
-                }),
-            Some(CompoundNearChannelVariant::TCP) =>
+                })
+            }
+            Some(CompoundNearChannelVariant::TCP) => {
                 Ok(CompoundNearConnectorPartialConfig::TCP {
                     tcp: map.next_value()?
-                }),
-            Some(CompoundNearChannelVariant::TLS) =>
+                })
+            }
+            Some(CompoundNearChannelVariant::TLS) => {
                 Ok(CompoundNearConnectorPartialConfig::TLS {
                     tls: map.next_value()?
-                }),
-            Some(CompoundNearChannelVariant::SOCKS5) =>
+                })
+            }
+            Some(CompoundNearChannelVariant::SOCKS5) => {
                 Ok(CompoundNearConnectorPartialConfig::SOCKS5 {
                     socks5_tcp: map.next_value()?
-                }),
+                })
+            }
             None => Err(serde::de::Error::invalid_length(0, &self))
         }
     }
 }
 
 impl<'de, TLS> Deserialize<'de> for CompoundNearConnectorPartialConfig<TLS>
-where TLS: TLSLoadClient + Deserialize<'de>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
-
+    where
+        D: Deserializer<'de> {
         deserializer.deserialize_struct(
             "compound-near-connector-partial",
             COMPOUND_NEAR_CHANNEL_TYPES,
@@ -2550,7 +2574,8 @@ where TLS: TLSLoadClient + Deserialize<'de>
 
 impl<'de, TLS> Visitor<'de>
     for CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
-where TLS: TLSLoadClient + Deserialize<'de>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
 {
     type Value = CompoundResolvingNearConnectorPartialConfig<TLS>;
 
@@ -2565,24 +2590,29 @@ where TLS: TLSLoadClient + Deserialize<'de>
         self,
         mut map: V
     ) -> Result<Self::Value, V::Error>
-    where V: MapAccess<'de> {
+    where
+        V: MapAccess<'de> {
         match map.next_key()? {
-            Some(CompoundNearChannelVariant::Unix) =>
+            Some(CompoundNearChannelVariant::Unix) => {
                 Ok(CompoundResolvingNearConnectorPartialConfig::Unix {
                     unix_stream: map.next_value()?
-                }),
-            Some(CompoundNearChannelVariant::TCP) =>
+                })
+            }
+            Some(CompoundNearChannelVariant::TCP) => {
                 Ok(CompoundResolvingNearConnectorPartialConfig::TCP {
                     tcp: map.next_value()?
-                }),
-            Some(CompoundNearChannelVariant::TLS) =>
+                })
+            }
+            Some(CompoundNearChannelVariant::TLS) => {
                 Ok(CompoundResolvingNearConnectorPartialConfig::TLS {
                     tls: map.next_value()?
-                }),
-            Some(CompoundNearChannelVariant::SOCKS5) =>
+                })
+            }
+            Some(CompoundNearChannelVariant::SOCKS5) => {
                 Ok(CompoundResolvingNearConnectorPartialConfig::SOCKS5 {
                     socks5_tcp: map.next_value()?
-                }),
+                })
+            }
             None => Err(serde::de::Error::invalid_length(0, &self))
         }
     }
@@ -2590,11 +2620,12 @@ where TLS: TLSLoadClient + Deserialize<'de>
 
 impl<'de, TLS> Deserialize<'de>
     for CompoundResolvingNearConnectorPartialConfig<TLS>
-where TLS: TLSLoadClient + Deserialize<'de>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
-
+    where
+        D: Deserializer<'de> {
         deserializer.deserialize_struct(
             "compound-near-resolving-connector-partial",
             COMPOUND_NEAR_CHANNEL_TYPES,
@@ -2662,9 +2693,10 @@ impl AddrsConfig {
 
 impl<Channel, Flows, Shutdown, Xfrm>
     FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
-where Flows: Default,
-      Shutdown: Default,
-      Xfrm: Default
+where
+    Flows: Default,
+    Shutdown: Default,
+    Xfrm: Default
 {
     /// Create a new `ChannelRegistryEntryConfig` from its components.
     ///
@@ -2800,7 +2832,9 @@ where
     /// fields in the YAML format.  See documentation for details.
     #[inline]
     pub fn new(
-        channels: Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
+        channels: Vec<
+            FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
+        >,
         resolve: AddrsConfig,
         flows_params: Flows,
         xfrm_params: Xfrm,
@@ -2983,7 +3017,12 @@ impl FlowsConfig {
 
     #[inline]
     pub fn take(self) -> (usize, Option<usize>, Option<usize>, Option<usize>) {
-        (self.msg_size, self.buf_size, self.num_flows, self.num_negotiations)
+        (
+            self.msg_size,
+            self.buf_size,
+            self.num_flows,
+            self.num_negotiations
+        )
     }
 }
 
@@ -2995,7 +3034,7 @@ impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
         authn: Option<AuthN>,
         retry: Retry,
         num_sessions: Option<usize>,
-        backlog_size: Option<usize>,
+        backlog_size: Option<usize>
     ) -> Self {
         NearChannelsEntryConfig {
             listen: listen,
@@ -3003,7 +3042,7 @@ impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
             authn: authn,
             num_sessions: num_sessions,
             backlog_size: backlog_size,
-            retry: retry,
+            retry: retry
         }
     }
 
@@ -3040,10 +3079,15 @@ impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
     #[inline]
     pub fn take(
         self
-    ) ->
-        (In, Out, Option<AuthN>, Retry, Option<usize>, Option<usize>) {
-        (self.listen, self.connect, self.authn, self.retry,
-         self.num_sessions, self.backlog_size)
+    ) -> (In, Out, Option<AuthN>, Retry, Option<usize>, Option<usize>) {
+        (
+            self.listen,
+            self.connect,
+            self.authn,
+            self.retry,
+            self.num_sessions,
+            self.backlog_size
+        )
     }
 }
 
@@ -3431,12 +3475,8 @@ impl TryFrom<SOCKS5AuthNIntermediate> for SOCKS5AuthNConfig {
 
 impl<Endpoint> DTLSFarChannelConfig<Endpoint> {
     #[inline]
-    pub fn new(
-        tls: TLSChannelConfig<TLSPeerConfig, Endpoint>,
-    ) -> Self {
-        DTLSFarChannelConfig {
-            tls: tls,
-        }
+    pub fn new(tls: TLSChannelConfig<TLSPeerConfig, Endpoint>) -> Self {
+        DTLSFarChannelConfig { tls: tls }
     }
 
     /// Get the TLS channel configuration.
@@ -3446,9 +3486,7 @@ impl<Endpoint> DTLSFarChannelConfig<Endpoint> {
     }
 
     #[inline]
-    pub fn take(
-        self
-    ) -> TLSChannelConfig<TLSPeerConfig, Endpoint> {
+    pub fn take(self) -> TLSChannelConfig<TLSPeerConfig, Endpoint> {
         self.tls
     }
 }
@@ -4209,13 +4247,8 @@ impl TCPNearConnectorPartialConfig {
     /// );
     /// ```
     #[inline]
-    pub fn new(
-        retry: Retry
-    ) -> Self {
-        Self::new_with_unsafe(
-            retry,
-            TCPNearChannelConfigUnsafe::default()
-        )
+    pub fn new(retry: Retry) -> Self {
+        Self::new_with_unsafe(retry, TCPNearChannelConfigUnsafe::default())
     }
 
     #[inline]
@@ -4251,9 +4284,7 @@ impl TCPNearConnectorPartialConfig {
     /// - The retry configuration for failed connection attempts
     ///   ([retry](TCPNearConnectorConfig::retry))
     #[inline]
-    pub(crate) fn take(
-        self
-    ) -> (Retry, TCPNearChannelConfigUnsafe) {
+    pub(crate) fn take(self) -> (Retry, TCPNearChannelConfigUnsafe) {
         (self.retry, self.unsafe_opts)
     }
 }
@@ -4310,7 +4341,12 @@ impl<TLS, Underlying> TLSChannelConfig<TLS, Underlying> {
     ///   ([endpoint](TLSChannelConfig::endpoint))
     #[inline]
     pub(crate) fn take(self) -> (TLS, Underlying, Retry, Duration) {
-        (self.tls, self.underlying, self.shutdown_retry, self.shutdown_timeout)
+        (
+            self.tls,
+            self.underlying,
+            self.shutdown_retry,
+            self.shutdown_timeout
+        )
     }
 
     fn default_shutdown_retry() -> Retry {
@@ -4611,12 +4647,8 @@ impl UnixNearConnectorPartialConfig {
     /// );
     /// ```
     #[inline]
-    pub fn new(
-        retry: Retry
-    ) -> Self {
-        UnixNearConnectorPartialConfig {
-            retry: retry
-        }
+    pub fn new(retry: Retry) -> Self {
+        UnixNearConnectorPartialConfig { retry: retry }
     }
 
     /// Get the retry configuration

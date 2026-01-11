@@ -130,18 +130,18 @@ use constellation_common::net::DatagramXfrm;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
-use constellation_common::net::Session;
 use constellation_common::net::Sender;
+use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use log::debug;
 use log::error;
 use log::trace;
-use mio::Interest;
-use mio::Registry;
-use mio::Token;
 use mio::event::Source;
 use mio::Events;
+use mio::Interest;
 use mio::Poll;
+use mio::Registry;
+use mio::Token;
 
 use crate::config::FlowsConfig;
 
@@ -221,7 +221,7 @@ where
     /// Outgoing message buffer.
     outbuf: Rc<RefCell<VecDeque<(Sock::Addr, Vec<u8>)>>>,
     /// Strong reference to the incoming message buffer.
-    inbuf: Rc<RefCell<MsgBuf>>,
+    inbuf: Rc<RefCell<MsgBuf>>
 }
 
 pub struct FlowsShutdownNegotiator;
@@ -272,7 +272,7 @@ pub enum FlowsListenError<Xfrm, Start, In, Out> {
     /// Failed to [get_mut](Rc::get_mut).
     ///
     /// This should never happen.
-    GetMut,
+    GetMut
 }
 
 #[derive(Debug)]
@@ -311,7 +311,8 @@ where
     Xfrm::LocalAddr: From<Sock::Addr>,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    Xfrm::PeerAddr: Clone + Display + Eq + Hash {
+    Xfrm::PeerAddr: Clone + Display + Eq + Hash
+{
     #[inline]
     fn register(
         &mut self,
@@ -319,7 +320,8 @@ where
         token: Token,
         interests: Interest
     ) -> Result<(), Error> {
-        self.socket.try_borrow_mut()
+        self.socket
+            .try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
             .register(registry, token, interests)
     }
@@ -331,7 +333,8 @@ where
         token: Token,
         interests: Interest
     ) -> Result<(), Error> {
-        self.socket.try_borrow_mut()
+        self.socket
+            .try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
             .reregister(registry, token, interests)
     }
@@ -341,7 +344,8 @@ where
         &mut self,
         registry: &Registry
     ) -> Result<(), Error> {
-        self.socket.try_borrow_mut()
+        self.socket
+            .try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
             .deregister(registry)
     }
@@ -358,7 +362,8 @@ where
     Xfrm::LocalAddr: From<Sock::Addr>,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    Xfrm::PeerAddr: Clone + Display + Eq + Hash {
+    Xfrm::PeerAddr: Clone + Display + Eq + Hash
+{
     /// Create a [Flows] from its necessary components.
     ///
     /// # Parameters
@@ -413,7 +418,8 @@ where
     /// Get the local address for the underlying socket.
     #[inline]
     pub fn local_addr(&self) -> Result<Sock::Addr, Error> {
-        self.socket.try_borrow()
+        self.socket
+            .try_borrow()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get failed"))?
             .local_addr()
     }
@@ -421,7 +427,9 @@ where
     /// Check if the outbound message buffer is empty.
     #[inline]
     pub(crate) fn outbound_empty(&self) -> Result<bool, Error> {
-        Ok(self.outbuf.try_borrow()
+        Ok(self
+            .outbuf
+            .try_borrow()
             .map_err(|_| Error::new(ErrorKind::Other, "outbuf get failed"))?
             .is_empty())
     }
@@ -431,13 +439,11 @@ where
     /// This will try to send any outbound buffered messages.  These
     /// are messages that were queued up by flows, which could not be
     /// sent due to [ErrorKind::WouldBlock] results.
-    pub fn push(
-        &mut self
-    ) -> Result<(), Error> {
+    pub fn push(&mut self) -> Result<(), Error> {
         // Try to get the output buffer to push the message.
-        let mut outbuf = self.outbuf.try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other,
-                                    "outbuf get mut failed"))?;
+        let mut outbuf = self.outbuf.try_borrow_mut().map_err(|_| {
+            Error::new(ErrorKind::Other, "outbuf get mut failed")
+        })?;
 
         while {
             if let Some((addr, msg)) = outbuf.front() {
@@ -445,10 +451,14 @@ where
                        "sending buffered {} byte message to {}",
                        msg.len(), addr);
 
-                if let Err(err) = self.socket.try_borrow_mut()
-                    .map_err(|_| Error::new(ErrorKind::Other,
-                                            "socket get mut failed"))?
-                    .send_to(addr, msg) {
+                if let Err(err) = self
+                    .socket
+                    .try_borrow_mut()
+                    .map_err(|_| {
+                        Error::new(ErrorKind::Other, "socket get mut failed")
+                    })?
+                    .send_to(addr, msg)
+                {
                     match err.kind() {
                         ErrorKind::Interrupted => true,
                         ErrorKind::WouldBlock => false,
@@ -479,27 +489,33 @@ where
     ///
     /// # Parameters
     ///
-    /// - `param`: Inbound negotiator parameter, used to create new
-    ///   incoming negotiations.
+    /// - `param`: Inbound negotiator parameter, used to create new incoming
+    ///   negotiations.
     ///
     /// # Return Value
     ///
     /// Three possible cases, depending on behavior.
     ///
-    /// - `Some(ListenResult::Existing { .. })`: Traffic was received
-    ///   on an existing flow.
+    /// - `Some(ListenResult::Existing { .. })`: Traffic was received on an
+    ///   existing flow.
     ///
     /// - `Some(ListenResult::New { .. })`: A new flow was negotiated.
     ///
     /// - `None`: Traffic was purely internal.
     pub fn listen(
         &mut self,
-        param: &InboundNego::Param,
-    ) -> Result<Option<ListenResult<Flow, Xfrm::PeerAddr>>,
-                FlowsListenError<Xfrm::Error, InboundNego::StartError,
-                                 InboundNego::NegotiateError,
-                                 OutboundNego::NegotiateError>> {
-        let local_addr = self.local_addr()
+        param: &InboundNego::Param
+    ) -> Result<
+        Option<ListenResult<Flow, Xfrm::PeerAddr>>,
+        FlowsListenError<
+            Xfrm::Error,
+            InboundNego::StartError,
+            InboundNego::NegotiateError,
+            OutboundNego::NegotiateError
+        >
+    > {
+        let local_addr = self
+            .local_addr()
             .map_err(|err| FlowsListenError::IO { err: err })?;
 
         trace!(target: "flows",
@@ -508,7 +524,9 @@ where
 
         // Get one message.
         let mut msg = vec![0; self.msgsize];
-        let (n, addr, _) = self.socket.try_borrow_mut()
+        let (n, addr, _) = self
+            .socket
+            .try_borrow_mut()
             .map_err(|_| FlowsListenError::GetMut)?
             .recv_from(&mut msg)
             .map_err(|err| FlowsListenError::IO { err: err })?;
@@ -520,11 +538,14 @@ where
                    n, addr, local_addr);
 
             // Unwrap it.
-            let (msglen, addr) = self.xfrm.try_borrow_mut()
+            let (msglen, addr) = self
+                .xfrm
+                .try_borrow_mut()
                 .map_err(|_| FlowsListenError::GetMut)
-                .and_then(|mut xfrm| xfrm.unwrap(&mut msg[..n],
-                                                 Xfrm::LocalAddr::from(addr))
-                          .map_err(|err| FlowsListenError::Xfrm { err: err }))?;
+                .and_then(|mut xfrm| {
+                    xfrm.unwrap(&mut msg[..n], Xfrm::LocalAddr::from(addr))
+                        .map_err(|err| FlowsListenError::Xfrm { err: err })
+                })?;
 
             trace!(target: "flows",
                    "unwrapped message from {} on {} to {} bytes",
@@ -534,7 +555,7 @@ where
 
             // First, see if there's an existing flow.
             let newbuf = match self.msgbufs.entry(addr.clone()) {
-                Entry::Occupied(mut ent) => match ent.get().upgrade()  {
+                Entry::Occupied(mut ent) => match ent.get().upgrade() {
                     Some(buf) => {
                         // Weak reference is still good; deliver the message.
                         buf.try_borrow_mut()
@@ -563,7 +584,7 @@ where
 
                         Some(buf)
                     }
-                }
+                },
                 Entry::Vacant(ent) => {
                     // We need to create a new entry.
                     debug!(target: "flows",
@@ -594,12 +615,17 @@ where
                     outbuf: self.outbuf.clone(),
                     inbuf: buf.clone()
                 };
-                let nego = self.inbound_nego.start(param, flow)
+                let nego = self
+                    .inbound_nego
+                    .start(param, flow)
                     .map_err(|err| FlowsListenError::Start { err: err })?;
 
                 // Short-circuit: try to negotiate immediately.
-                match self.inbound_nego.negotiate(nego)
-                    .map_err(|err| FlowsListenError::In { err: err })? {
+                match self
+                    .inbound_nego
+                    .negotiate(nego)
+                    .map_err(|err| FlowsListenError::In { err: err })?
+                {
                     // We're done, the negotiation succeeded.
                     NegotiatorResult::Complete(flow) => {
                         debug!(target: "flows",
@@ -622,9 +648,8 @@ where
                         };
 
                         // Set up a pending negotiation.
-                        if self.pending
-                            .insert(addr.clone(), pending)
-                            .is_some() {
+                        if self.pending.insert(addr.clone(), pending).is_some()
+                        {
                             error!(target: "flows",
                                    "stray pending entry for {}",
                                    addr);
@@ -643,7 +668,8 @@ where
                     PendingEntry::Out { resume, buf } => match self
                         .outbound_nego
                         .complete_negotiate(resume)
-                        .map_err(|err| FlowsListenError::Out { err: err })? {
+                        .map_err(|err| FlowsListenError::Out { err: err })?
+                    {
                         NegotiatorResult::Complete(flow) => {
                             debug!(target: "flows",
                                    "negotiation completed for {}",
@@ -665,20 +691,23 @@ where
                                 buf: buf
                             };
 
-                            if self.pending
-                                .insert(addr.clone(),pending)
-                                .is_some() {
+                            if self
+                                .pending
+                                .insert(addr.clone(), pending)
+                                .is_some()
+                            {
                                 error!(target: "flows",
                                        "hash map should not contain an entry")
                             }
 
                             Ok(None)
                         }
-                    }
+                    },
                     PendingEntry::In { resume, buf } => match self
                         .inbound_nego
                         .complete_negotiate(resume)
-                        .map_err(|err| FlowsListenError::In { err: err })? {
+                        .map_err(|err| FlowsListenError::In { err: err })?
+                    {
                         NegotiatorResult::Complete(flow) => {
                             debug!(target: "flows",
                                    "negotiation completed for {}",
@@ -700,9 +729,11 @@ where
                                 buf: buf
                             };
 
-                            if self.pending
-                                .insert(addr.clone(),pending)
-                                .is_some() {
+                            if self
+                                .pending
+                                .insert(addr.clone(), pending)
+                                .is_some()
+                            {
                                 error!(target: "flows",
                                        "hashmap shouldn't contain an entry")
                             }
@@ -713,7 +744,7 @@ where
                 }
             } else {
                 // This went to an established flow.
-                Ok(Some(ListenResult::Existing { endpoint: addr}))
+                Ok(Some(ListenResult::Existing { endpoint: addr }))
             }
         } else {
             Ok(None)
@@ -729,8 +760,8 @@ where
     ///
     /// # Parameters
     ///
-    /// - `param`: Outbound negotiator parameter, used to create new
-    ///   outgoing negotiations.
+    /// - `param`: Outbound negotiator parameter, used to create new outgoing
+    ///   negotiations.
     ///
     /// - `addr`: Address of the counterparty.
     ///
@@ -739,21 +770,20 @@ where
     /// Two cases, depending on whether negotiations concluded
     /// immediately:
     ///
-    /// - `Some(..)`: Negotiations finished immediately, and a flow
-    ///   was created.
+    /// - `Some(..)`: Negotiations finished immediately, and a flow was created.
     ///
-    /// - `None`: Negotiations are ongoing, and the flow will be
-    ///   reported in a future call to [listen](Flows::listen).
+    /// - `None`: Negotiations are ongoing, and the flow will be reported in a
+    ///   future call to [listen](Flows::listen).
     pub fn flow(
         &mut self,
         param: &OutboundNego::Param,
-        addr: Xfrm::PeerAddr,
+        addr: Xfrm::PeerAddr
     ) -> Result<
         Option<Flow>,
-        FlowsFlowError<OutboundNego::StartError,
-                       OutboundNego::NegotiateError>
+        FlowsFlowError<OutboundNego::StartError, OutboundNego::NegotiateError>
     > {
-        let local_addr = self.local_addr()
+        let local_addr = self
+            .local_addr()
             .map_err(|err| FlowsFlowError::IO { err: err })?;
 
         trace!(target: "flows",
@@ -781,7 +811,7 @@ where
 
                     Ok(buf)
                 }
-            }
+            },
             Entry::Vacant(ent) => {
                 // We need to create a new entry.
                 debug!(target: "flows",
@@ -811,11 +841,15 @@ where
                "starting session negotiations with {} on {}",
                addr, local_addr);
 
-        let nego = self.outbound_nego.start(param, flow)
+        let nego = self
+            .outbound_nego
+            .start(param, flow)
             .map_err(|err| FlowsFlowError::Start { err: err })?;
 
         // Try to negotiate immediately.
-        match self.outbound_nego.negotiate(nego)
+        match self
+            .outbound_nego
+            .negotiate(nego)
             .map_err(|err| FlowsFlowError::Nego { err: err })?
         {
             // We're done, the negotiation succeeded.
@@ -837,9 +871,7 @@ where
                 };
 
                 // Set up a pending negotiation.
-                if self.pending
-                    .insert(addr.clone(), pending)
-                    .is_some() {
+                if self.pending.insert(addr.clone(), pending).is_some() {
                     error!(target: "flows",
                            "stray pending entry for {}",
                            addr);
@@ -856,14 +888,16 @@ where
     Xfrm: DatagramXfrm,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    Sock: Socket + Sender + Receiver {
+    Sock: Socket + Sender + Receiver
+{
     type LocalAddr = Sock::Addr;
     type PeerAddr = Xfrm::PeerAddr;
 
     /// Get the local address for this flow.
     #[inline]
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
-        self.socket.try_borrow()
+        self.socket
+            .try_borrow()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get failed"))?
             .local_addr()
     }
@@ -873,7 +907,6 @@ where
     fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
         Ok(self.addr.clone())
     }
-
 }
 
 impl<Sock, Xfrm> Read for BufferedFlow<Sock, Xfrm>
@@ -889,9 +922,12 @@ where
         &mut self,
         buf: &mut [u8]
     ) -> Result<usize, Error> {
-        match self.inbuf.try_borrow_mut()
+        match self
+            .inbuf
+            .try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "get_mut failed"))?
-            .pop_back() {
+            .pop_back()
+        {
             // There's a buffered message; deliver it.
             Some(msg) => {
                 let len = msg.len();
@@ -927,43 +963,54 @@ where
     ) -> Result<usize, Error> {
         let len = buf.len();
 
-        match self.xfrm.try_borrow_mut()
+        match self
+            .xfrm
+            .try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "get_mut failed"))?
-            .wrap(buf, self.addr.clone()) {
+            .wrap(buf, self.addr.clone())
+        {
             // Copied transformation.
             Ok((Some(buf), addr)) => {
                 trace!(target: "flows",
                        "sending {} byte message to {}",
                        buf.len(), addr);
 
-                let addr = Sock::Addr::try_from(addr)
-                    .map_err(|err| Error::new(ErrorKind::Other,
-                                              err.to_string()))?;
+                let addr = Sock::Addr::try_from(addr).map_err(|err| {
+                    Error::new(ErrorKind::Other, err.to_string())
+                })?;
 
-                self.socket.try_borrow_mut()
-                    .map_err(|_| Error::new(ErrorKind::Other,
-                                            "socket get mut failed"))?
+                self.socket
+                    .try_borrow_mut()
+                    .map_err(|_| {
+                        Error::new(ErrorKind::Other, "socket get mut failed")
+                    })?
                     .send_to(&addr, &buf)
-                    .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
-                        // Would block.  Buffer the message and succeed.
-                        trace!(target: "flows",
+                    .or_else(|err| {
+                        if err.kind() == ErrorKind::WouldBlock {
+                            // Would block.  Buffer the message and succeed.
+                            trace!(target: "flows",
                                "buffering {} byte message to {}",
                                buf.len(), addr);
 
-                        // Try to get the output buffer to push the message.
-                        self.outbuf
-                            .try_borrow_mut()
-                            .map_err(|_| Error::new(ErrorKind::Other,
-                                                    "outbuf get_mut failed"))
-                            .map(|mut outbuf| {
-                                outbuf.push_back((addr, buf));
+                            // Try to get the output buffer to push the message.
+                            self.outbuf
+                                .try_borrow_mut()
+                                .map_err(|_| {
+                                    Error::new(
+                                        ErrorKind::Other,
+                                        "outbuf get_mut failed"
+                                    )
+                                })
+                                .map(|mut outbuf| {
+                                    outbuf.push_back((addr, buf));
 
-                                Ok(len)
-                            })?
-                } else {
-                    // Propagate the error.
-                    Err(err)
-                })
+                                    Ok(len)
+                                })?
+                        } else {
+                            // Propagate the error.
+                            Err(err)
+                        }
+                    })
             }
             // In-place transformation
             Ok((None, addr)) => {
@@ -971,33 +1018,41 @@ where
                        "sending {} byte message to {}",
                        buf.len(), addr);
 
-                let addr = Sock::Addr::try_from(addr)
-                    .map_err(|err| Error::new(ErrorKind::Other,
-                                              err.to_string()))?;
+                let addr = Sock::Addr::try_from(addr).map_err(|err| {
+                    Error::new(ErrorKind::Other, err.to_string())
+                })?;
 
-                self.socket.try_borrow_mut()
-                    .map_err(|_| Error::new(ErrorKind::Other,
-                                            "socket get mut failed"))?
+                self.socket
+                    .try_borrow_mut()
+                    .map_err(|_| {
+                        Error::new(ErrorKind::Other, "socket get mut failed")
+                    })?
                     .send_to(&addr, &buf)
-                    .or_else(|err| if err.kind() == ErrorKind::WouldBlock {
-                        // Would block.  Buffer the message and succeed.
-                        trace!(target: "flows",
+                    .or_else(|err| {
+                        if err.kind() == ErrorKind::WouldBlock {
+                            // Would block.  Buffer the message and succeed.
+                            trace!(target: "flows",
                                "buffering {} byte message to {}",
                                buf.len(), addr);
 
-                        // Try to get the output buffer to push the message.
-                        self.outbuf
-                            .try_borrow_mut()
-                            .map_err(|_| Error::new(ErrorKind::Other,
-                                                    "outbuf get_mut failed"))
-                            .map(|mut outbuf| {
-                                outbuf.push_back((addr, buf.to_vec()));
+                            // Try to get the output buffer to push the message.
+                            self.outbuf
+                                .try_borrow_mut()
+                                .map_err(|_| {
+                                    Error::new(
+                                        ErrorKind::Other,
+                                        "outbuf get_mut failed"
+                                    )
+                                })
+                                .map(|mut outbuf| {
+                                    outbuf.push_back((addr, buf.to_vec()));
 
-                                Ok(len)
-                            })?
-                    } else {
-                        // Propagate the error.
-                        Err(err)
+                                    Ok(len)
+                                })?
+                        } else {
+                            // Propagate the error.
+                            Err(err)
+                        }
                     })
             }
             // Error occurred transforming.
@@ -1007,7 +1062,8 @@ where
 
     #[inline]
     fn flush(&mut self) -> Result<(), Error> {
-        self.socket.try_borrow_mut()
+        self.socket
+            .try_borrow_mut()
             .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
             .flush()
     }
@@ -1018,15 +1074,19 @@ where
     Xfrm: DatagramXfrm,
     Sock::Addr: TryFrom<Xfrm::LocalAddr>,
     <Sock::Addr as TryFrom<Xfrm::LocalAddr>>::Error: Display,
-    Sock: Socket + Sender + Receiver {
+    Sock: Socket + Sender + Receiver
+{
     type Cred = Xfrm::PeerAddr;
     type CredError = Error;
 
     #[inline]
     fn creds(&self) -> Result<Option<Xfrm::PeerAddr>, Error> {
-        if self.socket.try_borrow_mut()
+        if self
+            .socket
+            .try_borrow_mut()
             .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?
-            .allow_session_addr_creds() {
+            .allow_session_addr_creds()
+        {
             Ok(Some(self.peer_addr()?))
         } else {
             Ok(None)
@@ -1050,7 +1110,7 @@ where
             FlowsListenError::In { err } => err.scope(),
             FlowsListenError::Out { err } => err.scope(),
             FlowsListenError::IO { err } => err.scope(),
-            FlowsListenError::GetMut => ErrorScope::Unrecoverable,
+            FlowsListenError::GetMut => ErrorScope::Unrecoverable
         }
     }
 }
@@ -1066,14 +1126,14 @@ where
             FlowsFlowError::Start { err } => err.scope(),
             FlowsFlowError::Nego { err } => err.scope(),
             FlowsFlowError::IO { err } => err.scope(),
-            FlowsFlowError::GetMut |
-            FlowsFlowError::Taken => ErrorScope::Unrecoverable,
+            FlowsFlowError::GetMut | FlowsFlowError::Taken => {
+                ErrorScope::Unrecoverable
+            }
         }
     }
 }
 
-impl<Xfrm, Start, In, Out> Display
-    for FlowsListenError<Xfrm, Start, In, Out>
+impl<Xfrm, Start, In, Out> Display for FlowsListenError<Xfrm, Start, In, Out>
 where
     Xfrm: Display,
     Start: Display,
@@ -1090,8 +1150,9 @@ where
             FlowsListenError::In { err } => err.fmt(f),
             FlowsListenError::Out { err } => err.fmt(f),
             FlowsListenError::IO { err } => write!(f, "{}", err),
-            FlowsListenError::GetMut =>
-                write!(f, "get_mut() failed unexpectedly"),
+            FlowsListenError::GetMut => {
+                write!(f, "get_mut() failed unexpectedly")
+            }
         }
     }
 }
@@ -1109,10 +1170,10 @@ where
             FlowsFlowError::Start { err } => err.fmt(f),
             FlowsFlowError::Nego { err } => err.fmt(f),
             FlowsFlowError::IO { err } => write!(f, "{}", err),
-            FlowsFlowError::GetMut =>
-                write!(f, "get_mut() failed unexpectedly"),
-            FlowsFlowError::Taken =>
-                write!(f, "flow was already taken"),
+            FlowsFlowError::GetMut => {
+                write!(f, "get_mut() failed unexpectedly")
+            }
+            FlowsFlowError::Taken => write!(f, "flow was already taken")
         }
     }
 }
@@ -1123,7 +1184,7 @@ pub fn connect_one<Flow, Sock, InboundNego, OutboundNego, Xfrm>(
     out_param: &OutboundNego::Param,
     in_param: &InboundNego::Param,
     addr: Xfrm::PeerAddr,
-    token: Token,
+    token: Token
 ) -> Result<Flow, Error>
 where
     Flow: Session,
@@ -1132,7 +1193,8 @@ where
     InboundNego: NegotiatorStart<Flow, BufferedFlow<Sock, Xfrm>>,
     Xfrm: DatagramXfrm<LocalAddr = Sock::Addr>,
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
-    flows.flow(out_param, addr)
+    flows
+        .flow(out_param, addr)
         .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?
         .map(Ok)
         .unwrap_or_else(|| {
@@ -1147,7 +1209,7 @@ pub fn accept_one<Flow, Sock, InboundNego, OutboundNego, Xfrm>(
     flows: &mut Flows<Flow, Sock, InboundNego, OutboundNego, Xfrm>,
     poll: &mut Poll,
     param: &InboundNego::Param,
-    token: Token,
+    token: Token
 ) -> Result<(Flow, Xfrm::PeerAddr), Error>
 where
     Flow: Session,
@@ -1178,28 +1240,31 @@ where
                             return Ok((flow, endpoint));
                         }
                         Ok(_) => {}
-                        Err(err) => if let FlowsListenError::IO {
-                            err: ioerr
-                        } = &err {
-                            match ioerr.kind() {
-                                ErrorKind::WouldBlock |
-                                ErrorKind::Interrupted => {
-                                    valid = false
+                        Err(err) => {
+                            if let FlowsListenError::IO { err: ioerr } = &err {
+                                match ioerr.kind() {
+                                    ErrorKind::WouldBlock |
+                                    ErrorKind::Interrupted => valid = false,
+                                    _ => {
+                                        return Err(Error::new(
+                                            ErrorKind::Other,
+                                            err.to_string()
+                                        ))
+                                    }
                                 }
-                                _ => return Err(Error::new(ErrorKind::Other,
-                                                           err.to_string()))
+                            } else {
+                                return Err(Error::new(
+                                    ErrorKind::Other,
+                                    err.to_string()
+                                ));
                             }
-                        } else {
-                            return Err(Error::new(ErrorKind::Other,
-                                              err.to_string()))
                         }
                     }
                 }
 
-                flows.push()
-                    .map_err(|err| Error::new(
-                        ErrorKind::Other, err.to_string()
-                    ))?
+                flows.push().map_err(|err| {
+                    Error::new(ErrorKind::Other, err.to_string())
+                })?
             }
         }
     }
@@ -1210,7 +1275,7 @@ pub fn write_one<W, Flow, Sock, InboundNego, OutboundNego, Xfrm>(
     poll: &mut Poll,
     stream: &mut W,
     bytes: &[u8],
-    token: Token,
+    token: Token
 ) -> Result<(), Error>
 where
     W: Write,
@@ -1299,30 +1364,37 @@ where
                                    "listening");
 
                             match flows.listen(param) {
-                                Ok(Some(ListenResult::Existing { endpoint }))
-                                    if addr == &endpoint => {
-                                        waiting = false;
-                                    },
-                                Ok(_) => {},
-                                Err(err) => if let FlowsListenError::IO {
-                                    err: ioerr
-                                } = &err {
-                                    match ioerr.kind() {
-                                        ErrorKind::WouldBlock |
-                                        ErrorKind::Interrupted => {},
-                                        _ => return Err(
-                                            Error::new(ErrorKind::Other,
-                                                       err.to_string())
-                                            )
+                                Ok(Some(ListenResult::Existing {
+                                    endpoint
+                                })) if addr == &endpoint => {
+                                    waiting = false;
+                                }
+                                Ok(_) => {}
+                                Err(err) => {
+                                    if let FlowsListenError::IO { err: ioerr } =
+                                        &err
+                                    {
+                                        match ioerr.kind() {
+                                            ErrorKind::WouldBlock |
+                                            ErrorKind::Interrupted => {}
+                                            _ => {
+                                                return Err(Error::new(
+                                                    ErrorKind::Other,
+                                                    err.to_string()
+                                                ))
+                                            }
+                                        }
+                                    } else {
+                                        return Err(Error::new(
+                                            ErrorKind::Other,
+                                            err.to_string()
+                                        ));
                                     }
-                                } else {
-                                    return Err(Error::new(ErrorKind::Other,
-                                                          err.to_string()))
                                 }
                             }
                         }
                     }
-                };
+                }
 
                 stream.read(buf)
             }

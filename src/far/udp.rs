@@ -40,10 +40,10 @@ use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::PassthruNegotiator;
-use constellation_common::net::TrivialNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
 use log::warn;
 use mio::event::Source;
@@ -118,9 +118,10 @@ pub struct UDPFarSocket {
 
 /// Base-level transformer for [UDPFarChannel]s.
 pub struct UDPDatagramXfrm<Addr>
-where SocketAddr: TryFrom<Addr>,
-      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
-      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
     addr: PhantomData<Addr>
 }
 
@@ -155,21 +156,23 @@ impl Source for UDPFarSocket {
 }
 
 impl<Addr> Default for UDPDatagramXfrm<Addr>
-where SocketAddr: TryFrom<Addr>,
-      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
-      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send
+{
     #[inline]
     fn default() -> Self {
-        UDPDatagramXfrm {
-            addr: PhantomData
-        }
+        UDPDatagramXfrm { addr: PhantomData }
     }
 }
 
 impl<Addr> DatagramXfrm for UDPDatagramXfrm<Addr>
-where SocketAddr: TryFrom<Addr>,
-      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
-      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send
+{
     type Error = <SocketAddr as TryFrom<Addr>>::Error;
     type LocalAddr = SocketAddr;
     type PeerAddr = SocketAddr;
@@ -213,9 +216,11 @@ where SocketAddr: TryFrom<Addr>,
 }
 
 impl<Addr> DatagramXfrmCreate for UDPDatagramXfrm<Addr>
-where SocketAddr: TryFrom<Addr>,
-      <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
-      Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send
+{
     type Addr = SocketAddr;
     type CreateParam = ();
 
@@ -229,15 +234,15 @@ where SocketAddr: TryFrom<Addr>,
 }
 
 impl FarChannel for UDPFarChannel {
-    type Acquired = SocketAddr;
-    type AcquireState = SocketAddr;
-    type AcquirePending = Infallible;
     type AcquireError = Infallible;
+    type AcquirePending = Infallible;
+    type AcquireState = SocketAddr;
+    type Acquired = SocketAddr;
     type NegotiateError = Infallible;
-    type ShutdownState = ();
-    type ShutdownPending = Infallible;
     type ShutdownError = Infallible;
     type ShutdownNegotiateError = Infallible;
+    type ShutdownPending = Infallible;
+    type ShutdownState = ();
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -258,6 +263,7 @@ impl FarChannel for UDPFarChannel {
     #[inline]
     fn acquire(
         &mut self,
+        _tokens: &mut Vec<Token>,
         _registry: &Registry
     ) -> Result<RetryResult<SocketAddr>, Infallible> {
         Ok(RetryResult::Success(self.bind))
@@ -267,8 +273,10 @@ impl FarChannel for UDPFarChannel {
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    > {
         Ok(NegotiatorResult::Complete(state))
     }
 
@@ -276,8 +284,10 @@ impl FarChannel for UDPFarChannel {
     fn complete_negotiate(
         &self,
         _err: Infallible
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    > {
         panic!("This should never be called!")
     }
 
@@ -292,20 +302,26 @@ impl FarChannel for UDPFarChannel {
     #[inline]
     fn shutdown_negotiate(
         &self,
+        _tokens: &mut Vec<Token>,
         _registry: &Registry,
         _state: Self::ShutdownState
-    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
-                Self::ShutdownNegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    > {
         Ok(NegotiatorResult::Complete(()))
     }
 
     #[inline]
     fn complete_shutdown_negotiate(
         &self,
+        _tokens: &mut Vec<Token>,
         _registry: &Registry,
         _err: Self::ShutdownPending
-    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
-                Self::ShutdownNegotiateError> {
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    > {
         panic!("This should never be called!")
     }
 }
@@ -360,10 +376,12 @@ impl FarChannelCreate for UDPFarChannel {
 }
 
 impl<Xfrm> FarChannelXfrm<Xfrm, Xfrm> for UDPFarChannel
-where SocketAddr: TryFrom<Xfrm::LocalAddr>,
-      <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
-      Xfrm::LocalAddr: From<SocketAddr>,
-      Xfrm: DatagramXfrm {
+where
+    SocketAddr: TryFrom<Xfrm::LocalAddr>,
+    <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<SocketAddr>,
+    Xfrm: DatagramXfrm
+{
     type XfrmError = Infallible;
 
     #[inline]
@@ -377,16 +395,18 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
 }
 
 impl<Xfrm> FarChannelFlows<Xfrm, Xfrm> for UDPFarChannel
-where SocketAddr: TryFrom<Xfrm::LocalAddr>,
-      <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
-      Xfrm::LocalAddr: From<SocketAddr>,
-      Xfrm: DatagramXfrm {
-    type InboundNego = PassthruNegotiator;
-    type OutboundNego = PassthruNegotiator;
-    type ShutdownNego = TrivialNegotiator;
+where
+    SocketAddr: TryFrom<Xfrm::LocalAddr>,
+    <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<SocketAddr>,
+    Xfrm: DatagramXfrm
+{
     type Flow = BufferedFlow<Self::Socket, Xfrm>;
+    type InboundNego = PassthruNegotiator;
     type InboundNegoError = Infallible;
+    type OutboundNego = PassthruNegotiator;
     type OutboundNegoError = Infallible;
+    type ShutdownNego = TrivialNegotiator;
     type ShutdownNegoError = Infallible;
 
     #[inline]
@@ -397,9 +417,7 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
     }
 
     #[inline]
-    fn inbound_nego_param(
-        &self
-    ) -> () {
+    fn inbound_nego_param(&self) -> () {
         ()
     }
 
@@ -418,9 +436,7 @@ where SocketAddr: TryFrom<Xfrm::LocalAddr>,
     }
 
     #[inline]
-    fn shutdown_nego_param(
-        &self
-    ) -> () {
+    fn shutdown_nego_param(&self) -> () {
         ()
     }
 }
@@ -557,11 +573,7 @@ use constellation_common::net::PassthruDatagramXfrm;
 use mio::Poll;
 
 #[cfg(test)]
-use crate::init;
-#[cfg(test)]
 use crate::config::FlowsConfig;
-#[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
 #[cfg(test)]
 use crate::far::flows::accept_one;
 #[cfg(test)]
@@ -570,6 +582,10 @@ use crate::far::flows::connect_one;
 use crate::far::flows::read_one;
 #[cfg(test)]
 use crate::far::flows::write_one;
+#[cfg(test)]
+use crate::init;
+#[cfg(test)]
+use crate::resolve::cache::SharedNSNameCaches;
 
 #[test]
 fn test_send_recv() {
@@ -596,37 +612,53 @@ fn test_send_recv() {
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
-        let mut listener =
-            UDPFarChannel::create(&mut server_nscaches, &mut empty(),
-                                  server_config)
-            .expect("Expected success");
+        let mut listener = UDPFarChannel::create(
+            &mut server_nscaches,
+            &mut empty(),
+            server_config
+        )
+        .expect("Expected success");
         let config = FlowsConfig::default();
-        let param = match listener.acquire(poll.registry())
-            .expect("Expected success") {
+        let param = match listener
+            .acquire(&mut vec![], poll.registry())
+            .expect("Expected success")
+        {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
         };
         let xfrm = PassthruDatagramXfrm::new();
-        let mut flows = listener.flows(config, param, xfrm)
+        let mut flows = listener
+            .flows(config, param, xfrm)
             .expect("Expected success");
         let token = Token(0);
 
-        poll.registry().register(&mut flows, token,
-                                 Interest::READABLE | Interest::WRITABLE)
+        poll.registry()
+            .register(
+                &mut flows,
+                token,
+                Interest::READABLE | Interest::WRITABLE
+            )
             .expect("Expected success");
 
         server_barrier.wait();
 
         let (mut flow, peer_addr) =
             accept_one(&mut flows, &mut poll, &(), token)
-            .expect("Expected success");
+                .expect("Expected success");
 
         server_barrier.wait();
 
         let mut buf = [0; FIRST_BYTES.len()];
-        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
-                              &mut buf, &peer_addr, &(), token)
-            .expect("Expected success");
+        let nbytes = read_one(
+            &mut flows,
+            &mut poll,
+            &mut flow,
+            &mut buf,
+            &peer_addr,
+            &(),
+            token
+        )
+        .expect("Expected success");
 
         write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
             .expect("Expected success");
@@ -642,31 +674,44 @@ fn test_send_recv() {
     let client_barrier = barrier;
     let send = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
-        let mut conn =
-            UDPFarChannel::create(&mut client_nscaches, &mut empty(),
-                                  client_config)
-                .expect("expected success");
+        let mut conn = UDPFarChannel::create(
+            &mut client_nscaches,
+            &mut empty(),
+            client_config
+        )
+        .expect("expected success");
         let config = FlowsConfig::default();
-        let param = match conn.acquire(poll.registry())
-            .expect("Expected success") {
+        let param = match conn
+            .acquire(&mut vec![], poll.registry())
+            .expect("Expected success")
+        {
             RetryResult::Success(val) => val,
             RetryResult::Retry(_) => panic!("should not see retry")
         };
         let xfrm = PassthruDatagramXfrm::new();
-        let mut flows = conn.flows(config, param, xfrm)
-            .expect("Expected success");
+        let mut flows =
+            conn.flows(config, param, xfrm).expect("Expected success");
         let token = Token(0);
 
-        poll.registry().register(&mut flows, token,
-                                 Interest::READABLE | Interest::WRITABLE)
+        poll.registry()
+            .register(
+                &mut flows,
+                token,
+                Interest::READABLE | Interest::WRITABLE
+            )
             .expect("Expected success");
 
         client_barrier.wait();
 
-
-        let mut flow = connect_one(&mut flows, &mut poll, &(), &(),
-                                   server_addr.clone(), token)
-            .expect("Expected success");
+        let mut flow = connect_one(
+            &mut flows,
+            &mut poll,
+            &(),
+            &(),
+            server_addr.clone(),
+            token
+        )
+        .expect("Expected success");
 
         write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
             .expect("Expected success");
@@ -676,9 +721,16 @@ fn test_send_recv() {
 
         let mut buf = [0; SECOND_BYTES.len()];
 
-        let nbytes = read_one(&mut flows, &mut poll, &mut flow,
-                              &mut buf, &server_addr, &(), token)
-            .expect("Expected success");
+        let nbytes = read_one(
+            &mut flows,
+            &mut poll,
+            &mut flow,
+            &mut buf,
+            &server_addr,
+            &(),
+            token
+        )
+        .expect("Expected success");
 
         assert_eq!(SECOND_BYTES.len(), nbytes);
         assert_eq!(SECOND_BYTES, buf);

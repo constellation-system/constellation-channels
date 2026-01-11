@@ -18,14 +18,14 @@
 
 use std::net::Shutdown;
 
-use constellation_channels::near::NearChannel;
-use constellation_channels::near::NearChannelCreate;
 use constellation_channels::near::accept_one;
-use constellation_channels::near::read_one;
-use constellation_channels::near::write_one;
 use constellation_channels::near::negotiate_one;
+use constellation_channels::near::read_one;
 use constellation_channels::near::tcp::TCPNearAcceptor;
 use constellation_channels::near::tcp::TCPResolvingNearConnector;
+use constellation_channels::near::write_one;
+use constellation_channels::near::NearChannel;
+use constellation_channels::near::NearChannelCreate;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::retry::RetryResult;
 use log::info;
@@ -40,7 +40,6 @@ const CLIENT_CONFIG: &'static str =
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
-
 fn server() {
     let accept_config = serde_yaml::from_str(SERVER_CONFIG).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
@@ -53,7 +52,8 @@ fn server() {
     let mut acceptor = TCPNearAcceptor::create(&mut nscaches, accept_config)
         .expect("Expected success");
 
-    poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+    poll.registry()
+        .register(&mut acceptor, listen, Interest::READABLE)
         .expect("Expected success");
 
     info!("waiting for incoming");
@@ -63,9 +63,9 @@ fn server() {
 
     info!("got connection, negotiating");
 
-    let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                        start, session)
-        .expect("Expected success");
+    let (mut stream, _) =
+        negotiate_one(&mut acceptor, &mut poll, start, session)
+            .expect("Expected success");
 
     info!("negotiated, waiting on message");
 
@@ -91,22 +91,23 @@ fn client() {
     let mut nscaches = SharedNSNameCaches::new();
     let session = Token(0);
     let mut poll = Poll::new().expect("Expected success");
-    let mut conn = TCPResolvingNearConnector
-        ::create(&mut nscaches, connect_config)
-        .expect("expected success");
+    let mut conn =
+        TCPResolvingNearConnector::create(&mut nscaches, connect_config)
+            .expect("expected success");
 
     info!("created channel");
 
-    let start = match conn.start(poll.registry(), session)
-        .expect("expected success") {
-            RetryResult::Success(start) => start,
-            RetryResult::Retry(_) => panic!("shouldn't see retry")
-        };
+    let start = match conn
+        .start(poll.registry(), session)
+        .expect("expected success")
+    {
+        RetryResult::Success(start) => start,
+        RetryResult::Retry(_) => panic!("shouldn't see retry")
+    };
 
     info!("connected, negotiating");
 
-    let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                        start, session)
+    let (mut stream, _) = negotiate_one(&mut conn, &mut poll, start, session)
         .expect("Expected success");
 
     info!("negotiated, sending {:?}", FIRST_BYTES);

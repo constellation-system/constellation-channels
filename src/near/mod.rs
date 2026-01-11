@@ -213,7 +213,12 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     /// Type of connections.
     ///
     /// See [take_connection](NearChannel::connection).
-    type Conn: CredentialsMut + Read + Write + Debug + Sized + Source
+    type Conn: CredentialsMut
+        + Read
+        + Write
+        + Debug
+        + Sized
+        + Source
         + Session<PeerAddr = Self::Endpoint>;
     /// Type of connection endpoints.
     ///
@@ -239,13 +244,14 @@ pub trait NearChannel: Negotiator<(Self::Conn, Self::Endpoint)> {
     ) -> Result<RetryResult<Self::State>, Self::StartError>;
 
     /// Get an instance of the shutdown negotiator.
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego;
+    fn shutdown_nego(&self) -> Self::ShutdownNego;
 
     fn shutdown_param(
         &self
-    ) -> <Self::ShutdownNego as NegotiatorStart<Self::ShutdownValue, Self::Conn>>::Param;
+    ) -> <Self::ShutdownNego as NegotiatorStart<
+        Self::ShutdownValue,
+        Self::Conn
+    >>::Param;
 
     fn cleanup(
         &mut self,
@@ -311,8 +317,7 @@ pub trait NearChannelCreateWithEndpoint: NearChannel + Sized {
     /// * `ctx`: Context to use to obtain name caches.
     /// * `config`: Configuration object to use to create the channel.
     /// * `endpoint`: The endpoint to which to connect.
-    /// * `verify_endpoint`: Optional endpoint to use to verify TLS
-    ///   connections.
+    /// * `verify_endpoint`: Optional endpoint to use to verify TLS connections.
     fn create_with_endpoint<Ctx>(
         ctx: &mut Ctx,
         config: Self::Config,
@@ -389,8 +394,10 @@ impl ScopedError for NearConnectError {
 }
 
 impl<Conn, Auth> ScopedError for NearSessionError<Conn, Auth>
-where Conn: ScopedError,
-      Auth: ScopedError {
+where
+    Conn: ScopedError,
+    Auth: ScopedError
+{
     fn scope(&self) -> ErrorScope {
         match self {
             NearSessionError::Conn { err } => err.scope(),
@@ -419,8 +426,10 @@ impl Display for NearConnectError {
 }
 
 impl<Conn, Auth> Display for NearSessionError<Conn, Auth>
-where Conn: Display,
-      Auth: Display {
+where
+    Conn: Display,
+    Auth: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter
@@ -447,7 +456,8 @@ pub fn accept_one<C>(
     listen: Token,
     session: Token
 ) -> Result<C::State, C::StartError>
-where C: NearChannel {
+where
+    C: NearChannel {
     let mut events = Events::with_capacity(2);
     let mut retry = None;
 
@@ -488,17 +498,19 @@ where C: NearChannel {
 
                         retry = Some(delay)
                     }
-                    Err(err) => if err.scope() != ErrorScope::Retryable {
-                        return Err(err)
+                    Err(err) => {
+                        if err.scope() != ErrorScope::Retryable {
+                            return Err(err);
+                        }
                     }
                 }
             }
         }
 
         if let Some(start) = out {
-            return Ok(start)
+            return Ok(start);
         }
-    };
+    }
 }
 
 /// Read into a buffer from a [Read] instance.
@@ -514,7 +526,8 @@ pub fn read_one<R>(
     session: Token,
     buf: &mut [u8]
 ) -> Result<(), Error>
-where R: Read {
+where
+    R: Read {
     let mut events = Events::with_capacity(2);
 
     trace!(target: "read-one",
@@ -543,9 +556,7 @@ where R: Read {
                                "reading bytes");
 
                         match stream.read_exact(buf) {
-                            Ok(()) => {
-                                return Ok(())
-                            }
+                            Ok(()) => return Ok(()),
                             Err(err) => match err.kind() {
                                 ErrorKind::WouldBlock |
                                 ErrorKind::Interrupted => {
@@ -557,7 +568,7 @@ where R: Read {
                         }
                     }
                 }
-            }
+            },
             _ => Err(err)
         }
     }
@@ -576,7 +587,8 @@ pub fn write_one<W>(
     session: Token,
     bytes: &[u8]
 ) -> Result<(), Error>
-where W: Write {
+where
+    W: Write {
     let mut events = Events::with_capacity(2);
 
     trace!(target: "write-one",
@@ -590,8 +602,7 @@ where W: Write {
             Ok(())
         }
         Err(err) => match err.kind() {
-            ErrorKind::WouldBlock |
-            ErrorKind::Interrupted => loop {
+            ErrorKind::WouldBlock | ErrorKind::Interrupted => loop {
                 poll.poll(&mut events, None).expect("Expected success");
 
                 for event in events.iter() {
@@ -603,9 +614,7 @@ where W: Write {
                                "sending bytes");
 
                         match stream.write_all(bytes) {
-                            Ok(()) => {
-                                return Ok(())
-                            }
+                            Ok(()) => return Ok(()),
                             Err(err) => match err.kind() {
                                 ErrorKind::WouldBlock |
                                 ErrorKind::Interrupted => {
@@ -617,7 +626,7 @@ where W: Write {
                         }
                     }
                 }
-            }
+            },
             _ => Err(err)
         }
     }
@@ -636,7 +645,8 @@ pub fn negotiate_one<C, R>(
     state: C::State,
     session: Token
 ) -> Result<R, C::NegotiateError>
-where C: Negotiator<R> {
+where
+    C: Negotiator<R> {
     let mut events = Events::with_capacity(2);
     let mut waiting = true;
 
@@ -668,7 +678,7 @@ where C: Negotiator<R> {
                    "negotiation is complete");
 
             Ok(out)
-        },
+        }
         NegotiatorResult::Pending(mut pending) => loop {
             trace!(target: "negotiate-one",
                    "polling");
@@ -691,11 +701,9 @@ where C: Negotiator<R> {
                             trace!(target: "negotiate-one",
                                    "negotiation is complete");
 
-                            return Ok(out)
+                            return Ok(out);
                         }
-                        NegotiatorResult::Pending(res) => {
-                            pending = res
-                        }
+                        NegotiatorResult::Pending(res) => pending = res
                     }
                 }
             }

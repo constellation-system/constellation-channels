@@ -269,7 +269,7 @@ pub struct TLSNearConnector<Conn, TLS> {
 #[derive(Debug)]
 pub enum TLSNegotiateError<Inner, Endpoint, Conn> {
     Inner {
-        err: Inner,
+        err: Inner
     },
     TLS {
         endpoint: Endpoint,
@@ -284,7 +284,7 @@ pub enum TLSNegotiateError<Inner, Endpoint, Conn> {
 #[derive(Debug)]
 pub enum TLSNegotiatePending<Inner, Endpoint, Conn> {
     Inner {
-        pending: Inner,
+        pending: Inner
     },
     TLS {
         endpoint: Endpoint,
@@ -294,7 +294,9 @@ pub enum TLSNegotiatePending<Inner, Endpoint, Conn> {
 
 impl<Inner, Endpoint, Conn> ScopedError
     for TLSNegotiateError<Inner, Endpoint, Conn>
-where Inner: ScopedError {
+where
+    Inner: ScopedError
+{
     fn scope(&self) -> ErrorScope {
         match self {
             TLSNegotiateError::Inner { err } => err.scope(),
@@ -307,7 +309,9 @@ where Inner: ScopedError {
 
 impl<Inner, Endpoint, Conn> ScopedError
     for Box<TLSNegotiateError<Inner, Endpoint, Conn>>
-where Inner: ScopedError {
+where
+    Inner: ScopedError
+{
     fn scope(&self) -> ErrorScope {
         match self.as_ref() {
             TLSNegotiateError::Inner { err } => err.scope(),
@@ -328,8 +332,10 @@ impl ScopedError for TLSCreateError {
 }
 
 impl<Stream, Endpoint> From<TLSConn<Stream, Endpoint>> for SslStream<Stream>
-where Stream: Source + Session,
-      Endpoint: Display {
+where
+    Stream: Source + Session,
+    Endpoint: Display
+{
     #[inline]
     fn from(val: TLSConn<Stream, Endpoint>) -> SslStream<Stream> {
         val.ssl
@@ -340,26 +346,23 @@ impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
     for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
-    A: NearChannel + Source,
+    A: NearChannel + Source
 {
+    type NegotiateError =
+        TLSNegotiateError<A::NegotiateError, A::Endpoint, A::Conn>;
+    type Pending = TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>;
     type State = A::State;
-    type Pending = TLSNegotiatePending<
-        A::Pending,
-        A::Endpoint,
-        A::Conn
-    >;
-    type NegotiateError = TLSNegotiateError<
-        A::NegotiateError,
-        A::Endpoint,
-        A::Conn
-    >;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
-                                 Self::Pending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<
+            (TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
         self.inner
             .negotiate(state)
             .map_err(|err| TLSNegotiateError::Inner { err: err })?
@@ -374,27 +377,26 @@ where
                             peer: endpoint.clone()
                         };
 
-                        Ok(NegotiatorResult::Complete(
-                            (conn, endpoint)
-                        ))
+                        Ok(NegotiatorResult::Complete((conn, endpoint)))
                     }
                     Err(err) => match err {
-                        HandshakeError::SetupFailure(stack) =>
-                            Err(TLSNegotiateError::SetupError {
-                                err: stack
-                            }),
-                        HandshakeError::Failure(err) =>
+                        HandshakeError::SetupFailure(stack) => {
+                            Err(TLSNegotiateError::SetupError { err: stack })
+                        }
+                        HandshakeError::Failure(err) => {
                             Err(TLSNegotiateError::TLS {
                                 endpoint: endpoint.clone(),
                                 err: err
-                            }),
-                        HandshakeError::WouldBlock(pending) =>
+                            })
+                        }
+                        HandshakeError::WouldBlock(pending) => {
                             Ok(NegotiatorResult::Pending(
                                 TLSNegotiatePending::TLS {
                                     endpoint: endpoint.clone(),
                                     pending: pending
                                 }
-                            )),
+                            ))
+                        }
                     }
                 }
             })
@@ -404,9 +406,13 @@ where
     fn complete_negotiate(
         &self,
         pending: TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>
-    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
-                                 Self::Pending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<
+            (TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
         match pending {
             TLSNegotiatePending::Inner { pending } => self
                 .inner
@@ -423,59 +429,58 @@ where
                                 peer: endpoint.clone()
                             };
 
-                            Ok(NegotiatorResult::Complete(
-                                (conn, endpoint)
-                            ))
+                            Ok(NegotiatorResult::Complete((conn, endpoint)))
                         }
                         Err(err) => match err {
-                            HandshakeError::SetupFailure(stack) =>
+                            HandshakeError::SetupFailure(stack) => {
                                 Err(TLSNegotiateError::SetupError {
                                     err: stack
-                                }),
-                            HandshakeError::Failure(err) =>
+                                })
+                            }
+                            HandshakeError::Failure(err) => {
                                 Err(TLSNegotiateError::TLS {
                                     endpoint: endpoint.clone(),
                                     err: err
-                                }),
-                            HandshakeError::WouldBlock(pending) =>
+                                })
+                            }
+                            HandshakeError::WouldBlock(pending) => {
                                 Ok(NegotiatorResult::Pending(
                                     TLSNegotiatePending::TLS {
                                         endpoint: endpoint.clone(),
                                         pending: pending
                                     }
-                                )),
+                                ))
+                            }
                         }
                     }
                 }),
             TLSNegotiatePending::TLS { endpoint, pending } => match pending
-                .handshake() {
+                .handshake()
+            {
                 Ok(stream) => {
                     let conn = TLSConn {
                         ssl: stream,
                         peer: endpoint.clone()
                     };
 
-                    Ok(NegotiatorResult::Complete(
-                        (conn, endpoint)
-                    ))
+                    Ok(NegotiatorResult::Complete((conn, endpoint)))
                 }
                 Err(err) => match err {
-                    HandshakeError::SetupFailure(stack) =>
-                        Err(TLSNegotiateError::SetupError {
-                            err: stack
-                        }),
-                    HandshakeError::Failure(err) =>
+                    HandshakeError::SetupFailure(stack) => {
+                        Err(TLSNegotiateError::SetupError { err: stack })
+                    }
+                    HandshakeError::Failure(err) => {
                         Err(TLSNegotiateError::TLS {
                             endpoint: endpoint.clone(),
                             err: err
-                        }),
-                    HandshakeError::WouldBlock(pending) =>
-                        Ok(NegotiatorResult::Pending(
-                            TLSNegotiatePending::TLS {
-                                endpoint: endpoint.clone(),
-                                pending: pending
-                            }
-                        )),
+                        })
+                    }
+                    HandshakeError::WouldBlock(pending) => Ok(
+                        NegotiatorResult::Pending(TLSNegotiatePending::TLS {
+                            endpoint: endpoint.clone(),
+                            pending: pending
+                        })
+                    )
                 }
             }
         }
@@ -488,10 +493,10 @@ where
     A: NearChannel + Source,
     A::Conn: Credentials
 {
-    type Endpoint = A::Endpoint;
     type Conn = TLSConn<A::Conn, A::Endpoint>;
-    type ShutdownNego = TLSShutdownNegotiator<A::Conn, A::ShutdownNego,
-                                              A::ShutdownValue>;
+    type Endpoint = A::Endpoint;
+    type ShutdownNego =
+        TLSShutdownNegotiator<A::Conn, A::ShutdownNego, A::ShutdownValue>;
     type ShutdownValue = SSLStream<A::Conn>;
     type StartError = A::StartError;
 
@@ -505,36 +510,33 @@ where
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         let inner = self.inner.shutdown_nego();
 
-        TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
-                                   self.shutdown_timeout)
+        TLSShutdownNegotiator::new(
+            inner,
+            self.shutdown_retry.clone(),
+            self.shutdown_timeout
+        )
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
     fn cleanup(
         &mut self,
         registry: &Registry,
-        err: TLSNegotiateError<
-            A::NegotiateError,
-            A::Endpoint,
-            A::Conn
-        >
+        err: TLSNegotiateError<A::NegotiateError, A::Endpoint, A::Conn>
     ) -> Result<(), Error> {
         match err {
-            TLSNegotiateError::Inner { err } =>
-                self.inner.cleanup(registry, err),
-            TLSNegotiateError::TLS { mut err, .. } =>
-                registry.deregister(err.get_mut()),
+            TLSNegotiateError::Inner { err } => {
+                self.inner.cleanup(registry, err)
+            }
+            TLSNegotiateError::TLS { mut err, .. } => {
+                registry.deregister(err.get_mut())
+            }
             // XXX Figure out if we need to deregister for SetupFailures.
             TLSNegotiateError::SetupError { .. } |
             TLSNegotiateError::BadSplit => Ok(())
@@ -598,7 +600,7 @@ where
 impl<A, TLS> Source for TLSNearAcceptor<A, TLS>
 where
     TLS: TLSLoadServer,
-    A: NearChannel + Source,
+    A: NearChannel + Source
 {
     #[inline]
     fn register(
@@ -659,7 +661,7 @@ where
             inner: inner,
             acceptor: acceptor,
             shutdown_retry: shutdown_retry,
-            shutdown_timeout: shutdown_timeout,
+            shutdown_timeout: shutdown_timeout
         })
     }
 
@@ -673,26 +675,23 @@ impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
     for TLSNearConnector<A, TLS>
 where
     TLS: TLSLoadClient,
-    A: NearChannel,
+    A: NearChannel
 {
+    type NegotiateError =
+        TLSNegotiateError<A::NegotiateError, A::Endpoint, A::Conn>;
+    type Pending = TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>;
     type State = A::State;
-    type Pending = TLSNegotiatePending<
-        A::Pending,
-        A::Endpoint,
-        A::Conn
-    >;
-    type NegotiateError = TLSNegotiateError<
-        A::NegotiateError,
-        A::Endpoint,
-        A::Conn
-    >;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
-                                 Self::Pending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<
+            (TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
         self.inner
             .negotiate(state)
             .map_err(|err| TLSNegotiateError::Inner { err: err })?
@@ -707,27 +706,26 @@ where
                             peer: endpoint.clone()
                         };
 
-                        Ok(NegotiatorResult::Complete(
-                            (conn, endpoint)
-                        ))
+                        Ok(NegotiatorResult::Complete((conn, endpoint)))
                     }
                     Err(err) => match err {
-                        HandshakeError::SetupFailure(stack) =>
-                            Err(TLSNegotiateError::SetupError {
-                                err: stack
-                            }),
-                        HandshakeError::Failure(err) =>
+                        HandshakeError::SetupFailure(stack) => {
+                            Err(TLSNegotiateError::SetupError { err: stack })
+                        }
+                        HandshakeError::Failure(err) => {
                             Err(TLSNegotiateError::TLS {
                                 endpoint: endpoint.clone(),
                                 err: err
-                            }),
-                        HandshakeError::WouldBlock(pending) =>
+                            })
+                        }
+                        HandshakeError::WouldBlock(pending) => {
                             Ok(NegotiatorResult::Pending(
                                 TLSNegotiatePending::TLS {
                                     endpoint: endpoint.clone(),
                                     pending: pending
                                 }
-                            )),
+                            ))
+                        }
                     }
                 }
             })
@@ -737,9 +735,13 @@ where
     fn complete_negotiate(
         &self,
         pending: TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>
-    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
-                                 Self::Pending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<
+            (TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
         match pending {
             TLSNegotiatePending::Inner { pending } => self
                 .inner
@@ -756,59 +758,58 @@ where
                                 peer: endpoint.clone()
                             };
 
-                            Ok(NegotiatorResult::Complete(
-                                (conn, endpoint)
-                            ))
+                            Ok(NegotiatorResult::Complete((conn, endpoint)))
                         }
                         Err(err) => match err {
-                            HandshakeError::SetupFailure(stack) =>
+                            HandshakeError::SetupFailure(stack) => {
                                 Err(TLSNegotiateError::SetupError {
                                     err: stack
-                                }),
-                            HandshakeError::Failure(err) =>
+                                })
+                            }
+                            HandshakeError::Failure(err) => {
                                 Err(TLSNegotiateError::TLS {
                                     endpoint: endpoint.clone(),
                                     err: err
-                                }),
-                            HandshakeError::WouldBlock(pending) =>
+                                })
+                            }
+                            HandshakeError::WouldBlock(pending) => {
                                 Ok(NegotiatorResult::Pending(
                                     TLSNegotiatePending::TLS {
                                         endpoint: endpoint.clone(),
                                         pending: pending
                                     }
-                                )),
+                                ))
+                            }
                         }
                     }
                 }),
             TLSNegotiatePending::TLS { endpoint, pending } => match pending
-                .handshake() {
+                .handshake()
+            {
                 Ok(stream) => {
                     let conn = TLSConn {
                         ssl: stream,
                         peer: endpoint.clone()
                     };
 
-                    Ok(NegotiatorResult::Complete(
-                        (conn, endpoint)
-                    ))
+                    Ok(NegotiatorResult::Complete((conn, endpoint)))
                 }
                 Err(err) => match err {
-                    HandshakeError::SetupFailure(stack) =>
-                        Err(TLSNegotiateError::SetupError {
-                            err: stack
-                        }),
-                    HandshakeError::Failure(err) =>
+                    HandshakeError::SetupFailure(stack) => {
+                        Err(TLSNegotiateError::SetupError { err: stack })
+                    }
+                    HandshakeError::Failure(err) => {
                         Err(TLSNegotiateError::TLS {
                             endpoint: endpoint.clone(),
                             err: err
-                        }),
-                    HandshakeError::WouldBlock(pending) =>
-                        Ok(NegotiatorResult::Pending(
-                            TLSNegotiatePending::TLS {
-                                endpoint: endpoint.clone(),
-                                pending: pending
-                            }
-                        )),
+                        })
+                    }
+                    HandshakeError::WouldBlock(pending) => Ok(
+                        NegotiatorResult::Pending(TLSNegotiatePending::TLS {
+                            endpoint: endpoint.clone(),
+                            pending: pending
+                        })
+                    )
                 }
             }
         }
@@ -821,11 +822,13 @@ where
     Conn::Conn: Credentials,
     TLS: TLSLoadClient
 {
-    type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
-    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn,
-                                              Conn::ShutdownNego,
-                                              Conn::ShutdownValue>;
+    type Endpoint = Conn::Endpoint;
+    type ShutdownNego = TLSShutdownNegotiator<
+        Conn::Conn,
+        Conn::ShutdownNego,
+        Conn::ShutdownValue
+    >;
     type ShutdownValue = SSLStream<Conn::Conn>;
     type StartError = Conn::StartError;
 
@@ -839,19 +842,18 @@ where
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         let inner = self.inner.shutdown_nego();
 
-        TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
-                                   self.shutdown_timeout)
+        TLSShutdownNegotiator::new(
+            inner,
+            self.shutdown_retry.clone(),
+            self.shutdown_timeout
+        )
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -865,10 +867,12 @@ where
         >
     ) -> Result<(), Error> {
         match err {
-            TLSNegotiateError::Inner { err } =>
-                self.inner.cleanup(registry, err),
-            TLSNegotiateError::TLS { mut err, .. } =>
-                registry.deregister(err.get_mut()),
+            TLSNegotiateError::Inner { err } => {
+                self.inner.cleanup(registry, err)
+            }
+            TLSNegotiateError::TLS { mut err, .. } => {
+                registry.deregister(err.get_mut())
+            }
             // XXX Figure out if we need to deregister for SetupFailures.
             TLSNegotiateError::SetupError { .. } |
             TLSNegotiateError::BadSplit => Ok(())
@@ -880,7 +884,7 @@ impl<Conn, TLS> NearChannelCreate for TLSNearConnector<Conn, TLS>
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreate + NearConnector,
-    Conn::Conn: Credentials,
+    Conn::Conn: Credentials
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
@@ -902,12 +906,11 @@ where
                 })
             }
         }?;
-        let connector = tls.load_client(None, verify_endpoint, false)
-            .map_err(|err| {
-                TLSSessionCreateError::Session {
+        let connector =
+            tls.load_client(None, verify_endpoint, false)
+                .map_err(|err| TLSSessionCreateError::Session {
                     error: TLSCreateError::TLS { error: err }
-                }
-            })?;
+                })?;
         let domain = match verify_endpoint {
             IPEndpointAddr::Name(name) => match name.find('.') {
                 Some(idx) => {
@@ -916,7 +919,7 @@ where
                     String::from(domain)
                 }
                 None => String::new()
-            }
+            },
             // XXX This should probably produce an error.
             IPEndpointAddr::Addr(_) => String::new()
         };
@@ -943,23 +946,22 @@ impl<Conn, TLS> NearChannelCreateWithEndpoint for TLSNearConnector<Conn, TLS>
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreateWithEndpoint + NearConnector,
-    Conn::Conn: Credentials,
+    Conn::Conn: Credentials
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
+    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
     type EndpointConfig = Conn::EndpointConfig;
     type Param = TLSParam<Conn::Param>;
-    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
         caches: &mut Ctx,
         config: TLSChannelConfig<TLS, Conn::Config>,
         endpoint: Conn::EndpointConfig,
-        param: Self::Param,
+        param: Self::Param
     ) -> Result<TLSNearConnector<Conn, TLS>, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx
-    {
+        Ctx: NSNameCachesCtx {
         let (tls, config, shutdown_retry, shutdown_timeout) = config.take();
         let (verify_endpoint, inner) = param.take();
         let verify_endpoint = match verify_endpoint {
@@ -971,11 +973,10 @@ where
                 })
             }
         }?;
-        let connector = tls.load_client(None, &verify_endpoint, false)
-            .map_err(|err| {
-                TLSSessionCreateError::Session {
-                    error: TLSCreateError::TLS { error: err }
-                }
+        let connector = tls
+            .load_client(None, &verify_endpoint, false)
+            .map_err(|err| TLSSessionCreateError::Session {
+                error: TLSCreateError::TLS { error: err }
             })?;
         let domain = match verify_endpoint {
             IPEndpointAddr::Name(name) => match name.find('.') {
@@ -985,7 +986,7 @@ where
                     String::from(domain)
                 }
                 None => String::new()
-            }
+            },
             // XXX This should probably produce an error.
             IPEndpointAddr::Addr(_) => String::new()
         };
@@ -1010,7 +1011,8 @@ where
     TLS: TLSLoadClient
 {
     /// Type of endpoint references.
-    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    type EndpointRef<'a>
+        = Conn::EndpointRef<'a>
     where
         Self: 'a;
 
@@ -1029,27 +1031,24 @@ impl<A, TLS> Negotiator<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint)>
     for Box<TLSNearConnector<A, TLS>>
 where
     TLS: TLSLoadClient,
-    A: NearChannel,
+    A: NearChannel
 {
+    type NegotiateError =
+        TLSNegotiateError<A::NegotiateError, A::Endpoint, A::Conn>;
+    type Pending = TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>;
     type State = A::State;
-    type Pending = TLSNegotiatePending<
-        A::Pending,
-        A::Endpoint,
-        A::Conn
-    >;
-    type NegotiateError = TLSNegotiateError<
-        A::NegotiateError,
-        A::Endpoint,
-        A::Conn
-    >;
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
-                                 Self::Pending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<
+            (TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
         self.as_ref().negotiate(state)
     }
 
@@ -1057,9 +1056,13 @@ where
     fn complete_negotiate(
         &self,
         pending: TLSNegotiatePending<A::Pending, A::Endpoint, A::Conn>
-    ) -> Result<NegotiatorResult<(TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
-                                 Self::Pending>,
-                Self::NegotiateError> {
+    ) -> Result<
+        NegotiatorResult<
+            (TLSConn<A::Conn, A::Endpoint>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
         self.as_ref().complete_negotiate(pending)
     }
 }
@@ -1070,11 +1073,13 @@ where
     Conn::Conn: Credentials,
     TLS: TLSLoadClient
 {
-    type Endpoint = Conn::Endpoint;
     type Conn = TLSConn<Conn::Conn, Conn::Endpoint>;
-    type ShutdownNego = TLSShutdownNegotiator<Conn::Conn,
-                                              Conn::ShutdownNego,
-                                              Conn::ShutdownValue>;
+    type Endpoint = Conn::Endpoint;
+    type ShutdownNego = TLSShutdownNegotiator<
+        Conn::Conn,
+        Conn::ShutdownNego,
+        Conn::ShutdownValue
+    >;
     type ShutdownValue = SSLStream<Conn::Conn>;
     type StartError = Conn::StartError;
 
@@ -1088,19 +1093,18 @@ where
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         let inner = self.inner.shutdown_nego();
 
-        TLSShutdownNegotiator::new(inner, self.shutdown_retry.clone(),
-                                   self.shutdown_timeout)
+        TLSShutdownNegotiator::new(
+            inner,
+            self.shutdown_retry.clone(),
+            self.shutdown_timeout
+        )
     }
 
     #[inline]
-    fn shutdown_param(
-        &self
-    ) -> () {
+    fn shutdown_param(&self) -> () {
         ()
     }
 
@@ -1121,7 +1125,7 @@ impl<Conn, TLS> NearChannelCreate for Box<TLSNearConnector<Conn, TLS>>
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreate + NearConnector,
-    Conn::Conn: Credentials,
+    Conn::Conn: Credentials
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
     type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
@@ -1147,12 +1151,12 @@ impl<Conn, TLS> NearChannelCreateWithEndpoint
 where
     TLS: TLSLoadClient,
     Conn: NearChannelCreateWithEndpoint + NearConnector,
-    Conn::Conn: Credentials,
+    Conn::Conn: Credentials
 {
     type Config = TLSChannelConfig<TLS, Conn::Config>;
+    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
     type EndpointConfig = Conn::EndpointConfig;
     type Param = TLSParam<Conn::Param>;
-    type CreateError = TLSSessionCreateError<TLSCreateError, Conn::CreateError>;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
@@ -1163,8 +1167,9 @@ where
     ) -> Result<Box<TLSNearConnector<Conn, TLS>>, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        Ok(Box::new(TLSNearConnector::create_with_endpoint(caches, config,
-                                                           endpoint, param)?))
+        Ok(Box::new(TLSNearConnector::create_with_endpoint(
+            caches, config, endpoint, param
+        )?))
     }
 }
 
@@ -1175,7 +1180,8 @@ where
     TLS: TLSLoadClient
 {
     /// Type of endpoint references.
-    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    type EndpointRef<'a>
+        = Conn::EndpointRef<'a>
     where
         Self: 'a;
 
@@ -1331,7 +1337,9 @@ impl Display for TLSCreateError {
 }
 
 impl<Inner, Endpoint, TLS> Display for TLSNegotiateError<Inner, Endpoint, TLS>
-where Inner: Display {
+where
+    Inner: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter
@@ -1339,10 +1347,10 @@ where Inner: Display {
         match self {
             TLSNegotiateError::Inner { err } => err.fmt(f),
             TLSNegotiateError::TLS { err, .. } => write!(f, "{}", err.error()),
-            TLSNegotiateError::SetupError { err, .. } =>
-                write!(f, "{}", err),
-            TLSNegotiateError::BadSplit =>
+            TLSNegotiateError::SetupError { err, .. } => write!(f, "{}", err),
+            TLSNegotiateError::BadSplit => {
                 write!(f, "invalid result from split()")
+            }
         }
     }
 }
@@ -1462,11 +1470,11 @@ use mio::Poll;
 #[cfg(test)]
 use crate::near::accept_one;
 #[cfg(test)]
+use crate::near::negotiate_one;
+#[cfg(test)]
 use crate::near::read_one;
 #[cfg(test)]
 use crate::near::write_one;
-#[cfg(test)]
-use crate::near::negotiate_one;
 
 #[test]
 fn test_negotiate() {
@@ -1493,7 +1501,8 @@ fn test_negotiate() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
@@ -1514,8 +1523,10 @@ fn test_negotiate() {
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
@@ -1552,15 +1563,16 @@ fn test_send() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -1581,25 +1593,25 @@ fn test_send() {
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");
-
     });
 
     listen.join().unwrap();
     send.join().unwrap();
 }
-
 
 #[test]
 fn test_recv() {
@@ -1622,19 +1634,20 @@ fn test_recv() {
         let mut poll = Poll::new().expect("Expected success");
         let mut acceptor: TLSNearAcceptor<UnixNearAcceptor, TLSServerConfig> =
             TLSNearAcceptor::create(&mut server_nscaches, server_conf)
-            .expect("Expected success");
+                .expect("Expected success");
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");
@@ -1651,15 +1664,17 @@ fn test_recv() {
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -1698,15 +1713,16 @@ fn test_send_recv() {
 
         server_barrier.wait();
 
-        poll.registry().register(&mut acceptor, listen, Interest::READABLE)
+        poll.registry()
+            .register(&mut acceptor, listen, Interest::READABLE)
             .expect("Expected success");
 
         let start = accept_one(&mut acceptor, &mut poll, listen, session)
             .expect("Expected success");
 
-        let (mut stream, _) = negotiate_one(&mut acceptor, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut acceptor, &mut poll, start, session)
+                .expect("Expected success");
 
         let mut buf = [0; FIRST_BYTES.len()];
 
@@ -1730,15 +1746,17 @@ fn test_send_recv() {
 
         client_barrier.wait();
 
-        let start = match conn.start(poll.registry(), session)
-            .expect("expected success") {
+        let start = match conn
+            .start(poll.registry(), session)
+            .expect("expected success")
+        {
             RetryResult::Success(start) => start,
             RetryResult::Retry(_) => panic!("shouldn't see retry")
         };
 
-        let (mut stream, _) = negotiate_one(&mut conn, &mut poll,
-                                            start, session)
-            .expect("Expected success");
+        let (mut stream, _) =
+            negotiate_one(&mut conn, &mut poll, start, session)
+                .expect("Expected success");
 
         write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
             .expect("Expected success");

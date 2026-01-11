@@ -21,8 +21,8 @@ use std::fmt::Formatter;
 use std::io::Error;
 use std::time::Instant;
 
-use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::AuthNResult;
+use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
@@ -34,17 +34,16 @@ use log::debug;
 use log::error;
 use log::info;
 
-
 /// Current state of sessions.
 ///
 /// This is used to store whether a session is in negotiations, or is
 /// active and has already been returned.
 pub(crate) enum SessionState<Stream, AuthN, ShutdownNego>
-where Stream: Session,
-      AuthN: SessionAuthN<Stream>,
-      ShutdownNego: NegotiatorStart<(), Stream>,
-      ShutdownNego::NegotiateError: ScopedError
-{
+where
+    Stream: Session,
+    AuthN: SessionAuthN<Stream>,
+    ShutdownNego: NegotiatorStart<(), Stream>,
+    ShutdownNego::NegotiateError: ScopedError {
     /// Session negotiation is pending.
     Pending {
         /// The pending negotiation state.
@@ -60,11 +59,11 @@ where Stream: Session,
 }
 
 pub(crate) struct SessionNegoState<Stream, AuthN, ShutdownNego>
-where Stream: Session,
-      AuthN: SessionAuthN<Stream>,
-      ShutdownNego: NegotiatorStart<(), Stream>,
-      ShutdownNego::NegotiateError: ScopedError
-{
+where
+    Stream: Session,
+    AuthN: SessionAuthN<Stream>,
+    ShutdownNego: NegotiatorStart<(), Stream>,
+    ShutdownNego::NegotiateError: ScopedError {
     state: Option<SessionState<Stream, AuthN, ShutdownNego>>,
     /// Number of retries.
     nretries: usize,
@@ -92,26 +91,22 @@ pub enum SessionNegoToAuthError<AuthN, Start> {
     IO {
         /// The error that occurred clearing the backlog.
         err: Error
-    },
+    }
 }
 
 #[derive(Debug)]
 pub enum ShutdownError<Start, Negotiate> {
     /// Error occurred starting negotiations.
-    Start {
-        err: Start,
-    },
+    Start { err: Start },
     /// Error occurred during negotiation.
-    Negotiate {
-        err: Negotiate
-    },
+    Negotiate { err: Negotiate }
 }
 
 #[derive(Debug)]
 pub enum WithShutdownError<Inner, Start, Negotiate> {
     /// Error occurred starting negotiations.
     Shutdown {
-        err: ShutdownError<Start, Negotiate>,
+        err: ShutdownError<Start, Negotiate>
     },
     Inner {
         err: Inner
@@ -119,13 +114,15 @@ pub enum WithShutdownError<Inner, Start, Negotiate> {
 }
 
 impl<AuthN, Start> ScopedError for SessionNegoToAuthError<AuthN, Start>
-where AuthN: ScopedError,
-      Start: ScopedError {
+where
+    AuthN: ScopedError,
+    Start: ScopedError
+{
     fn scope(&self) -> ErrorScope {
         match self {
             SessionNegoToAuthError::AuthN { err } => err.scope(),
             SessionNegoToAuthError::Start { err } => err.scope(),
-            SessionNegoToAuthError::IO { err } => err.scope(),
+            SessionNegoToAuthError::IO { err } => err.scope()
         }
     }
 }
@@ -133,11 +130,12 @@ where AuthN: ScopedError,
 impl<Start, Negotiate> ScopedError for ShutdownError<Start, Negotiate>
 where
     Negotiate: ScopedError,
-    Start: ScopedError {
+    Start: ScopedError
+{
     fn scope(&self) -> ErrorScope {
         match self {
             ShutdownError::Start { err } => err.scope(),
-            ShutdownError::Negotiate { err } => err.scope(),
+            ShutdownError::Negotiate { err } => err.scope()
         }
     }
 }
@@ -147,11 +145,12 @@ impl<Inner, Start, Negotiate> ScopedError
 where
     Inner: ScopedError,
     Negotiate: ScopedError,
-    Start: ScopedError {
+    Start: ScopedError
+{
     fn scope(&self) -> ErrorScope {
         match self {
             WithShutdownError::Shutdown { err } => err.scope(),
-            WithShutdownError::Inner { err } => err.scope(),
+            WithShutdownError::Inner { err } => err.scope()
         }
     }
 }
@@ -159,7 +158,8 @@ where
 impl<AuthN, Start> Display for SessionNegoToAuthError<AuthN, Start>
 where
     Start: Display,
-    AuthN: Display {
+    AuthN: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter<'_>
@@ -167,7 +167,7 @@ where
         match self {
             SessionNegoToAuthError::AuthN { err } => err.fmt(f),
             SessionNegoToAuthError::Start { err } => err.fmt(f),
-            SessionNegoToAuthError::IO { err } => err.fmt(f),
+            SessionNegoToAuthError::IO { err } => err.fmt(f)
         }
     }
 }
@@ -175,14 +175,15 @@ where
 impl<Start, Negotiate> Display for ShutdownError<Start, Negotiate>
 where
     Negotiate: Display,
-    Start: Display {
+    Start: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), std::fmt::Error> {
         match self {
             ShutdownError::Start { err } => err.fmt(f),
-            ShutdownError::Negotiate { err } => err.fmt(f),
+            ShutdownError::Negotiate { err } => err.fmt(f)
         }
     }
 }
@@ -192,14 +193,15 @@ impl<Inner, Start, Negotiate> Display
 where
     Negotiate: Display,
     Start: Display,
-    Inner: Display {
+    Inner: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), std::fmt::Error> {
         match self {
             WithShutdownError::Shutdown { err } => err.fmt(f),
-            WithShutdownError::Inner { err } => err.fmt(f),
+            WithShutdownError::Inner { err } => err.fmt(f)
         }
     }
 }

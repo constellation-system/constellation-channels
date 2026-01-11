@@ -166,14 +166,14 @@ use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
-use constellation_common::net::Socket;
 use constellation_common::net::Session;
+use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::SelectError;
 use constellation_common::unix::UnixSocketPath;
+use mio::event::Source;
 use mio::Registry;
 use mio::Token;
-use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::FlowsConfig;
@@ -189,7 +189,7 @@ pub mod compound;
 #[cfg(feature = "dtls")]
 pub mod dtls;
 pub mod flows;
-//pub mod registry;
+// pub mod registry;
 #[cfg(feature = "socks5")]
 pub mod socks5;
 pub mod types;
@@ -361,22 +361,27 @@ pub trait FarChannel: Sized {
     /// this will simply create a socket and return it.
     fn acquire(
         &mut self,
-        registry: &Registry,
+        tokens: &mut Vec<Token>,
+        registry: &Registry
     ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError>;
 
     /// Perform negotiations.
     fn negotiate(
         &self,
         state: Self::AcquireState
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
-                Self::NegotiateError>;
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    >;
 
     /// Complete a failed negotiation.
     fn complete_negotiate(
         &self,
         err: Self::AcquirePending
-    ) -> Result<NegotiatorResult<Self::Acquired, Self::AcquirePending>,
-                Self::NegotiateError>;
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    >;
 
     fn shutdown(
         &self,
@@ -386,18 +391,24 @@ pub trait FarChannel: Sized {
     /// Perform negotiations.
     fn shutdown_negotiate(
         &self,
+        tokens: &mut Vec<Token>,
         registry: &Registry,
         state: Self::ShutdownState
-    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
-                Self::ShutdownNegotiateError>;
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    >;
 
     /// Complete a failed negotiation.
     fn complete_shutdown_negotiate(
         &self,
+        tokens: &mut Vec<Token>,
         registry: &Registry,
         err: Self::ShutdownPending
-    ) -> Result<NegotiatorResult<(), Self::ShutdownPending>,
-                Self::ShutdownNegotiateError>;
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    >;
 
     #[cfg(feature = "socks5")]
     /// Obtain the address to use in the SOCKS5 target field.
@@ -507,7 +518,8 @@ where
 /// [Nego](FarChannelBorrowFlows::Nego) type definition; the default
 /// implementation of [owned_flows](FarChannelBorrowFlows::borrowed_flows)
 /// shoul be sufficient for all purposes.
-pub trait FarChannelFlows<Xfrm, InnerXfrm>: FarChannelXfrm<Xfrm, InnerXfrm>
+pub trait FarChannelFlows<Xfrm, InnerXfrm>:
+    FarChannelXfrm<Xfrm, InnerXfrm>
 where
     Xfrm: DatagramXfrm,
     Xfrm::LocalAddr: From<<Self::Socket as Socket>::Addr>,
@@ -536,7 +548,10 @@ where
 
     fn inbound_nego_param(
         &self
-    ) -> <Self::InboundNego as NegotiatorStart<Self::Flow, BufferedFlow<Self::Socket, Xfrm>>>::Param;
+    ) -> <Self::InboundNego as NegotiatorStart<
+        Self::Flow,
+        BufferedFlow<Self::Socket, Xfrm>
+    >>::Param;
 
     /// Create a negotiator for establishing a traffic splitter instance.
     fn outbound_negotiator(
@@ -563,10 +578,15 @@ where
         &self,
         config: FlowsConfig,
         param: Self::Param,
-        xfrm: InnerXfrm,
+        xfrm: InnerXfrm
     ) -> Result<
-        Flows<Self::Flow, Self::Socket, Self::InboundNego,
-              Self::OutboundNego, Xfrm>,
+        Flows<
+            Self::Flow,
+            Self::Socket,
+            Self::InboundNego,
+            Self::OutboundNego,
+            Xfrm
+        >,
         FarChannelFlowsError<
             Self::SocketError,
             Self::XfrmError,
@@ -580,12 +600,20 @@ where
         let xfrm = self
             .wrap_xfrm(param, xfrm)
             .map_err(|e| FarChannelFlowsError::Xfrm { xfrm: e })?;
-        let inbound_nego = self.inbound_negotiator()
+        let inbound_nego = self
+            .inbound_negotiator()
             .map_err(|e| FarChannelFlowsError::InboundNego { err: e })?;
-        let outbound_nego = self.outbound_negotiator()
+        let outbound_nego = self
+            .outbound_negotiator()
             .map_err(|e| FarChannelFlowsError::OutboundNego { err: e })?;
 
-        Ok(Flows::create(config, socket, inbound_nego, outbound_nego, xfrm))
+        Ok(Flows::create(
+            config,
+            socket,
+            inbound_nego,
+            outbound_nego,
+            xfrm
+        ))
     }
 }
 
@@ -642,7 +670,6 @@ pub enum FarChannelFlowsError<Socket, Xfrm, InboundNego, OutboundNego> {
         /// The error that occurred creating the inbound negotiator.
         err: InboundNego
     }
-
 }
 
 impl ScopedError for AcquiredResolveStaticError {

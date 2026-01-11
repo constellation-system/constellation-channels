@@ -68,14 +68,16 @@ pub struct TLSShutdownNegotiator<Stream, Inner, Value> {
 
 /// [Negotiator] state for shutting down sessions for [TLSNearChannel].
 pub struct TLSShutdownNegotiatorState<Stream, Inner>
-where Stream: Session + Read + Write {
+where
+    Stream: Session + Read + Write {
     inner: PhantomData<Inner>,
     /// The underlying SSL stream.
-    ssl: SslStream<Stream>,
+    ssl: SslStream<Stream>
 }
 
 pub enum TLSShutdownNegoPending<Stream, InnerState>
-where Stream: Session + Read + Write {
+where
+    Stream: Session + Read + Write {
     /// Shutting down the TLS session.
     TLS {
         inner: PhantomData<InnerState>,
@@ -86,10 +88,9 @@ where Stream: Session + Read + Write {
         /// Number of shutdown messages sent.
         nretries: usize,
         /// When to send the next message.
-        when: Instant,
-    }
-    // XXX This does not shut down the inner stream, due to a
-    // limitation in the OpenSSL bindings library.
+        when: Instant
+    } /* XXX This does not shut down the inner stream, due to a
+       * limitation in the OpenSSL bindings library. */
 }
 
 /// Errors that can occur during TLS session negotiation.
@@ -114,15 +115,11 @@ pub enum TLSShutdownError<Inner> {
 
 #[derive(Debug)]
 pub enum TLSStartError<Inner, TLS> {
-    Inner {
-        err: Inner
-    },
-    TLS {
-        err: TLS
-    }
+    Inner { err: Inner },
+    TLS { err: TLS }
 }
 
-impl <Stream, Inner, Value> TLSShutdownNegotiator<Stream, Inner, Value>
+impl<Stream, Inner, Value> TLSShutdownNegotiator<Stream, Inner, Value>
 where
     Stream: Credentials + Session + Read + Write,
     Inner: Negotiator<Value>
@@ -143,15 +140,15 @@ where
     }
 }
 
-impl <Stream, Inner, Value> Negotiator<SSLStream<Stream>>
+impl<Stream, Inner, Value> Negotiator<SSLStream<Stream>>
     for TLSShutdownNegotiator<Stream, Inner, Value>
 where
     Stream: Credentials + Session + Read + Write,
     Inner: Negotiator<Value>
 {
-    type State = TLSShutdownNegotiatorState<Stream, Inner::State>;
-    type Pending = TLSShutdownNegoPending<Stream, Inner::Pending>;
     type NegotiateError = TLSShutdownError<Inner::NegotiateError>;
+    type Pending = TLSShutdownNegoPending<Stream, Inner::Pending>;
+    type State = TLSShutdownNegotiatorState<Stream, Inner::State>;
 
     fn negotiate(
         &self,
@@ -160,7 +157,10 @@ where
         NegotiatorResult<SSLStream<Stream>, Self::Pending>,
         Self::NegotiateError
     > {
-        let addr = state.ssl.get_ref().peer_addr()
+        let addr = state
+            .ssl
+            .get_ref()
+            .peer_addr()
             .map_err(|err| TLSShutdownError::IO { err: err })?;
 
         debug!(target: "tls-shutdown",
@@ -174,15 +174,13 @@ where
                 let delay = self.retry.retry_delay(0);
                 let when = now + delay;
 
-                Ok(NegotiatorResult::Pending(
-                    TLSShutdownNegoPending::TLS {
-                        inner: PhantomData,
-                        ssl: state.ssl,
-                        timeout: timeout,
-                        when: when,
-                        nretries: 1,
-                    }
-                ))
+                Ok(NegotiatorResult::Pending(TLSShutdownNegoPending::TLS {
+                    inner: PhantomData,
+                    ssl: state.ssl,
+                    timeout: timeout,
+                    when: when,
+                    nretries: 1
+                }))
             }
             Ok(ShutdownResult::Received) => {
                 info!(target: "tls-shutdown",
@@ -210,16 +208,14 @@ where
                            "pausing TLS negotiation with {}",
                            addr);
 
-                    Ok(NegotiatorResult::Pending(
-                        TLSShutdownNegoPending::TLS {
-                            inner: PhantomData,
-                            ssl: state.ssl,
-                            timeout: timeout,
-                            when: when,
-                            nretries: 1,
-                        }
-                    ))
-                },
+                    Ok(NegotiatorResult::Pending(TLSShutdownNegoPending::TLS {
+                        inner: PhantomData,
+                        ssl: state.ssl,
+                        timeout: timeout,
+                        when: when,
+                        nretries: 1
+                    }))
+                }
                 _ => Err(TLSShutdownError::OpenSSL { err: err })
             }
         }
@@ -236,24 +232,28 @@ where
 
         match pending {
             TLSShutdownNegoPending::TLS {
-                mut ssl, inner, timeout, nretries, ..
+                mut ssl,
+                inner,
+                timeout,
+                nretries,
+                ..
             } => match ssl.shutdown() {
                 Ok(ShutdownResult::Sent) => {
                     let delay = self.retry.retry_delay(nretries);
                     let when = now + delay;
 
-                    Ok(NegotiatorResult::Pending(
-                        TLSShutdownNegoPending::TLS {
-                            inner: inner,
-                            ssl: ssl,
-                            timeout: timeout,
-                            when: when,
-                            nretries: nretries + 1,
-                        }
-                    ))
+                    Ok(NegotiatorResult::Pending(TLSShutdownNegoPending::TLS {
+                        inner: inner,
+                        ssl: ssl,
+                        timeout: timeout,
+                        when: when,
+                        nretries: nretries + 1
+                    }))
                 }
                 Ok(ShutdownResult::Received) => {
-                    let addr = ssl.get_ref().peer_addr()
+                    let addr = ssl
+                        .get_ref()
+                        .peer_addr()
                         .map_err(|err| TLSShutdownError::IO { err: err })?;
 
                     info!(target: "tls-shutdown",
@@ -272,7 +272,9 @@ where
                 }
                 Err(err) => match err.code() {
                     ErrorCode::WANT_READ | ErrorCode::WANT_WRITE => {
-                        let addr = ssl.get_ref().peer_addr()
+                        let addr = ssl
+                            .get_ref()
+                            .peer_addr()
                             .map_err(|err| TLSShutdownError::IO { err: err })?;
                         let delay = self.retry.retry_delay(nretries);
                         let when = now + delay;
@@ -287,10 +289,10 @@ where
                                 ssl: ssl,
                                 timeout: timeout,
                                 when: when,
-                                nretries: nretries + 1,
+                                nretries: nretries + 1
                             }
                         ))
-                    },
+                    }
                     _ => Err(TLSShutdownError::OpenSSL { err: err })
                 }
             }
@@ -298,13 +300,12 @@ where
     }
 }
 
-impl <Stream, Inner, Value, Wrapped>
-    NegotiatorStart<SSLStream<Stream>, Wrapped>
+impl<Stream, Inner, Value, Wrapped> NegotiatorStart<SSLStream<Stream>, Wrapped>
     for TLSShutdownNegotiator<Stream, Inner, Value>
 where
     Wrapped: Into<SslStream<Stream>>,
     Inner: NegotiatorStart<Value, Stream>,
-    Stream: Credentials + Session + Read + Write,
+    Stream: Credentials + Session + Read + Write
 {
     type Param = ();
     type StartError = Inner::StartError;
@@ -317,51 +318,43 @@ where
     ) -> Result<Self::State, Self::StartError> {
         Ok(TLSShutdownNegotiatorState {
             inner: PhantomData,
-            ssl: stream.into(),
+            ssl: stream.into()
         })
     }
 }
 
-impl <Stream, Inner> Negotiator<()>
-    for DTLSShutdownNegotiator<Stream, Inner>
+impl<Stream, Inner> Negotiator<()> for DTLSShutdownNegotiator<Stream, Inner>
 where
     Stream: Credentials + Session + Read + Write,
     Inner: Negotiator<()>
 {
-    type State = TLSShutdownNegotiatorState<Stream, Inner::State>;
-    type Pending = TLSShutdownNegoPending<Stream, Inner::Pending>;
     type NegotiateError = TLSShutdownError<Inner::NegotiateError>;
+    type Pending = TLSShutdownNegoPending<Stream, Inner::Pending>;
+    type State = TLSShutdownNegotiatorState<Stream, Inner::State>;
 
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<
-        NegotiatorResult<(), Self::Pending>,
-        Self::NegotiateError
-    > {
-        self.tls.negotiate(state)
-            .map(|res| res.map(|_| ()))
+    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+        self.tls.negotiate(state).map(|res| res.map(|_| ()))
     }
 
     fn complete_negotiate(
         &self,
         pending: TLSShutdownNegoPending<Stream, Inner::Pending>
-    ) -> Result<
-        NegotiatorResult<(), Self::Pending>,
-        Self::NegotiateError
-    > {
-        self.tls.complete_negotiate(pending)
+    ) -> Result<NegotiatorResult<(), Self::Pending>, Self::NegotiateError> {
+        self.tls
+            .complete_negotiate(pending)
             .map(|res| res.map(|_| ()))
     }
 }
 
-
-impl <Wrapped, Stream, Inner> NegotiatorStart<(), Wrapped>
+impl<Wrapped, Stream, Inner> NegotiatorStart<(), Wrapped>
     for DTLSShutdownNegotiator<Stream, Inner>
 where
     Wrapped: Into<SslStream<Stream>>,
     Inner: NegotiatorStart<(), Stream>,
-    Stream: Credentials + Session + Read + Write,
+    Stream: Credentials + Session + Read + Write
 {
     type Param = ();
     type StartError = Inner::StartError;
@@ -376,7 +369,7 @@ where
     }
 }
 
-impl <Stream, Inner> DTLSShutdownNegotiator<Stream, Inner>
+impl<Stream, Inner> DTLSShutdownNegotiator<Stream, Inner>
 where
     Stream: Credentials + Session + Read + Write,
     Inner: Negotiator<()>
@@ -395,7 +388,7 @@ where
 
 impl<S> Source for SSLStream<S>
 where
-    S: Source,
+    S: Source
 {
     #[inline]
     fn register(
@@ -427,7 +420,8 @@ where
 }
 
 impl<Inner> ScopedError for TLSShutdownError<Inner>
-where Inner: ScopedError
+where
+    Inner: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -464,22 +458,25 @@ where
             TLSShutdownError::Inner { inner } => write!(f, "{}", inner),
             TLSShutdownError::IO { err } => write!(f, "{}", err),
             TLSShutdownError::OpenSSL { err } => write!(f, "{}", err),
-            TLSShutdownError::Timeout =>
+            TLSShutdownError::Timeout => {
                 write!(f, "shutdown negotiations timed out")
+            }
         }
     }
 }
 
 impl<Inner, TLS> Display for TLSStartError<Inner, TLS>
-where Inner: Display,
-      TLS: Display {
+where
+    Inner: Display,
+    TLS: Display
+{
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
             TLSStartError::Inner { err } => err.fmt(f),
-            TLSStartError::TLS { err } => err.fmt(f),
+            TLSStartError::TLS { err } => err.fmt(f)
         }
     }
 }

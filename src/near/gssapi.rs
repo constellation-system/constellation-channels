@@ -196,9 +196,7 @@ pub enum GSSAPIError {
         err: libgssapi::error::Error
     },
     /// Security level was not accepted.
-    BadSecLvl {
-        seclvl: u8
-    },
+    BadSecLvl { seclvl: u8 },
     /// Bad protocol version.
     BadVersion,
     /// Bad operation code.
@@ -212,7 +210,7 @@ pub enum GSSAPINegotiationError<E, Stream> {
     GSSAPI {
         stream: Stream,
         /// The error from GSSAPI negotiation.
-        err: GSSAPIError,
+        err: GSSAPIError
     },
     /// Error while obtaining the underlying connection.
     Inner {
@@ -344,11 +342,13 @@ where
             Ok(buf)
         }
         // Server rejected the authentication attempt.
-        (GSSAPI_VERSION, GSSAPI_CTX_NEGOTIATE_ERROR) =>
-            Err(Error::new(ErrorKind::Other, "authentication failed")),
+        (GSSAPI_VERSION, GSSAPI_CTX_NEGOTIATE_ERROR) => {
+            Err(Error::new(ErrorKind::Other, "authentication failed"))
+        }
         // Bad reply type.
-        (GSSAPI_VERSION, _) =>
-            Err(Error::new(ErrorKind::Other, "bad GSSAPI reply type")),
+        (GSSAPI_VERSION, _) => {
+            Err(Error::new(ErrorKind::Other, "bad GSSAPI reply type"))
+        }
         // Bad version.
         _ => Err(Error::new(ErrorKind::Other, "bad protocol version code"))
     }
@@ -442,15 +442,16 @@ impl<Value, Inner> Negotiator<Value> for GSSAPIShutdownNegotiator<Inner>
 where
     Inner: Negotiator<Value>
 {
-    type State = Inner::State;
-    type Pending = Inner::Pending;
     type NegotiateError = Inner::NegotiateError;
+    type Pending = Inner::Pending;
+    type State = Inner::State;
 
     #[inline]
     fn negotiate(
         &self,
         state: Self::State
-    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError>
+    {
         self.inner.negotiate(state)
     }
 
@@ -458,7 +459,8 @@ where
     fn complete_negotiate(
         &self,
         pending: Self::Pending
-    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError> {
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError>
+    {
         self.inner.complete_negotiate(pending)
     }
 }
@@ -469,7 +471,8 @@ impl<Value, Inner, Stream, Ctx>
 where
     Inner: NegotiatorStart<Value, Stream>,
     Stream: Session + Source + Read + Write,
-    Ctx: SecurityContext {
+    Ctx: SecurityContext
+{
     type Param = Inner::Param;
     type StartError = Inner::StartError;
 
@@ -485,7 +488,7 @@ where
 
 impl GSSAPIClientState {
     fn prepare_gssapi(
-        params: &ClientGSSAPIParams,
+        params: &ClientGSSAPIParams
     ) -> Result<ClientCtx, libgssapi::error::Error> {
         // Prepare the mechanisms.
         let mut mechs = OidSet::new()?;
@@ -567,12 +570,9 @@ impl RawMachineState for GSSAPIClientState {
                     .map_err(|err| GSSAPIError::IO { err: err })
             }
             // Send GSSAPI security level request.
-            GSSAPIClientState::GSSAPISecLvl { ctx } =>
-                write_gssapi_seclvl(
-                    stream,
-                    ctx,
-                    params.security.seclvl()
-                ),
+            GSSAPIClientState::GSSAPISecLvl { ctx } => {
+                write_gssapi_seclvl(stream, ctx, params.security.seclvl())
+            }
             _ => Ok(())
         }
     }
@@ -617,9 +617,7 @@ impl RawMachineState for GSSAPIClientState {
                         Ok(GSSAPIClientState::GSSAPISecLvl { ctx: ctx })
                     }
                     // The step returned an error.
-                    Err(err) => {
-                        Err(GSSAPIError::GSSAPI { err: err })
-                    }
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
                 }
             }
             GSSAPIClientState::GSSAPIAuthN { mut ctx, .. } => {
@@ -650,15 +648,11 @@ impl RawMachineState for GSSAPIClientState {
                         Ok(GSSAPIClientState::GSSAPISecLvl { ctx: ctx })
                     }
                     // The step returned an error.
-                    Err(err) => {
-                        Err(GSSAPIError::GSSAPI { err: err })
-                    }
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
                 }
             }
             // Send GSSAPI security level request.
-            GSSAPIClientState::GSSAPISecLvl {
-                mut ctx
-            } => {
+            GSSAPIClientState::GSSAPISecLvl { mut ctx } => {
                 let seclvl = parse_gssapi_seclvl(stream, &mut ctx)?;
 
                 if !params.security.is_required() ||
@@ -709,7 +703,7 @@ impl RawOnceMachineState for GSSAPIClientState {
 impl GSSAPIServerState {
     /// Prepare a GSSAPI context.
     fn prepare_gssapi(
-        params: &ServerGSSAPIConfig,
+        params: &ServerGSSAPIConfig
     ) -> Result<ServerCtx, libgssapi::error::Error> {
         // Prepare the mechanisms.
         let mut mechs = OidSet::new()?;
@@ -784,7 +778,9 @@ impl RawMachineState for GSSAPIServerState {
             // which to interrogate or set security levels.
             //
             // Since Kerberos uses DES (ick!), we'll just hardwire it to 56.
-                write_gssapi_seclvl(stream, ctx, 56),
+            {
+                write_gssapi_seclvl(stream, ctx, 56)
+            }
             _ => Ok(())
         }
     }
@@ -831,9 +827,7 @@ impl RawMachineState for GSSAPIServerState {
                         Ok(GSSAPIServerState::GSSAPISecLvlWait { ctx: ctx })
                     }
                     // The step returned an error.
-                    Err(err) => {
-                        Err(GSSAPIError::GSSAPI { err: err })
-                    }
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
                 }
             }
             GSSAPIServerState::GSSAPIAuthN { mut ctx, .. } => {
@@ -864,9 +858,7 @@ impl RawMachineState for GSSAPIServerState {
                         Ok(GSSAPIServerState::GSSAPISecLvlWait { ctx: ctx })
                     }
                     // The step returned an error.
-                    Err(err) => {
-                        Err(GSSAPIError::GSSAPI { err: err })
-                    }
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
                 }
             }
             // Send GSSAPI security level request.
@@ -875,8 +867,9 @@ impl RawMachineState for GSSAPIServerState {
 
                 Ok(GSSAPIServerState::GSSAPISecLvlSend { ctx: ctx })
             }
-            GSSAPIServerState::GSSAPISecLvlSend { ctx } =>
-                Ok(GSSAPIServerState::Success { result: ctx }),
+            GSSAPIServerState::GSSAPISecLvlSend { ctx } => {
+                Ok(GSSAPIServerState::Success { result: ctx })
+            }
             // End states.
             end => Ok(end)
         }
@@ -913,26 +906,29 @@ impl RawOnceMachineState for GSSAPIServerState {
 impl<A> Negotiator<(GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint)>
     for GSSAPINearAcceptor<A>
 where
-    A: Source + NearChannel,
+    A: Source + NearChannel
 {
-    type State = GSSAPIServerNegotiation<A::State>;
+    type NegotiateError = GSSAPINegotiationError<A::NegotiateError, A::Conn>;
     type Pending = GSSAPINegotiationPending<
         A::Pending,
         A::Endpoint,
         A::Conn,
         <RawStateMachineError<GSSAPIServerState> as RecoverableError>::Completable
     >;
-    type NegotiateError = GSSAPINegotiationError<A::NegotiateError, A::Conn>;
+    type State = GSSAPIServerNegotiation<A::State>;
 
     fn negotiate(
         &self,
         state: Self::State
     ) -> Result<
-        NegotiatorResult<(GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint),
-                         Self::Pending>,
+        NegotiatorResult<
+            (GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint),
+            Self::Pending
+        >,
         Self::NegotiateError
     > {
-        self.inner.negotiate(state.inner)
+        self.inner
+            .negotiate(state.inner)
             .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
             .map_pending(|pending| GSSAPINegotiationPending::Inner {
                 inner: pending
@@ -942,13 +938,13 @@ where
                     RawStateMachine::new(self.params.clone());
 
                 match machine.run(&mut stream) {
-                    Ok(ctx) => Ok(NegotiatorResult::Complete(
-                        (GSSAPIStream {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
                             ctx: ctx,
                             stream: stream
                         },
-                         endpoint)
-                    )),
+                        endpoint
+                    ))),
                     Err(err) => match err.split() {
                         (Some(pending), None) => Ok(NegotiatorResult::Pending(
                             GSSAPINegotiationPending::GSSAPI {
@@ -957,11 +953,12 @@ where
                                 pending: pending
                             }
                         )),
-                        (None, Some(err)) =>
+                        (None, Some(err)) => {
                             Err(GSSAPINegotiationError::GSSAPI {
                                 stream: stream,
                                 err: err
-                            }),
+                            })
+                        }
                         _ => Err(GSSAPINegotiationError::BadSplit)
                     }
                 }
@@ -977,12 +974,15 @@ where
             <RawStateMachineError<GSSAPIServerState> as RecoverableError>::Completable
         >
     ) -> Result<
-        NegotiatorResult<(GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint),
-                         Self::Pending>,
+        NegotiatorResult<
+            (GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint),
+            Self::Pending
+        >,
         Self::NegotiateError
     > {
         match pending {
-            GSSAPINegotiationPending::Inner { inner } => self.inner
+            GSSAPINegotiationPending::Inner { inner } => self
+                .inner
                 .complete_negotiate(inner)
                 .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
                 .map_pending(|pending| GSSAPINegotiationPending::Inner {
@@ -993,59 +993,63 @@ where
                         RawStateMachine::new(self.params.clone());
 
                     match machine.run(&mut stream) {
-                        Ok(ctx) => Ok(NegotiatorResult::Complete(
-                            (GSSAPIStream {
+                        Ok(ctx) => Ok(NegotiatorResult::Complete((
+                            GSSAPIStream {
                                 ctx: ctx,
                                 stream: stream
                             },
-                             endpoint)
-                        )),
+                            endpoint
+                        ))),
                         Err(err) => match err.split() {
-                            (Some(pending), None) =>
+                            (Some(pending), None) => {
                                 Ok(NegotiatorResult::Pending(
                                     GSSAPINegotiationPending::GSSAPI {
                                         endpoint: endpoint.clone(),
                                         stream: stream,
                                         pending: pending
                                     }
-                                )),
-                            (None, Some(err)) =>
+                                ))
+                            }
+                            (None, Some(err)) => {
                                 Err(GSSAPINegotiationError::GSSAPI {
                                     stream: stream,
                                     err: err
-                                }),
+                                })
+                            }
                             _ => Err(GSSAPINegotiationError::BadSplit)
                         }
                     }
                 }),
             GSSAPINegotiationPending::GSSAPI {
-                endpoint, mut stream, pending
+                endpoint,
+                mut stream,
+                pending
             } => {
                 let machine: RawStateMachine<GSSAPIServerState> =
                     RawStateMachine::complete(pending);
 
                 match machine.run(&mut stream) {
-                    Ok(ctx) => Ok(NegotiatorResult::Complete(
-                        (GSSAPIStream {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
                             ctx: ctx,
                             stream: stream
                         },
-                         endpoint)
-                    )),
+                        endpoint
+                    ))),
                     Err(err) => match err.split() {
-                        (Some(pending), None) =>
-                            Ok(NegotiatorResult::Pending(
-                                GSSAPINegotiationPending::GSSAPI {
-                                    endpoint: endpoint.clone(),
-                                    stream: stream,
-                                    pending: pending
-                                }
-                            )),
-                        (None, Some(err)) =>
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            GSSAPINegotiationPending::GSSAPI {
+                                endpoint: endpoint.clone(),
+                                stream: stream,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => {
                             Err(GSSAPINegotiationError::GSSAPI {
                                 stream: stream,
                                 err: err
-                            }),
+                            })
+                        }
                         _ => Err(GSSAPINegotiationError::BadSplit)
                     }
                 }
@@ -1056,10 +1060,10 @@ where
 
 impl<A> NearChannel for GSSAPINearAcceptor<A>
 where
-    A: Source + NearChannel,
+    A: Source + NearChannel
 {
-    type Endpoint = A::Endpoint;
     type Conn = GSSAPIStream<A::Conn, ServerCtx>;
+    type Endpoint = A::Endpoint;
     type ShutdownNego = GSSAPIShutdownNegotiator<A::ShutdownNego>;
     type ShutdownValue = A::ShutdownValue;
     type StartError = A::StartError;
@@ -1079,20 +1083,19 @@ where
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         let inner = self.inner.shutdown_nego();
 
-        GSSAPIShutdownNegotiator {
-            inner: inner
-        }
+        GSSAPIShutdownNegotiator { inner: inner }
     }
 
     #[inline]
     fn shutdown_param(
         &self
-    ) -> <Self::ShutdownNego as NegotiatorStart<Self::ShutdownValue, Self::Conn>>::Param {
+    ) -> <Self::ShutdownNego as NegotiatorStart<
+        Self::ShutdownValue,
+        Self::Conn
+    >>::Param {
         self.inner.shutdown_param()
     }
 
@@ -1102,10 +1105,12 @@ where
         err: GSSAPINegotiationError<A::NegotiateError, A::Conn>
     ) -> Result<(), Error> {
         match err {
-            GSSAPINegotiationError::Inner { err } =>
-                self.inner.cleanup(registry, err),
-            GSSAPINegotiationError::GSSAPI { mut stream, .. } =>
-                registry.deregister(&mut stream),
+            GSSAPINegotiationError::Inner { err } => {
+                self.inner.cleanup(registry, err)
+            }
+            GSSAPINegotiationError::GSSAPI { mut stream, .. } => {
+                registry.deregister(&mut stream)
+            }
             GSSAPINegotiationError::BadSplit => Ok(())
         }
     }
@@ -1113,7 +1118,7 @@ where
 
 impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
 where
-    A: Source + NearChannelCreate,
+    A: Source + NearChannelCreate
 {
     type Config = GSSAPINearAcceptorConfig<A::Config>;
     type CreateError = A::CreateError;
@@ -1142,26 +1147,29 @@ where
 impl<C> Negotiator<(GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint)>
     for GSSAPINearConnector<C>
 where
-    C: Source + NearConnector,
+    C: Source + NearConnector
 {
-    type State = GSSAPIClientNegotiation<C::State>;
+    type NegotiateError = GSSAPINegotiationError<C::NegotiateError, C::Conn>;
     type Pending = GSSAPINegotiationPending<
         C::Pending,
         C::Endpoint,
         C::Conn,
         <RawStateMachineError<GSSAPIClientState> as RecoverableError>::Completable
     >;
-    type NegotiateError = GSSAPINegotiationError<C::NegotiateError, C::Conn>;
+    type State = GSSAPIClientNegotiation<C::State>;
 
     fn negotiate(
         &self,
         state: Self::State
     ) -> Result<
-        NegotiatorResult<(GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint),
-                         Self::Pending>,
+        NegotiatorResult<
+            (GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint),
+            Self::Pending
+        >,
         Self::NegotiateError
     > {
-        self.inner.negotiate(state.inner)
+        self.inner
+            .negotiate(state.inner)
             .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
             .map_pending(|pending| GSSAPINegotiationPending::Inner {
                 inner: pending
@@ -1171,13 +1179,13 @@ where
                     RawStateMachine::new(self.params.clone());
 
                 match machine.run(&mut stream) {
-                    Ok(ctx) => Ok(NegotiatorResult::Complete(
-                        (GSSAPIStream {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
                             ctx: ctx,
                             stream: stream
                         },
-                         endpoint)
-                    )),
+                        endpoint
+                    ))),
                     Err(err) => match err.split() {
                         (Some(pending), None) => Ok(NegotiatorResult::Pending(
                             GSSAPINegotiationPending::GSSAPI {
@@ -1186,11 +1194,12 @@ where
                                 pending: pending
                             }
                         )),
-                        (None, Some(err)) =>
+                        (None, Some(err)) => {
                             Err(GSSAPINegotiationError::GSSAPI {
                                 stream: stream,
                                 err: err
-                            }),
+                            })
+                        }
                         _ => Err(GSSAPINegotiationError::BadSplit)
                     }
                 }
@@ -1206,12 +1215,15 @@ where
             <RawStateMachineError<GSSAPIClientState> as RecoverableError>::Completable
         >
     ) -> Result<
-        NegotiatorResult<(GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint),
-                         Self::Pending>,
+        NegotiatorResult<
+            (GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint),
+            Self::Pending
+        >,
         Self::NegotiateError
     > {
         match pending {
-            GSSAPINegotiationPending::Inner { inner } => self.inner
+            GSSAPINegotiationPending::Inner { inner } => self
+                .inner
                 .complete_negotiate(inner)
                 .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
                 .map_pending(|pending| GSSAPINegotiationPending::Inner {
@@ -1222,59 +1234,63 @@ where
                         RawStateMachine::new(self.params.clone());
 
                     match machine.run(&mut stream) {
-                        Ok(ctx) => Ok(NegotiatorResult::Complete(
-                            (GSSAPIStream {
+                        Ok(ctx) => Ok(NegotiatorResult::Complete((
+                            GSSAPIStream {
                                 ctx: ctx,
                                 stream: stream
                             },
-                             endpoint)
-                        )),
+                            endpoint
+                        ))),
                         Err(err) => match err.split() {
-                            (Some(pending), None) =>
+                            (Some(pending), None) => {
                                 Ok(NegotiatorResult::Pending(
                                     GSSAPINegotiationPending::GSSAPI {
                                         endpoint: endpoint.clone(),
                                         stream: stream,
                                         pending: pending
                                     }
-                                )),
-                            (None, Some(err)) =>
+                                ))
+                            }
+                            (None, Some(err)) => {
                                 Err(GSSAPINegotiationError::GSSAPI {
                                     stream: stream,
                                     err: err
-                                }),
+                                })
+                            }
                             _ => Err(GSSAPINegotiationError::BadSplit)
                         }
                     }
                 }),
             GSSAPINegotiationPending::GSSAPI {
-                endpoint, mut stream, pending
+                endpoint,
+                mut stream,
+                pending
             } => {
                 let machine: RawStateMachine<GSSAPIClientState> =
                     RawStateMachine::complete(pending);
 
                 match machine.run(&mut stream) {
-                    Ok(ctx) => Ok(NegotiatorResult::Complete(
-                        (GSSAPIStream {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
                             ctx: ctx,
                             stream: stream
                         },
-                         endpoint)
-                    )),
+                        endpoint
+                    ))),
                     Err(err) => match err.split() {
-                        (Some(pending), None) =>
-                            Ok(NegotiatorResult::Pending(
-                                GSSAPINegotiationPending::GSSAPI {
-                                    endpoint: endpoint.clone(),
-                                    stream: stream,
-                                    pending: pending
-                                }
-                            )),
-                        (None, Some(err)) =>
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            GSSAPINegotiationPending::GSSAPI {
+                                endpoint: endpoint.clone(),
+                                stream: stream,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => {
                             Err(GSSAPINegotiationError::GSSAPI {
                                 stream: stream,
                                 err: err
-                            }),
+                            })
+                        }
                         _ => Err(GSSAPINegotiationError::BadSplit)
                     }
                 }
@@ -1285,10 +1301,10 @@ where
 
 impl<C> NearChannel for GSSAPINearConnector<C>
 where
-    C: Source + NearConnector,
+    C: Source + NearConnector
 {
-    type Endpoint = C::Endpoint;
     type Conn = GSSAPIStream<C::Conn, ClientCtx>;
+    type Endpoint = C::Endpoint;
     type ShutdownNego = GSSAPIShutdownNegotiator<C::ShutdownNego>;
     type ShutdownValue = C::ShutdownValue;
     type StartError = C::StartError;
@@ -1308,20 +1324,19 @@ where
     }
 
     #[inline]
-    fn shutdown_nego(
-        &self
-    ) -> Self::ShutdownNego {
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
         let inner = self.inner.shutdown_nego();
 
-        GSSAPIShutdownNegotiator {
-            inner: inner
-        }
+        GSSAPIShutdownNegotiator { inner: inner }
     }
 
     #[inline]
     fn shutdown_param(
         &self
-    ) -> <Self::ShutdownNego as NegotiatorStart<Self::ShutdownValue, Self::Conn>>::Param {
+    ) -> <Self::ShutdownNego as NegotiatorStart<
+        Self::ShutdownValue,
+        Self::Conn
+    >>::Param {
         self.inner.shutdown_param()
     }
 
@@ -1331,10 +1346,12 @@ where
         err: GSSAPINegotiationError<C::NegotiateError, C::Conn>
     ) -> Result<(), Error> {
         match err {
-            GSSAPINegotiationError::Inner { err } =>
-                self.inner.cleanup(registry, err),
-            GSSAPINegotiationError::GSSAPI { mut stream, .. } =>
-                registry.deregister(&mut stream),
+            GSSAPINegotiationError::Inner { err } => {
+                self.inner.cleanup(registry, err)
+            }
+            GSSAPINegotiationError::GSSAPI { mut stream, .. } => {
+                registry.deregister(&mut stream)
+            }
             GSSAPINegotiationError::BadSplit => Ok(())
         }
     }
@@ -1342,7 +1359,7 @@ where
 
 impl<C> NearChannelCreate for GSSAPINearConnector<C>
 where
-    C: Source + NearConnector + NearChannelCreate,
+    C: Source + NearConnector + NearChannelCreate
 {
     type Config = GSSAPINearConnectorConfig<C::Config>;
     type CreateError = C::CreateError;
@@ -1370,12 +1387,12 @@ where
 
 impl<C> NearChannelCreateWithEndpoint for GSSAPINearConnector<C>
 where
-    C: Source + NearConnector + NearChannelCreateWithEndpoint,
+    C: Source + NearConnector + NearChannelCreateWithEndpoint
 {
     type Config = GSSAPINearConnectorConfig<C::Config>;
+    type CreateError = C::CreateError;
     type EndpointConfig = C::EndpointConfig;
     type Param = C::Param;
-    type CreateError = C::CreateError;
 
     #[inline]
     fn create_with_endpoint<Ctx>(
@@ -1386,8 +1403,8 @@ where
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx {
-        let inner = C::create_with_endpoint(caches, config.inner, endpoint,
-                                            param)?;
+        let inner =
+            C::create_with_endpoint(caches, config.inner, endpoint, param)?;
 
         Ok(GSSAPINearConnector {
             inner: inner,
@@ -1719,14 +1736,14 @@ where
     }
 }
 
-
 impl<Conn> NearConnector for GSSAPINearConnector<Conn>
 where
     Conn: Source + NearConnector,
     Conn::Conn: Source + Credentials + Read + Write
 {
     /// Type of endpoint references.
-    type EndpointRef<'a> = Conn::EndpointRef<'a>
+    type EndpointRef<'a>
+        = Conn::EndpointRef<'a>
     where
         Self: 'a;
 
@@ -1742,8 +1759,8 @@ where
 }
 
 impl RecoverableError for GSSAPIError {
-    type Permanent = GSSAPIError;
     type Completable = ();
+    type Permanent = GSSAPIError;
 
     fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
         match self {
@@ -1755,7 +1772,7 @@ impl RecoverableError for GSSAPIError {
                 } else {
                     (completable, None)
                 }
-            },
+            }
             err => (None, Some(err))
         }
     }
@@ -1827,8 +1844,9 @@ where
         match self {
             GSSAPINegotiationError::Inner { err } => err.fmt(f),
             GSSAPINegotiationError::GSSAPI { err, .. } => err.fmt(f),
-            GSSAPINegotiationError::BadSplit =>
+            GSSAPINegotiationError::BadSplit => {
                 write!(f, "split() returned no result")
+            }
         }
     }
 }

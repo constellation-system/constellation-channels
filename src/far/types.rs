@@ -43,23 +43,13 @@ use mio::event::Source;
 
 use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
-use crate::far::AcquiredResolveStaticError;
-use crate::far::FarChannel;
-use crate::far::FarChannelAcquired;
-use crate::far::FarChannelAcquiredResolve;
-use crate::far::FarChannelCreate;
-use crate::far::FarChannelFlows;
-use crate::far::FarChannelSocket;
-use crate::far::FarChannelXfrm;
 use crate::far::compound::CompoundAcquiredShutdownNegotiatePending;
-use crate::far::compound::CompoundInboundNegoError;
-use crate::far::compound::CompoundOutboundNegoError;
 use crate::far::compound::CompoundFarChannel;
-use crate::far::compound::CompoundFarChannelAcquired;
-use crate::far::compound::CompoundFarChannelAcquiredResolverError;
 use crate::far::compound::CompoundFarChannelAcquireError;
 use crate::far::compound::CompoundFarChannelAcquireNegoError;
 use crate::far::compound::CompoundFarChannelAcquireNegoPending;
+use crate::far::compound::CompoundFarChannelAcquired;
+use crate::far::compound::CompoundFarChannelAcquiredResolverError;
 use crate::far::compound::CompoundFarChannelAddr;
 use crate::far::compound::CompoundFarChannelCreateError;
 use crate::far::compound::CompoundFarChannelParam;
@@ -72,20 +62,31 @@ use crate::far::compound::CompoundFarChannelXfrmError;
 use crate::far::compound::CompoundFarChannelXfrmPeerAddr;
 use crate::far::compound::CompoundFarChannelXfrmWrapError;
 use crate::far::compound::CompoundFlow;
+use crate::far::compound::CompoundInboundNegoError;
 use crate::far::compound::CompoundInboundNegotiator;
 use crate::far::compound::CompoundInboundNegotiatorPending;
+use crate::far::compound::CompoundNegotiateError;
+use crate::far::compound::CompoundNegotiatorStartError;
+use crate::far::compound::CompoundOutboundNegoError;
 use crate::far::compound::CompoundOutboundNegotiator;
 use crate::far::compound::CompoundOutboundNegotiatorParam;
 use crate::far::compound::CompoundOutboundNegotiatorPending;
-use crate::far::compound::CompoundNegotiateError;
-use crate::far::compound::CompoundNegotiatorStartError;
 use crate::far::compound::CompoundShutdownError;
 use crate::far::compound::CompoundShutdownNegotiator;
 use crate::far::compound::CompoundShutdownNegotiatorPending;
 use crate::far::flows::BufferedFlow;
+use crate::far::AcquiredResolveStaticError;
+use crate::far::FarChannel;
+use crate::far::FarChannelAcquired;
+use crate::far::FarChannelAcquiredResolve;
+use crate::far::FarChannelCreate;
+use crate::far::FarChannelFlows;
+use crate::far::FarChannelSocket;
+use crate::far::FarChannelXfrm;
 
 pub trait FlowAuthNShutdownTypes<Flow>
-where Flow: Session {
+where
+    Flow: Session {
     type Prin: Display;
     type AuthNSession: AuthNed<Self::Prin, Flow>;
     type AuthPending;
@@ -104,7 +105,8 @@ where Flow: Session {
     type ShutdownStartError: Debug + Display + ScopedError;
     type ShutdownNegoError: Debug + Display + ScopedError;
     type ShutdownNego: NegotiatorStart<
-        (), Flow,
+        (),
+        Flow,
         Param = Self::ShutdownParam,
         Pending = Self::ShutdownPending,
         StartError = Self::ShutdownStartError,
@@ -113,41 +115,48 @@ where Flow: Session {
 }
 
 pub trait FlowsEntryTypes<Flow>: FlowAuthNShutdownTypes<Flow> + Sized
-where Flow: Session {
+where
+    Flow: Session {
     type LocalAddr: Clone + Display + From<Self::SockAddr>;
     type PeerAddr: Clone + Display + Eq + Hash;
-    type SockAddr: Clone + Display
+    type SockAddr: Clone
+        + Display
         + TryFrom<Self::LocalAddr, Error = Self::ConvertError>;
     type ConvertError: Debug + Display;
     type Sock: Source + Socket<Addr = Self::SockAddr> + Sender + Receiver;
-    type Xfrm: DatagramXfrm<LocalAddr = Self::LocalAddr,
-                            PeerAddr = Self::PeerAddr,
-                            Error = Self::XfrmError>;
+    type Xfrm: DatagramXfrm<
+        LocalAddr = Self::LocalAddr,
+        PeerAddr = Self::PeerAddr,
+        Error = Self::XfrmError
+    >;
     type XfrmError: Debug + Display + ScopedError;
     type OutParam;
     type OutPending;
     type OutStartError: Debug + Display + ScopedError;
     type OutNegoError: Debug + Display + ScopedError;
-    type OutboundNego: Negotiator<Flow,
-                                  NegotiateError = Self::OutNegoError>
-        + NegotiatorStart<Flow, BufferedFlow<Self::Sock, Self::Xfrm>,
-                          Param = Self::OutParam,
-                          Pending = Self::OutPending,
-                          StartError = Self::OutStartError>;
+    type OutboundNego: Negotiator<Flow, NegotiateError = Self::OutNegoError>
+        + NegotiatorStart<
+            Flow,
+            BufferedFlow<Self::Sock, Self::Xfrm>,
+            Param = Self::OutParam,
+            Pending = Self::OutPending,
+            StartError = Self::OutStartError
+        >;
     type InParam;
     type InPending;
     type InStartError: Debug + Display + ScopedError;
     type InNegoError: Debug + Display + ScopedError;
-    type InboundNego: Negotiator<Flow,
-                                 NegotiateError = Self::InNegoError>
-        + NegotiatorStart<Flow, BufferedFlow<Self::Sock, Self::Xfrm>,
-                          Param = Self::InParam,
-                          Pending = Self::InPending,
-                          StartError = Self::InStartError>;
+    type InboundNego: Negotiator<Flow, NegotiateError = Self::InNegoError>
+        + NegotiatorStart<
+            Flow,
+            BufferedFlow<Self::Sock, Self::Xfrm>,
+            Param = Self::InParam,
+            Pending = Self::InPending,
+            StartError = Self::InStartError
+        >;
 }
 
-pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
-{
+pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
     type Config;
     type CreateError: Debug + Display + ScopedError;
     type InnerXfrmCreateParam: Clone;
@@ -159,14 +168,14 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
     type InnerXfrmError: Debug + Display + ScopedError;
     type ResolverError: Debug + Display + ScopedError;
     type WrapError: Debug + Display + ScopedError;
-    type Acquired: FarChannelAcquired<
-            WrapError = Self::WrapError,
-        > + FarChannelAcquiredResolve<
+    type Acquired: FarChannelAcquired<WrapError = Self::WrapError>
+        + FarChannelAcquiredResolve<
             Resolved = Self::ChannelParam,
             ResolverError = Self::ResolverError
-          >;
+        >;
     type Flow: Session<LocalAddr = Self::LocalAddr, PeerAddr = Self::PeerAddr>
-        + Read + Write;
+        + Read
+        + Write;
     type AcquirePending;
     type AcquireShutdownPending;
     type ChannelParam: Clone + Display + Eq + Hash;
@@ -180,33 +189,30 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow>
     type XfrmCreateError: Debug + Display + ScopedError;
     type SocketError: Debug + Display + ScopedError;
     type Channel: FarChannel<
-        Acquired = Self::Acquired,
-        AcquirePending = Self::AcquirePending,
-        AcquireError = Self::AcquireError,
-        NegotiateError = Self::AcquireNegoError,
-        ShutdownPending = Self::AcquireShutdownPending,
-        ShutdownError = Self::AcquireShutdownError,
-        ShutdownNegotiateError = Self::AcquireShutdownNegoError
-    > + FarChannelFlows<
-        Self::Xfrm, Self::InnerXfrm,
-        Flow = Self::Flow,
-        Param = Self::ChannelParam,
-        InboundNego = Self::InboundNego,
-        OutboundNego = Self::OutboundNego,
-        ShutdownNego = Self::ShutdownNego,
-        InboundNegoError = Self::InboundNegoCreateError,
-        OutboundNegoError = Self::OutboundNegoCreateError,
-        ShutdownNegoError = Self::ShutdownNegoCreateError
-    > + FarChannelSocket<
-        Socket = Self::Sock,
-        SocketError = Self::SocketError
-    > + FarChannelXfrm<
-        Self::Xfrm, Self::InnerXfrm,
-        XfrmError = Self::XfrmCreateError
-    > + FarChannelCreate<
-        Config = Self::Config,
-        CreateError = Self::CreateError
-    >;
+            Acquired = Self::Acquired,
+            AcquirePending = Self::AcquirePending,
+            AcquireError = Self::AcquireError,
+            NegotiateError = Self::AcquireNegoError,
+            ShutdownPending = Self::AcquireShutdownPending,
+            ShutdownError = Self::AcquireShutdownError,
+            ShutdownNegotiateError = Self::AcquireShutdownNegoError
+        > + FarChannelFlows<
+            Self::Xfrm,
+            Self::InnerXfrm,
+            Flow = Self::Flow,
+            Param = Self::ChannelParam,
+            InboundNego = Self::InboundNego,
+            OutboundNego = Self::OutboundNego,
+            ShutdownNego = Self::ShutdownNego,
+            InboundNegoError = Self::InboundNegoCreateError,
+            OutboundNegoError = Self::OutboundNegoCreateError,
+            ShutdownNegoError = Self::ShutdownNegoCreateError
+        > + FarChannelSocket<Socket = Self::Sock, SocketError = Self::SocketError>
+        + FarChannelXfrm<
+            Self::Xfrm,
+            Self::InnerXfrm,
+            XfrmError = Self::XfrmCreateError
+        > + FarChannelCreate<Config = Self::Config, CreateError = Self::CreateError>;
 }
 
 #[derive(Debug)]
@@ -219,8 +225,7 @@ where
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
         + DatagramXfrmCreate<Addr = SocketAddr>,
     Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
+    UDP::Error: ScopedError {
     authn: PhantomData<AuthN>,
     unix: PhantomData<Unix>,
     udp: PhantomData<UDP>
@@ -258,7 +263,8 @@ where
         + DatagramXfrmCreate<Addr = SocketAddr>,
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
-{}
+{
+}
 
 unsafe impl<AuthN, Unix, UDP> Sync
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
@@ -271,7 +277,8 @@ where
         + DatagramXfrmCreate<Addr = SocketAddr>,
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
-{}
+{
+}
 
 impl<AuthN, Unix, UDP> FlowAuthNShutdownTypes<CompoundFlow<Unix, UDP>>
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
@@ -285,17 +292,17 @@ where
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
 {
-    type Prin = AuthN::Prin;
+    type AuthN = AuthN;
     type AuthNSession = AuthN::AuthNSession;
+    type AuthNegoError = AuthN::NegotiateError;
     type AuthPending = AuthN::Pending;
     type AuthStartError = AuthN::StartError;
-    type AuthNegoError = AuthN::NegotiateError;
-    type AuthN = AuthN;
+    type Prin = AuthN::Prin;
+    type ShutdownNego = CompoundShutdownNegotiator<Unix, UDP>;
+    type ShutdownNegoError = CompoundShutdownError;
     type ShutdownParam = ();
     type ShutdownPending = CompoundShutdownNegotiatorPending<Unix, UDP>;
     type ShutdownStartError = CompoundNegotiatorStartError;
-    type ShutdownNegoError = CompoundShutdownError;
-    type ShutdownNego = CompoundShutdownNegotiator<Unix, UDP>;
 }
 
 impl<AuthN, Unix, UDP> FlowsEntryTypes<CompoundFlow<Unix, UDP>>
@@ -310,23 +317,23 @@ where
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
 {
-    type LocalAddr = CompoundFarChannelAddr;
-    type PeerAddr = CompoundFarChannelXfrmPeerAddr;
-    type SockAddr = CompoundFarChannelAddr;
     type ConvertError = Infallible;
-    type Sock = CompoundFarChannelSocket;
-    type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
-    type XfrmError = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
-    type OutParam = CompoundOutboundNegotiatorParam;
-    type OutPending = CompoundOutboundNegotiatorPending<Unix, UDP>;
-    type OutStartError = CompoundNegotiatorStartError;
-    type OutNegoError = CompoundNegotiateError;
-    type OutboundNego = CompoundOutboundNegotiator;
+    type InNegoError = CompoundNegotiateError;
     type InParam = ();
     type InPending = CompoundInboundNegotiatorPending<Unix, UDP>;
     type InStartError = CompoundNegotiatorStartError;
-    type InNegoError = CompoundNegotiateError;
     type InboundNego = CompoundInboundNegotiator;
+    type LocalAddr = CompoundFarChannelAddr;
+    type OutNegoError = CompoundNegotiateError;
+    type OutParam = CompoundOutboundNegotiatorParam;
+    type OutPending = CompoundOutboundNegotiatorPending<Unix, UDP>;
+    type OutStartError = CompoundNegotiatorStartError;
+    type OutboundNego = CompoundOutboundNegotiator;
+    type PeerAddr = CompoundFarChannelXfrmPeerAddr;
+    type Sock = CompoundFarChannelSocket;
+    type SockAddr = CompoundFarChannelAddr;
+    type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
+    type XfrmError = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
 }
 
 impl<AuthN, Unix, UDP> FarChannelsTypes
@@ -343,28 +350,28 @@ where
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
 {
-    type Config = CompoundFarChannelConfig;
-    type CreateError = CompoundFarChannelCreateError;
-    type InnerXfrmCreateParam = CompoundXfrmCreateParam<Unix::CreateParam,
-                                                        UDP::CreateParam>;
-    type InnerXfrm = CompoundFarChannelXfrm<Unix, UDP>;
-    type InnerXfrmError = CompoundFarChannelXfrmWrapError<Unix::Error,
-                                                          UDP::Error>;
-    type ResolverError = CompoundFarChannelAcquiredResolverError;
-    type WrapError = AcquiredResolveStaticError;
-    type Acquired = CompoundFarChannelAcquired;
-    type Flow = CompoundFlow<Unix, UDP>;
-    type AcquirePending = CompoundFarChannelAcquireNegoPending;
-    type AcquireShutdownPending = CompoundAcquiredShutdownNegotiatePending;
-    type ChannelParam = CompoundFarChannelParam;
     type AcquireError = CompoundFarChannelAcquireError;
     type AcquireNegoError = CompoundFarChannelAcquireNegoError;
+    type AcquirePending = CompoundFarChannelAcquireNegoPending;
     type AcquireShutdownError = CompoundFarChannelShutdownAcquiredError;
     type AcquireShutdownNegoError = CompoundFarChannelShutdownAcquiredNegoError;
-    type InboundNegoCreateError = CompoundInboundNegoError;
-    type OutboundNegoCreateError = CompoundOutboundNegoError;
-    type ShutdownNegoCreateError = Infallible;
-    type XfrmCreateError = CompoundFarChannelXfrmError;
-    type SocketError = CompoundFarChannelSocketError;
+    type AcquireShutdownPending = CompoundAcquiredShutdownNegotiatePending;
+    type Acquired = CompoundFarChannelAcquired;
     type Channel = CompoundFarChannel;
+    type ChannelParam = CompoundFarChannelParam;
+    type Config = CompoundFarChannelConfig;
+    type CreateError = CompoundFarChannelCreateError;
+    type Flow = CompoundFlow<Unix, UDP>;
+    type InboundNegoCreateError = CompoundInboundNegoError;
+    type InnerXfrm = CompoundFarChannelXfrm<Unix, UDP>;
+    type InnerXfrmCreateParam =
+        CompoundXfrmCreateParam<Unix::CreateParam, UDP::CreateParam>;
+    type InnerXfrmError =
+        CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
+    type OutboundNegoCreateError = CompoundOutboundNegoError;
+    type ResolverError = CompoundFarChannelAcquiredResolverError;
+    type ShutdownNegoCreateError = Infallible;
+    type SocketError = CompoundFarChannelSocketError;
+    type WrapError = AcquiredResolveStaticError;
+    type XfrmCreateError = CompoundFarChannelXfrmError;
 }

@@ -43,8 +43,8 @@ use crate::near::compound::CompoundNearAcceptorShutdownNegotiator;
 use crate::near::compound::CompoundNearAcceptorShutdownValue;
 use crate::near::compound::CompoundNearAcceptorStartError;
 use crate::near::compound::CompoundNearAcceptorState;
+use crate::near::compound::CompoundNearClientConn;
 use crate::near::compound::CompoundNearConcreteAddr;
-use crate::near::compound::CompoundNearNameAddr;
 use crate::near::compound::CompoundNearConnector;
 use crate::near::compound::CompoundNearConnectorNegotiateError;
 use crate::near::compound::CompoundNearConnectorNegotiatePending;
@@ -52,30 +52,37 @@ use crate::near::compound::CompoundNearConnectorShutdownNegotiator;
 use crate::near::compound::CompoundNearConnectorShutdownValue;
 use crate::near::compound::CompoundNearConnectorStartError;
 use crate::near::compound::CompoundNearConnectorState;
-use crate::near::compound::CompoundNearClientConn;
+use crate::near::compound::CompoundNearNameAddr;
 use crate::near::compound::CompoundNearServerConn;
-use crate::near::compound::CompoundNegotiatorStartError;
 use crate::near::compound::CompoundNearShutdownNegotiatorPending;
+use crate::near::compound::CompoundNegotiatorStartError;
 use crate::near::compound::CompoundShutdownError;
 use crate::near::NearChannel;
-use crate::near::NearConnector;
 use crate::near::NearChannelCreateWithEndpoint;
+use crate::near::NearConnector;
 
 pub trait NearSessionNegoTypes {
     type Prin: Clone + Debug + Display + Eq + Hash;
     type AuthNPending;
     type AuthNSession: AuthNed<Self::Prin, Self::Conn>;
     type AuthN: Create
-        + SessionAuthN<Self::Conn,
-                       Param = (),
-                       Pending = Self::AuthNPending,
-                       AuthNSession = Self::AuthNSession,
-                       StartError = Self::AuthStartError,
-                       NegotiateError = Self::AuthNegoError>;
+        + SessionAuthN<
+            Self::Conn,
+            Param = (),
+            Pending = Self::AuthNPending,
+            AuthNSession = Self::AuthNSession,
+            StartError = Self::AuthStartError,
+            NegotiateError = Self::AuthNegoError
+        >;
     type AuthStartError: Debug + Display + ScopedError;
     type AuthNegoError: Debug + Display + ScopedError;
     type Endpoint: Clone + Debug + Display + Eq + Hash + Sized;
-    type Conn: CredentialsMut + Read + Write + Debug + Sized + Source
+    type Conn: CredentialsMut
+        + Read
+        + Write
+        + Debug
+        + Sized
+        + Source
         + Session<PeerAddr = Self::Endpoint>;
     type ConnState;
     type ConnPending;
@@ -111,16 +118,23 @@ pub trait NearDuplexNegoTypes {
     type InAuthNPending;
     type InAuthNSession: AuthNed<Self::InPrin, Self::InConn>;
     type InAuthN: Create
-        + SessionAuthN<Self::InConn,
-                       Param = (),
-                       Pending = Self::InAuthNPending,
-                       AuthNSession = Self::InAuthNSession,
-                       StartError = Self::InAuthStartError,
-                       NegotiateError = Self::InAuthNegoError>;
+        + SessionAuthN<
+            Self::InConn,
+            Param = (),
+            Pending = Self::InAuthNPending,
+            AuthNSession = Self::InAuthNSession,
+            StartError = Self::InAuthStartError,
+            NegotiateError = Self::InAuthNegoError
+        >;
     type InAuthStartError: Debug + Display + ScopedError;
     type InAuthNegoError: Debug + Display + ScopedError;
     type InEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
-    type InConn: CredentialsMut + Read + Write + Debug + Sized + Source
+    type InConn: CredentialsMut
+        + Read
+        + Write
+        + Debug
+        + Sized
+        + Source
         + Session<PeerAddr = Self::InEndpoint>;
     type InConnState;
     type InConnPending;
@@ -138,15 +152,15 @@ pub trait NearDuplexNegoTypes {
         NegotiateError = Self::InShutdownNegoError
     >;
     type InChannel: NearChannel<
-        Conn = Self::InConn,
-        Endpoint = Self::InEndpoint,
-        State = Self::InConnState,
-        Pending = Self::InConnPending,
-        ShutdownValue = Self::InShutdownValue,
-        ShutdownNego = Self::InShutdownNego,
-        StartError = Self::InSessionStartError,
-        NegotiateError = Self::InSessionNegoError
-    > + Source;
+            Conn = Self::InConn,
+            Endpoint = Self::InEndpoint,
+            State = Self::InConnState,
+            Pending = Self::InConnPending,
+            ShutdownValue = Self::InShutdownValue,
+            ShutdownNego = Self::InShutdownNego,
+            StartError = Self::InSessionStartError,
+            NegotiateError = Self::InSessionNegoError
+        > + Source;
     type InSessionStartError: Debug + Display + ScopedError;
     type InSessionNegoError: Debug + Display + ScopedError;
     type Inbound: NearSessionNegoTypes<
@@ -174,17 +188,24 @@ pub trait NearDuplexNegoTypes {
     type OutAuthNPending;
     type OutAuthNSession: AuthNed<Self::OutPrin, Self::OutConn>;
     type OutAuthN: Create
-        + SessionAuthN<Self::OutConn,
-                       Param = (),
-                       Pending = Self::OutAuthNPending,
-                       AuthNSession = Self::OutAuthNSession,
-                       StartError = Self::OutAuthStartError,
-                       NegotiateError = Self::OutAuthNegoError>;
+        + SessionAuthN<
+            Self::OutConn,
+            Param = (),
+            Pending = Self::OutAuthNPending,
+            AuthNSession = Self::OutAuthNSession,
+            StartError = Self::OutAuthStartError,
+            NegotiateError = Self::OutAuthNegoError
+        >;
     type OutAuthStartError: Debug + Display + ScopedError;
     type OutAuthNegoError: Debug + Display + ScopedError;
     type OutConfig: Clone;
     type OutEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
-    type OutConn: CredentialsMut + Read + Write + Debug + Sized + Source
+    type OutConn: CredentialsMut
+        + Read
+        + Write
+        + Debug
+        + Sized
+        + Source
         + Session<PeerAddr = Self::OutEndpoint>;
     type OutConnState;
     type OutConnPending;
@@ -202,8 +223,8 @@ pub trait NearDuplexNegoTypes {
         NegotiateError = Self::OutShutdownNegoError
     >;
     type OutParam;
-    type OutChannel: NearConnector +
-        NearChannelCreateWithEndpoint<
+    type OutChannel: NearConnector
+        + NearChannelCreateWithEndpoint<
             Conn = Self::OutConn,
             Endpoint = Self::OutEndpoint,
             State = Self::OutConnState,
@@ -256,8 +277,7 @@ where
     In::Channel: Source,
     Out::Channel: NearConnector
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
-    <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone
-{
+    <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone {
     pub intypes: In,
     pub outypes: Out
 }
@@ -270,10 +290,10 @@ where
 /// around [CompoundNearAcceptor]s should be type aliases of this.
 #[derive(Default)]
 pub struct CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadServer
-{
+where
+    AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadServer {
     tls: PhantomData<TLS>,
     authn: PhantomData<AuthN>
 }
@@ -286,18 +306,20 @@ where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
 /// around [CompoundNearConnector]s should be type aliases of this.
 #[derive(Default)]
 pub struct CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadClient
-{
+where
+    AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadClient {
     tls: PhantomData<TLS>,
     authn: PhantomData<AuthN>
 }
 
 impl<AuthN, TLS> Clone for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadServer {
+where
+    AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadServer
+{
     #[inline]
     fn clone(&self) -> Self {
         CompoundAcceptorNegoTypes {
@@ -308,19 +330,27 @@ where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
 }
 
 unsafe impl<AuthN, TLS> Send for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadServer {}
+where
+    AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadServer
+{
+}
 
 unsafe impl<AuthN, TLS> Sync for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadServer {}
+where
+    AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadServer
+{
+}
 
 impl<AuthN, TLS> Clone for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadClient {
+where
+    AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadClient
+{
     #[inline]
     fn clone(&self) -> Self {
         CompoundConnectorNegoTypes {
@@ -331,66 +361,75 @@ where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
 }
 
 unsafe impl<AuthN, TLS> Send for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadClient {}
+where
+    AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadClient
+{
+}
 
 unsafe impl<AuthN, TLS> Sync for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadClient {}
+where
+    AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadClient
+{
+}
 
 impl<AuthN, TLS> NearSessionNegoTypes for CompoundAcceptorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadServer
+where
+    AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadServer
 {
-    type Prin = AuthN::Prin;
+    type AuthN = AuthN;
     type AuthNPending = AuthN::Pending;
     type AuthNSession = AuthN::AuthNSession;
-    type AuthN = AuthN;
-    type AuthStartError = AuthN::StartError;
     type AuthNegoError = AuthN::NegotiateError;
-    type Endpoint = CompoundNearConcreteAddr;
+    type AuthStartError = AuthN::StartError;
+    type Channel = CompoundNearAcceptor<TLS>;
     type Conn = CompoundNearServerConn;
-    type ConnState = CompoundNearAcceptorState;
     type ConnPending = CompoundNearAcceptorNegotiatePending;
+    type ConnState = CompoundNearAcceptorState;
+    type Endpoint = CompoundNearConcreteAddr;
+    type Prin = AuthN::Prin;
+    type SessionNegoError = CompoundNearAcceptorNegotiateError;
+    type SessionStartError = CompoundNearAcceptorStartError;
+    type ShutdownNego = CompoundNearAcceptorShutdownNegotiator;
+    type ShutdownNegoError = CompoundShutdownError;
     type ShutdownParam = ();
     type ShutdownPending =
         CompoundNearShutdownNegotiatorPending<CompoundNearServerConn>;
-    type ShutdownValue = CompoundNearAcceptorShutdownValue;
-    type ShutdownNegoError = CompoundShutdownError;
     type ShutdownStartError = CompoundNegotiatorStartError;
-    type ShutdownNego = CompoundNearAcceptorShutdownNegotiator;
-    type Channel = CompoundNearAcceptor<TLS>;
-    type SessionStartError = CompoundNearAcceptorStartError;
-    type SessionNegoError = CompoundNearAcceptorNegotiateError;
+    type ShutdownValue = CompoundNearAcceptorShutdownValue;
 }
 
 impl<AuthN, TLS> NearSessionNegoTypes for CompoundConnectorNegoTypes<AuthN, TLS>
-where AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
-      AuthN::NegotiateError: ScopedError,
-      TLS: Clone + Debug + TLSLoadClient {
-    type Prin = AuthN::Prin;
+where
+    AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
+    AuthN::NegotiateError: ScopedError,
+    TLS: Clone + Debug + TLSLoadClient
+{
+    type AuthN = AuthN;
     type AuthNPending = AuthN::Pending;
     type AuthNSession = AuthN::AuthNSession;
-    type AuthN = AuthN;
-    type AuthStartError = AuthN::StartError;
     type AuthNegoError = AuthN::NegotiateError;
-    type Endpoint = CompoundNearNameAddr;
+    type AuthStartError = AuthN::StartError;
+    type Channel = CompoundNearConnector<TLS>;
     type Conn = CompoundNearClientConn;
-    type ConnState = CompoundNearConnectorState;
     type ConnPending = CompoundNearConnectorNegotiatePending;
+    type ConnState = CompoundNearConnectorState;
+    type Endpoint = CompoundNearNameAddr;
+    type Prin = AuthN::Prin;
+    type SessionNegoError = CompoundNearConnectorNegotiateError;
+    type SessionStartError = CompoundNearConnectorStartError;
+    type ShutdownNego = CompoundNearConnectorShutdownNegotiator;
+    type ShutdownNegoError = CompoundShutdownError;
     type ShutdownParam = ();
     type ShutdownPending =
         CompoundNearShutdownNegotiatorPending<CompoundNearClientConn>;
-    type ShutdownValue = CompoundNearConnectorShutdownValue;
-    type ShutdownNegoError = CompoundShutdownError;
     type ShutdownStartError = CompoundNegotiatorStartError;
-    type ShutdownNego = CompoundNearConnectorShutdownNegotiator;
-    type Channel = CompoundNearConnector<TLS>;
-    type SessionStartError = CompoundNearConnectorStartError;
-    type SessionNegoError = CompoundNearConnectorNegotiateError;
+    type ShutdownValue = CompoundNearConnectorShutdownValue;
 }
 
 impl<In, Out> NearDuplexNegoTypes for SimpleNearDuplexNegoTypes<In, Out>
@@ -402,48 +441,48 @@ where
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
     <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone
 {
-    type InPrin = In::Prin;
+    type InAuthN = In::AuthN;
     type InAuthNPending = In::AuthNPending;
     type InAuthNSession = In::AuthNSession;
-    type InAuthN = In::AuthN;
-    type InAuthStartError = In::AuthStartError;
     type InAuthNegoError = In::AuthNegoError;
-    type InEndpoint = In::Endpoint;
+    type InAuthStartError = In::AuthStartError;
+    type InChannel = In::Channel;
     type InConn = In::Conn;
-    type InConnState = In::ConnState;
     type InConnPending = In::ConnPending;
+    type InConnState = In::ConnState;
+    type InEndpoint = In::Endpoint;
+    type InPrin = In::Prin;
+    type InSessionNegoError = In::SessionNegoError;
+    type InSessionStartError = In::SessionStartError;
+    type InShutdownNego = In::ShutdownNego;
+    type InShutdownNegoError = In::ShutdownNegoError;
     type InShutdownParam = In::ShutdownParam;
     type InShutdownPending = In::ShutdownPending;
-    type InShutdownValue = In::ShutdownValue;
-    type InShutdownNegoError = In::ShutdownNegoError;
     type InShutdownStartError = In::ShutdownStartError;
-    type InShutdownNego = In::ShutdownNego;
-    type InChannel = In::Channel;
-    type InSessionStartError = In::SessionStartError;
-    type InSessionNegoError = In::SessionNegoError;
+    type InShutdownValue = In::ShutdownValue;
     type Inbound = In;
-    type OutPrin = Out::Prin;
+    type OutAuthN = Out::AuthN;
     type OutAuthNPending = Out::AuthNPending;
     type OutAuthNSession = Out::AuthNSession;
-    type OutAuthN = Out::AuthN;
-    type OutAuthStartError = Out::AuthStartError;
     type OutAuthNegoError = Out::AuthNegoError;
-    type OutConfig = <Out::Channel as NearChannelCreateWithEndpoint>::Config;
-    type OutEndpoint = Out::Endpoint;
-    type OutConn = Out::Conn;
-    type OutConnState = Out::ConnState;
-    type OutConnPending = Out::ConnPending;
-    type OutShutdownParam = Out::ShutdownParam;
-    type OutShutdownPending = Out::ShutdownPending;
-    type OutShutdownValue = Out::ShutdownValue;
-    type OutShutdownNegoError = Out::ShutdownNegoError;
-    type OutShutdownStartError = Out::ShutdownStartError;
-    type OutShutdownNego = Out::ShutdownNego;
-    type OutParam = <Out::Channel as NearChannelCreateWithEndpoint>::Param;
+    type OutAuthStartError = Out::AuthStartError;
     type OutChannel = Out::Channel;
+    type OutConfig = <Out::Channel as NearChannelCreateWithEndpoint>::Config;
+    type OutConn = Out::Conn;
+    type OutConnPending = Out::ConnPending;
+    type OutConnState = Out::ConnState;
     type OutCreateError =
         <Out::Channel as NearChannelCreateWithEndpoint>::CreateError;
-    type OutSessionStartError = Out::SessionStartError;
+    type OutEndpoint = Out::Endpoint;
+    type OutParam = <Out::Channel as NearChannelCreateWithEndpoint>::Param;
+    type OutPrin = Out::Prin;
     type OutSessionNegoError = Out::SessionNegoError;
+    type OutSessionStartError = Out::SessionStartError;
+    type OutShutdownNego = Out::ShutdownNego;
+    type OutShutdownNegoError = Out::ShutdownNegoError;
+    type OutShutdownParam = Out::ShutdownParam;
+    type OutShutdownPending = Out::ShutdownPending;
+    type OutShutdownStartError = Out::ShutdownStartError;
+    type OutShutdownValue = Out::ShutdownValue;
     type Outbound = Out;
 }
