@@ -37,6 +37,7 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::retry::Retry;
+use constellation_common::retry::next_retry_definite;
 use constellation_common::shutdown::ShutdownFlag;
 use log::debug;
 use log::error;
@@ -457,11 +458,10 @@ fn run_refresh_thread(
                                     Some(prev) => {
                                         let when = prev + renewal;
 
-                                        earliest =
-                                            Some(earliest.map_or(
-                                                Instant::now(),
-                                                |curr| curr.min(when)
-                                            ));
+                                        earliest = Some(
+                                            next_retry_definite(&earliest,
+                                                                &Instant::now())
+                                        );
                                     }
                                     // The entry is brand new, and
                                     // needs to be resolved for the
@@ -473,11 +473,10 @@ fn run_refresh_thread(
                                            "entry for {} not initialized",
                                            name);
 
-                                        earliest =
-                                            Some(earliest.map_or(
-                                                Instant::now(),
-                                                |curr| curr.min(now)
-                                            ));
+                                        earliest = Some(
+                                            next_retry_definite(&earliest,
+                                                                &Instant::now())
+                                        );
                                     }
                                 }
                             }
@@ -500,8 +499,7 @@ fn run_refresh_thread(
                                name);
 
                         earliest = Some(
-                            earliest
-                                .map_or(Instant::now(), |curr| curr.min(now))
+                            next_retry_definite(&earliest, &Instant::now())
                         );
                     }
                 }
@@ -536,10 +534,10 @@ fn run_refresh_thread(
                                     let (_, _, when) = guard
                                         .check_refresh(name, renewal, &retry);
 
-                                    earliest =
-                                        Some(earliest.map_or(when, |curr| {
-                                            curr.min(when)
-                                        }));
+                                    earliest = Some(
+                                        next_retry_definite(&earliest,
+                                                            &Instant::now())
+                                    );
                                 }
                                 Err(_) => {
                                     error!(target: "ns-name-cache-refresh",

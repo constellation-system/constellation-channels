@@ -207,12 +207,14 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
             InboundNegoError = Self::InboundNegoCreateError,
             OutboundNegoError = Self::OutboundNegoCreateError,
             ShutdownNegoError = Self::ShutdownNegoCreateError
-        > + FarChannelSocket<Socket = Self::Sock, SocketError = Self::SocketError>
-        + FarChannelXfrm<
+        > + FarChannelSocket<Socket = Self::Sock,
+                             SocketError = Self::SocketError
+        > + FarChannelXfrm<
             Self::Xfrm,
             Self::InnerXfrm,
             XfrmError = Self::XfrmCreateError
-        > + FarChannelCreate<Config = Self::Config, CreateError = Self::CreateError>;
+        > + FarChannelCreate<Config = Self::Config,
+                             CreateError = Self::CreateError>;
 }
 
 #[derive(Debug)]

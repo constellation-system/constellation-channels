@@ -39,6 +39,7 @@ use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
+use constellation_common::retry::next_retry_definite;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use constellation_common::retry::WithRetryWhen;
@@ -4215,7 +4216,7 @@ where
             match self.channel_addrs(tokens, registry, &id)? {
                 RetryResult::Success(res) => out.push((id, res)),
                 RetryResult::Retry(when) => {
-                    retry = Some(retry.map_or(when, |curr| curr.max(when)));
+                    retry = Some(next_retry_definite(&retry, &when));
                 }
             }
         }
@@ -4328,11 +4329,11 @@ where
     /// Whether or not all channels were shut down immediately.
     pub fn shutdown(
         &mut self,
-        deletes: &mut Vec<Token>,
         registry: &Registry
     ) -> Result<bool, Vec<FarChannelID>> {
         let mut out = true;
         let mut errs: Option<Vec<FarChannelID>> = None;
+        let mut deletes = Vec::new();
         let nchans = self.channels.len();
 
         for (id, chan) in self.channels.iter_mut().enumerate() {
@@ -4463,10 +4464,12 @@ where
                         }
                     }
 
-                    updates.push((id, params, when));
+                    if params.is_some() || when.is_some() {
+                        updates.push((id, params, when));
+                    }
                 }
                 RetryResult::Retry(when) => {
-                    retry = Some(retry.map_or(when, |curr| curr.max(when)));
+                    retry = Some(next_retry_definite(&retry, &when));
                 }
             }
         }
