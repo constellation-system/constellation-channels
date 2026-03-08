@@ -211,7 +211,7 @@ where
     }
 }
 
-impl<Addr, Origin, Ctx> AddrsCreate<Ctx, Vec<Origin>>
+impl<Addr, Origin, Ctx> AddrsCreate<Ctx>
     for MixedResolver<Addr, Origin>
 where
     Ctx: NSNameCachesCtx,
@@ -223,16 +223,25 @@ where
     type Config = ResolverConfig;
     type CreateError =
         MixedResolverCreateError<<Resolution<Addr> as TryFrom<Origin>>::Error>;
+    type OriginConfig = IPEndpoint;
 
-    fn create(
+    fn create<I>(
         ctx: &mut Ctx,
         config: Self::Config,
-        origins: Vec<Origin>
-    ) -> Result<Self, Self::CreateError> {
-        let mut fixed = Vec::with_capacity(origins.len());
-        let mut resolved = Vec::with_capacity(origins.len());
+        origins: I
+    ) -> Result<Self, Self::CreateError>
+    where I: Iterator<Item = IPEndpoint>
+    {
+        let (mut fixed, mut resolved) =
+            if let (_, Some(hint)) = origins.size_hint() {
+                (Vec::with_capacity(hint), Vec::with_capacity(hint))
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
         for origin in origins {
+            let origin = Origin::from(origin);
+
             match Resolution::try_from(origin.clone())
                 .map_err(|err| MixedResolverCreateError::Convert { err: err })?
             {
@@ -311,7 +320,8 @@ where
     fn addrs(
         &mut self
     ) -> Result<
-        RetryResult<(IntoIter<(Addr, IPEndpoint, Instant)>, Option<Instant>)>,
+        RetryResult<(IntoIter<(Addr, IPEndpoint, Instant)>,
+                     Option<Instant>)>,
         NSNameCacheError
     > {
         Ok(self.snapshot()?.map(|(snapshot, cached_when)| {
@@ -320,20 +330,23 @@ where
     }
 }
 
-impl<Addr, Ctx, I> AddrsCreate<Ctx, I> for Resolver<Addr>
+impl<Addr, Ctx> AddrsCreate<Ctx> for Resolver<Addr>
 where
     Ctx: NSNameCachesCtx,
-    I: Iterator<Item = (String, u16)>,
     Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash
 {
     type Config = ResolverConfig;
     type CreateError = NSNameCacheError;
+    type OriginConfig = (String, u16);
 
-    fn create(
+    fn create<I>(
         ctx: &mut Ctx,
         config: Self::Config,
         origin: I
-    ) -> Result<Self, Self::CreateError> {
+    ) -> Result<Self, Self::CreateError>
+    where
+        I: Iterator<Item = (String, u16)>,
+    {
         let (renewal, retry) = config.take();
         let caches = ctx.name_caches();
         let names = caches.ns_names(origin)?;

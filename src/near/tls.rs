@@ -150,8 +150,8 @@ pub enum TLSSessionCreateError<Session, Channel> {
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = concat!(
-///     "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-///     "key: test/data/certs/server/private/test_server_key.pem\n",
+///     "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+///     "key: tests/data/certs/server/private/test_server_key.pem\n",
 ///     "addr: ::0\n",
 ///     "port: 8008\n"
 /// );
@@ -227,7 +227,7 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
 /// const CONFIG: &'static str = concat!(
 ///     "trust-root:\n",
 ///     "  root-certs:\n",
-///     "    - test/data/certs/server/ca_cert.pem\n",
+///     "    - tests/data/certs/server/ca_cert.pem\n",
 ///     "addr: en.wikipedia.org\n",
 ///     "port: 443\n"
 /// );
@@ -1420,10 +1420,10 @@ fn server_conf(path: &str) -> String {
             "  verify: required\n",
             "  trust-root:\n",
             "    root-certs:\n",
-            "      - test/data/certs/client/ca_cert.pem\n",
+            "      - tests/data/certs/client/ca_cert.pem\n",
             "    crls: []\n",
-            "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-            "key: test/data/certs/server/private/test_server_key.pem\n",
+            "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+            "key: tests/data/certs/server/private/test_server_key.pem\n",
             "path: {}"
         ),
         path
@@ -1442,10 +1442,10 @@ fn client_conf(path: &str) -> String {
             "  - P-256\n",
             "trust-root:\n",
             "  root-certs:\n",
-            "    - test/data/certs/server/ca_cert.pem\n",
+            "    - tests/data/certs/server/ca_cert.pem\n",
             "  crls: []\n",
-            "client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
-            "client-key: test/data/certs/client/private/test_client_key.pem\n",
+            "client-cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+            "client-key: tests/data/certs/client/private/test_client_key.pem\n",
             "verify-endpoint: test-server.nowhere.com\n",
             "path: {}"
         ),

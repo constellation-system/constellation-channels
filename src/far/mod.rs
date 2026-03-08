@@ -672,12 +672,22 @@ pub enum FarChannelFlowsError<Socket, Xfrm, InboundNego, OutboundNego> {
     }
 }
 
+#[derive(Debug)]
+pub struct EmptyResolverError;
+
 impl ScopedError for AcquiredResolveStaticError {
     #[inline]
     fn scope(&self) -> ErrorScope {
         match self {
             AcquiredResolveStaticError::Static => ErrorScope::Unrecoverable
         }
+    }
+}
+
+impl ScopedError for EmptyResolverError {
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        ErrorScope::System
     }
 }
 
@@ -695,7 +705,7 @@ impl FarChannelAcquired for SocketAddr {
 }
 
 impl FarChannelAcquiredResolve for SocketAddr {
-    type ResolverError = SelectError;
+    type ResolverError = EmptyResolverError;
 
     #[inline]
     fn resolver<Ctx>(
@@ -703,13 +713,13 @@ impl FarChannelAcquiredResolve for SocketAddr {
         _caches: &mut Ctx,
         addr_policy: &SocketAddrPolicy,
         _resolver: &ResolverConfig
-    ) -> Result<AcquiredResolver<Self::Resolved>, SelectError>
+    ) -> Result<AcquiredResolver<Self::Resolved>, EmptyResolverError>
     where
         Ctx: NSNameCachesCtx {
         if addr_policy.check_ip(&self.ip()) {
             Ok(AcquiredResolver::StaticSingle { param: *self })
         } else {
-            Err(SelectError::Empty)
+            Err(EmptyResolverError)
         }
     }
 }
@@ -794,5 +804,14 @@ impl Display for AcquiredResolveStaticError {
                 write!(f, "static parameter resolution only")
             }
         }
+    }
+}
+
+impl Display for EmptyResolverError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        write!(f, "no addresses specified")
     }
 }

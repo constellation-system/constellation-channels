@@ -132,6 +132,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::RetryResult;
+use constellation_common::retry::RetryIndefResult;
 use constellation_common::sched::EpochChange;
 use constellation_common::sched::History;
 use constellation_common::sched::Policy;
@@ -186,6 +187,8 @@ pub struct AddrSelectResult<Epoch> {
 /// Errors that can occur when creating an [AddrMultiplexer].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AddrsError {
+    /// Select error.
+    Select(SelectError),
     /// Refresh error.
     Refresh(RefreshError),
     /// Error accessing name caches.
@@ -229,6 +232,7 @@ struct AddrsHistory {
 impl ScopedError for AddrsError {
     fn scope(&self) -> ErrorScope {
         match self {
+            AddrsError::Select(err) => err.scope(),
             AddrsError::Refresh(err) => err.scope(),
             AddrsError::NameCaches(err) => err.scope(),
             AddrsError::StaticAddrsInvalid => ErrorScope::System
@@ -301,7 +305,8 @@ where
         let policy = SocketAddrPolicy::create(&addr_policy);
         let sched = Scheduler::new((), retry, policy, epochs)
             .map_err(AddrsCreateError::Refresh)?;
-        let resolver = MixedResolver::create(ctx, resolver, endpoints)
+        let resolver = MixedResolver::create(ctx, resolver,
+                                             endpoints.into_iter())
             .map_err(AddrsCreateError::Resolver)?;
 
         Ok(AddrMultiplexer {
@@ -390,15 +395,17 @@ where
         &mut self,
         refresh: Option<EpochChange<Epochs::Item, SocketAddr, IPEndpointAddr>>
     ) -> Result<RetryResult<AddrSelectResult<Epochs::Item>>, AddrsError> {
-        match self.sched.select() {
-            Ok(val) => Ok(val.map(|(addr, endpoint, _)| AddrSelectResult {
-                addr: addr,
-                endpoint: endpoint,
-                epoch: refresh
-            })),
+        match self.sched.select().map_err(AddrsError::Select)? {
+            RetryIndefResult::Success((addr, endpoint, _)) =>
+                Ok(RetryResult::Success(AddrSelectResult {
+                    addr: addr,
+                    endpoint: endpoint,
+                    epoch: refresh
+                })),
+            RetryIndefResult::Retry(when) => Ok(RetryResult::Retry(when)),
             // Uninitialized static multiplexer.  This should
             // never happen.
-            Err(SelectError::Empty) => {
+            RetryIndefResult::Indef(()) => {
                 error!(target: "addr-multiplex",
                        "no addresses in initialized multiplexer");
 
@@ -495,20 +502,11 @@ impl History for AddrsHistory {
         self.nretries
     }
 
-    #[inline]
-    fn cache_score(
-        &mut self,
-        _config: &()
-    ) {
-    }
-
-    #[inline]
-    fn clear_score_cache(&mut self) {}
-
     /// Get the score for this history.
     fn score(
         &self,
-        _config: &()
+        _config: &(),
+        _now: Instant
     ) -> f32 {
         let exp_retries = (self.nretries as f32).exp2() - 1.0;
         let total = self.nsuccesses as f32 + self.nfailures as f32;
@@ -630,6 +628,7 @@ impl Display for AddrsError {
         f: &mut Formatter
     ) -> Result<(), Error> {
         match self {
+            AddrsError::Select(err) => err.fmt(f),
             AddrsError::Refresh(err) => err.fmt(f),
             AddrsError::NameCaches(err) => err.fmt(f),
             AddrsError::StaticAddrsInvalid => {

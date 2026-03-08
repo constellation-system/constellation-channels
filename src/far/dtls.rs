@@ -36,7 +36,6 @@ use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
-use std::sync::Condvar;
 use std::time::Duration;
 
 use constellation_auth::cred::Credentials;
@@ -55,7 +54,6 @@ use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
-use constellation_streams::stream::ConcurrentStream;
 use log::debug;
 use log::info;
 use log::trace;
@@ -132,10 +130,10 @@ use crate::tls::TLSStartError;
 ///     "port: 8281\n",
 ///     "trust-root:\n",
 ///     "  root-certs:\n",
-///     "    - test/data/certs/client/ca_cert.pem\n",
+///     "    - tests/data/certs/client/ca_cert.pem\n",
 ///     "  crls: []\n",
-///     "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-///     "key: test/data/certs/server/private/test_server_key.pem\n",
+///     "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+///     "key: tests/data/certs/server/private/test_server_key.pem\n",
 /// );
 /// let dtls_config = serde_yaml::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
@@ -1093,16 +1091,6 @@ where
     }
 }
 
-impl<Flow> ConcurrentStream for DTLSFlow<Flow>
-where
-    Flow: ConcurrentStream + Session + Read + Write
-{
-    #[inline]
-    fn condvar(&self) -> Arc<Condvar> {
-        self.ssl.get_ref().condvar()
-    }
-}
-
 impl<Flow> Credentials for DTLSFlow<Flow>
 where
     Flow: Credentials + Session + Read + Write
@@ -1266,10 +1254,10 @@ const CHANNEL_CONFIG: &'static str = concat!(
     "  - P-256\n",
     "trust-root:\n",
     "  root-certs:\n",
-    "    - test/data/certs/client/ca_cert.pem\n",
+    "    - tests/data/certs/client/ca_cert.pem\n",
     "  crls: []\n",
-    "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-    "key: test/data/certs/server/private/test_server_key.pem\n",
+    "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+    "key: tests/data/certs/server/private/test_server_key.pem\n",
 );
 
 #[cfg(test)]
@@ -1285,10 +1273,10 @@ const CLIENT_CONFIG: &'static str = concat!(
     "  - P-256\n",
     "trust-root:\n",
     "  root-certs:\n",
-    "    - test/data/certs/server/ca_cert.pem\n",
+    "    - tests/data/certs/server/ca_cert.pem\n",
     "  crls: []\n",
-    "cert: test/data/certs/client/certs/test_client_cert.pem\n",
-    "key: test/data/certs/client/private/test_client_key.pem\n",
+    "cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+    "key: tests/data/certs/client/private/test_client_key.pem\n",
 );
 
 #[test]

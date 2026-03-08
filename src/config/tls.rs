@@ -2386,10 +2386,10 @@ fn test_load_server_cfg() {
         "client-auth:\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "key: test/data/certs/server/private/test_server_key.pem\n"
+        "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "key: tests/data/certs/server/private/test_server_key.pem\n"
     );
     let conf: TLSServerConfig = serde_yaml::from_str(yaml).unwrap();
 
@@ -2410,10 +2410,10 @@ fn test_load_client_cfg() {
         "  - P-256\n",
         "trust-root:\n",
         "  root-certs:\n",
-        "    - test/data/certs/server/ca_cert.pem\n",
+        "    - tests/data/certs/server/ca_cert.pem\n",
         "  crls: []\n",
-        "client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "client-key: test/data/certs/client/private/test_client_key.pem\n"
+        "client-cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "client-key: tests/data/certs/client/private/test_client_key.pem\n"
     );
     let conf: TLSClientConfig = serde_yaml::from_str(yaml).unwrap();
 
@@ -2435,10 +2435,10 @@ fn test_load_peer_cfg_connector() {
         "  - P-256\n",
         "trust-root:\n",
         "  root-certs:\n",
-        "    - test/data/certs/server/ca_cert.pem\n",
+        "    - tests/data/certs/server/ca_cert.pem\n",
         "  crls: []\n",
-        "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "key: test/data/certs/server/private/test_server_key.pem\n"
+        "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "key: tests/data/certs/server/private/test_server_key.pem\n"
     );
     let conf: TLSPeerConfig = serde_yaml::from_str(yaml).unwrap();
 
@@ -2460,10 +2460,10 @@ fn test_load_peer_cfg_acceptor() {
         "  - P-256\n",
         "trust-root:\n",
         "  root-certs:\n",
-        "    - test/data/certs/server/ca_cert.pem\n",
+        "    - tests/data/certs/server/ca_cert.pem\n",
         "  crls: []\n",
-        "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "key: test/data/certs/server/private/test_server_key.pem\n"
+        "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "key: tests/data/certs/server/private/test_server_key.pem\n"
     );
     let conf: TLSPeerConfig = serde_yaml::from_str(yaml).unwrap();
 

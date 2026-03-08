@@ -130,6 +130,7 @@ use crate::far::unix::UnixDatagramSocket;
 use crate::far::unix::UnixFarChannel;
 use crate::far::AcquiredResolveStaticError;
 use crate::far::AcquiredResolver;
+use crate::far::EmptyResolverError;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
@@ -1138,7 +1139,7 @@ pub enum CompoundFarIPChannelAcquiredResolverError {
         err: SOCKS5AcquiredResolveError<AcquiredResolveStaticError>
     },
     UDP {
-        err: SelectError
+        err: EmptyResolverError
     },
     UDPResolve
 }
@@ -6265,10 +6266,10 @@ fn test_compound_dtls_unix() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  unix-datagram:\n",
         "    path: test_compound_dtls_unix_server.sock\n",
     );
@@ -6284,10 +6285,10 @@ fn test_compound_dtls_unix() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/server/ca_cert.pem\n",
+        "      - tests/data/certs/server/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  unix-datagram:\n",
         "    path: test_compound_dtls_unix_client.sock\n",
     );
@@ -6486,10 +6487,10 @@ fn test_compound_dtls_udp() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  udp:\n",
         "    addr: ::1\n",
         "    port: 7003\n"
@@ -6506,10 +6507,10 @@ fn test_compound_dtls_udp() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/server/ca_cert.pem\n",
+        "      - tests/data/certs/server/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  udp:\n",
         "    addr: ::1\n",
         "    port: 7004\n"
@@ -6714,10 +6715,10 @@ fn test_compound_dtls_double() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  dtls:\n",
         "    cipher-suites:\n",
         "      - TLS_AES_256_GCM_SHA384\n",
@@ -6728,10 +6729,10 @@ fn test_compound_dtls_double() {
         "      - P-256\n",
         "    trust-root:\n",
         "      root-certs:\n",
-        "        - test/data/certs/client/ca_cert.pem\n",
+        "        - tests/data/certs/client/ca_cert.pem\n",
         "      crls: []\n",
-        "    cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "    key: test/data/certs/server/private/test_server_key.pem\n",
+        "    cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "    key: tests/data/certs/server/private/test_server_key.pem\n",
         "    unix-datagram:\n",
         "      path: test_compound_dtls_double_server.sock\n",
     );
@@ -6747,10 +6748,10 @@ fn test_compound_dtls_double() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/server/ca_cert.pem\n",
+        "      - tests/data/certs/server/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  dtls:\n",
         "    cipher-suites:\n",
         "      - TLS_AES_256_GCM_SHA384\n",
@@ -6761,10 +6762,10 @@ fn test_compound_dtls_double() {
         "      - P-256\n",
         "    trust-root:\n",
         "      root-certs:\n",
-        "        - test/data/certs/server/ca_cert.pem\n",
+        "        - tests/data/certs/server/ca_cert.pem\n",
         "      crls: []\n",
-        "    cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "    key: test/data/certs/client/private/test_client_key.pem\n",
+        "    cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "    key: tests/data/certs/client/private/test_client_key.pem\n",
         "    unix-datagram:\n",
         "      path: test_compound_dtls_double_client.sock\n",
     );

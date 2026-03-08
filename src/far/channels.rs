@@ -4337,7 +4337,7 @@ where
         let nchans = self.channels.len();
 
         for (id, chan) in self.channels.iter_mut().enumerate() {
-            match chan.shutdown(deletes, registry) {
+            match chan.shutdown(&mut deletes, registry) {
                 Ok(shutdown) => out = out && shutdown,
                 Err(err) => {
                     error!(target: "far-channels",
@@ -6193,10 +6193,10 @@ fn test_compound_dtls_unix() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  unix-datagram:\n",
         "    path: test_far_channels_dtls_unix_server.sock\n",
     );
@@ -6211,10 +6211,10 @@ fn test_compound_dtls_unix() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/server/ca_cert.pem\n",
+        "      - tests/data/certs/server/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  unix-datagram:\n",
         "    path: test_far_channels_dtls_unix_client.sock\n",
     );
@@ -6253,10 +6253,10 @@ fn test_compound_dtls_udp() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "  key: test/data/certs/server/private/test_server_key.pem\n",
+        "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  udp:\n",
         "    addr: ::0\n",
         "    port: 8210\n"
@@ -6272,10 +6272,10 @@ fn test_compound_dtls_udp() {
         "    - P-256\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/server/ca_cert.pem\n",
+        "      - tests/data/certs/server/ca_cert.pem\n",
         "    crls: []\n",
-        "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "  key: test/data/certs/client/private/test_client_key.pem\n",
+        "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  udp:\n",
         "    addr: ::0\n",
         "    port: 8211\n"
