@@ -5234,11 +5234,7 @@ use crate::config::CompoundFarChannelConfig;
 #[cfg(test)]
 use crate::config::CompoundXfrmCreateParam;
 #[cfg(test)]
-use crate::far::compound::CompoundFarChannel;
-#[cfg(test)]
 use crate::far::compound::CompoundFarChannelSessionCred;
-#[cfg(test)]
-use crate::far::compound::CompoundFarChannelXfrm;
 #[cfg(test)]
 use crate::far::compound::CompoundFarChannelXfrmPeerAddr;
 #[cfg(test)]
@@ -5249,10 +5245,6 @@ use crate::far::compound::CompoundOutboundNegotiatorParam;
 use crate::far::dtls::DTLSOutboundParam;
 #[cfg(test)]
 use crate::far::types::CompoundFarChannelsTypes;
-#[cfg(test)]
-use crate::far::udp::UDPDatagramXfrm;
-#[cfg(test)]
-use crate::far::unix::UnixDatagramXfrm;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
