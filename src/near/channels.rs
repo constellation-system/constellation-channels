@@ -16,10 +16,12 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
@@ -28,12 +30,15 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
-use std::iter::Peekable;
+use std::rc::Rc;
+use std::iter::FusedIterator;
 use std::time::Instant;
 
 use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
+use constellation_common::config::Create;
+use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::Negotiator;
@@ -42,6 +47,13 @@ use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
+use constellation_streams::channels::ChannelParam;
+use constellation_streams::channels::Channels;
+use constellation_streams::channels::ChannelsCreate;
+use constellation_streams::channels::ChannelsListen;
+use constellation_streams::channels::ChannelsShutdown;
+use constellation_streams::threads::RegistryCtx;
+use constellation_streams::threads::TokensCtx;
 use log::debug;
 use log::error;
 use log::info;
@@ -52,6 +64,11 @@ use mio::Registry;
 use mio::Token;
 
 use crate::channels::ShutdownError;
+use crate::config::NearChannelDuplexEntryConfig;
+use crate::config::NearChannelEntryConfig;
+use crate::config::NearChannelInboundEntryConfig;
+use crate::config::NearChannelOutboundEntryConfig;
+use crate::config::NearChannelsConfig;
 use crate::near::types::NearDuplexNegoTypes;
 use crate::near::types::NearSessionNegoTypes;
 use crate::near::NearChannel;
@@ -174,9 +191,9 @@ where
     /// Retry delay for acceptor.
     retry_when: Option<Instant>,
     /// Session information for each endpoint, for incoming sessions.
-    accept_tokens: HashMap<Types::InEndpoint, Token>,
+    accept_tokens: HashMap<Types::Endpoint, Token>,
     /// Session information for each endpoint, for outgoing sessions.
-    conn_tokens: HashMap<Types::OutEndpoint, Token>,
+    conn_tokens: HashMap<Types::Endpoint, Token>,
     /// Negotiation states corresponding to each [Token].
     ///
     /// Each `Token` in this table must have exactly one entry in
@@ -199,7 +216,7 @@ where
     /// [SessionAuthN] used to authenticate sessions.
     authn: Types::OutAuthN,
     /// Session information for each endpoint.
-    tokens: HashMap<Types::OutEndpoint, Token>,
+    tokens: HashMap<Types::Endpoint, Token>,
     /// Negotiation states corresponding to each [Token].
     ///
     /// Each `Token` in this table must have exactly one entry in
@@ -222,7 +239,7 @@ where
     /// Retry delay for acceptor.
     retry_when: Option<Instant>,
     /// Session information for each endpoint.
-    tokens: HashMap<Types::InEndpoint, Token>,
+    tokens: HashMap<Types::Endpoint, Token>,
     /// Negotiation states corresponding to each [Token].
     ///
     /// Each `Token` in this table must have exactly one entry in
@@ -298,6 +315,15 @@ where
     tokens: HashMap<Token, NearChannelID>
 }
 
+pub struct NearChannelParamsIter<I>
+where I: Iterator<Item = NearChannelID> {
+    iter: I,
+    max: usize,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NearChannelParam;
+
 /// Result of a step.
 enum StepResult<Session, Endpoint, Internal> {
     /// A new session was created.
@@ -332,8 +358,6 @@ pub enum NearChannelsEntrySessionError<Conn, Req> {
         /// The error that occurred requesting the session.
         err: Req
     },
-    /// The token iterator was exhausted.
-    NoTokens
 }
 
 #[derive(Debug)]
@@ -421,8 +445,6 @@ pub enum ChannelEntryReqError<Channel, Entry> {
     },
     /// The given endpoint was already requested.
     Collision,
-    /// Token generator was exhausted.
-    NoTokens,
     /// Trying to request a stream from an inbound-only channel.
     Inbound
 }
@@ -440,7 +462,32 @@ pub enum ChannelEntryShutdownError<Shutdown, Endpoint> {
 pub enum ChannelEntryListenError<Start> {
     Start { err: Start },
     IO { err: std::io::Error },
-    NoTokens
+}
+
+#[derive(Debug)]
+pub enum NearChannelsCreateError<InAuth, OutAuth, Inbound> {
+    OutAuth {
+        err: OutAuth
+    },
+    InAuth {
+        err: InAuth
+    },
+    Inbound {
+        err: Inbound
+    },
+    Collision {
+        name: String
+    }
+}
+
+impl<Addr> ChannelParam<Addr> for NearChannelParam {
+    #[inline]
+    fn accepts_addr(
+        &self,
+        _addr: &Addr
+    ) -> bool {
+        true
+    }
 }
 
 impl<Types> SessionNegoState<Types>
@@ -1696,12 +1743,11 @@ where
     }
 }
 
-fn start_incoming<I, Types>(
-    gentok: &mut Peekable<I>,
+fn start_incoming<Ctx, Types>(
+    ctx: &mut Ctx,
     sessions: &mut Vec<Types::InAuthNSession>,
     when: &mut Option<Instant>,
     read: &mut bool,
-    registry: &Registry,
     accept: &mut Types::InChannel,
     shutdown: &Types::InShutdownNego,
     authn: &Types::InAuthN
@@ -1710,34 +1756,34 @@ fn start_incoming<I, Types>(
     ChannelEntryListenError<Types::InSessionStartError>
 >
 where
-    I: Iterator<Item = Token>,
-    Types: NearDuplexNegoTypes {
+    Types: NearDuplexNegoTypes,
+    Ctx: RegistryCtx + TokensCtx {
     if when.map_or(true, |when| when <= Instant::now()) {
         let mut incoming = Vec::new();
 
         *when = None;
 
         loop {
-            let token =
-                gentok.peek().ok_or(ChannelEntryListenError::NoTokens)?;
-            let token = *token;
+            let token = ctx.token();
 
-            match accept.start(registry, token) {
+            match accept.start(ctx.registry(), token) {
                 Ok(RetryResult::Success(state)) => {
                     // Normal listen result.
                     *read = true;
-                    gentok.next();
                     incoming.push((token, state));
                 }
                 // If we get a retry delay, record it and return
                 // what we have.
                 Ok(RetryResult::Retry(retry)) => {
                     *when = Some(retry);
+                    ctx.free_token(token);
 
                     break;
                 }
                 // Error; see if it's WouldBlock.
                 Err(err) => {
+                    ctx.free_token(token);
+
                     // Report errors other than WouldBlock.
                     if err.scope() != ErrorScope::WouldBlock {
                         error!(target: "channel-entry",
@@ -1760,7 +1806,7 @@ where
 
         for (token, state) in incoming.drain(..) {
             match SessionNegoState::create(
-                registry, accept, authn, shutdown, state
+                ctx.registry(), accept, authn, shutdown, state
             ) {
                 Ok(Some((ent, session))) => {
                     out.push((token, ent));
@@ -1936,15 +1982,11 @@ where
     ///
     /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
     ///
     /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `gentok`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
     ///
     /// - `endpoint`: Counterparty's address.
     ///
@@ -1958,13 +2000,11 @@ where
     /// - `RetryResult::Success(None))`: Session negotiations are still pending
     ///   and the session will eventually be reported by
     ///   [listen](DuplexChannelMode::listen).
-    pub(crate) fn req_stream<Ctx, I>(
+    pub(crate) fn req_stream<Ctx>(
         &mut self,
         ctx: &mut Ctx,
-        gentok: &mut Peekable<I>,
-        registry: &Registry,
         retry: &Retry,
-        endpoint: Types::OutEndpoint,
+        endpoint: Types::Endpoint,
         param: Types::OutParam
     ) -> Result<
         RetryResult<(Token, Option<Types::OutAuthNSession>)>,
@@ -1989,38 +2029,43 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         if !self.conn_tokens.contains_key(&endpoint) {
             trace!(target: "duplex-channel-mode",
                    "creating outbound channel to {}",
                    endpoint);
 
-            let token = *gentok.peek().ok_or(ChannelEntryReqError::NoTokens)?;
+            let token = ctx.token();
             let conn = Types::OutChannel::create_with_endpoint(
                 ctx,
                 self.config.clone(),
                 endpoint.clone(),
                 param
             )
-            .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
+            .map_err(|err| {
+                ctx.free_token(token);
+
+                ChannelEntryReqError::Channel { err: err }
+            })?;
 
             trace!(target: "duplex-channel-mode",
                    "creating connector entry for {}, token {:?}",
                    endpoint, token);
 
             ConnectorEntry::create(
-                registry,
+                ctx.registry(),
                 conn,
                 &self.out_authn,
                 retry,
                 endpoint.clone(),
                 token
             )
-            .map_err(|err| ChannelEntryReqError::Entry { err: err })?
+            .map_err(|err| {
+                ctx.free_token(token);
+                ChannelEntryReqError::Entry { err: err }
+            })?
             .map_ok(|(ent, out)| {
                 let out: Option<Types::OutAuthNSession> = out;
-                let _ = gentok.next();
 
                 trace!(target: "duplex-channel-mode",
                           "connector entry created for {}",
@@ -2050,11 +2095,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `gentok`: Generator for [Token]s.
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `out_sessions`: Buffer for new authenticated outbound sessions.
     ///
@@ -2066,17 +2111,14 @@ where
     /// - `in_endpoints`: Set of all active inbound sessions that have pending
     ///   traffic.
     ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
-    ///
     /// - `live`: All [Token]s that have pending read traffic.
-    fn listen<I>(
+    fn listen<Ctx>(
         &mut self,
-        gentok: &mut Peekable<I>,
+        ctx: &mut Ctx,
         out_sessions: &mut Vec<Types::OutAuthNSession>,
         in_sessions: &mut Vec<Types::InAuthNSession>,
-        out_endpoints: &mut HashSet<Types::OutEndpoint>,
-        in_endpoints: &mut HashSet<Types::InEndpoint>,
-        registry: &Registry,
+        out_endpoints: &mut HashSet<Types::Endpoint>,
+        in_endpoints: &mut HashSet<Types::Endpoint>,
         retry: &Retry,
         live: &HashSet<Token>
     ) -> Result<
@@ -2084,7 +2126,7 @@ where
         ChannelEntryListenError<Types::InSessionStartError>
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
         let mut deletes = HashSet::with_capacity(self.negos.len());
 
@@ -2103,7 +2145,7 @@ where
                         {
                             match ent.step(
                                 out_endpoints,
-                                registry,
+                                ctx.registry(),
                                 &self.out_authn,
                                 retry,
                                 *token
@@ -2159,7 +2201,7 @@ where
                             if let Some(state) = ent.take() {
                                 match state.step(
                                     in_endpoints,
-                                    registry,
+                                    ctx.registry(),
                                     &self.acceptor,
                                     &self.in_authn,
                                     &self.shutdown
@@ -2237,12 +2279,11 @@ where
 
             // Pick up all incoming sessions.
             let incoming = if live.contains(&self.token) {
-                let incoming = start_incoming::<I, Types>(
-                    gentok,
+                let incoming = start_incoming::<Ctx, Types>(
+                    ctx,
                     in_sessions,
                     &mut self.retry_when,
                     &mut read,
-                    registry,
                     &mut self.acceptor,
                     &self.shutdown,
                     &self.in_authn
@@ -2307,7 +2348,7 @@ where
                     Types::OutShutdownNegoError
                 >
             >,
-            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
+            Types::Endpoint
         >
     > {
         let session_endpoint = stream
@@ -2361,7 +2402,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: DuplexValue::Conn(session_endpoint.clone())
+                endpoint: session_endpoint.clone()
             })
         }?;
 
@@ -2410,7 +2451,7 @@ where
                     Types::OutShutdownNegoError
                 >
             >,
-            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
+            Types::Endpoint
         >
     > {
         let endpoint = stream
@@ -2431,7 +2472,7 @@ where
                 let newaccept = accept
                     .take()
                     .ok_or(ChannelEntryShutdownError::NotFound {
-                        endpoint: DuplexValue::Accept(endpoint.clone())
+                        endpoint: endpoint.clone()
                     })?
                     .shutdown(
                         registry,
@@ -2473,7 +2514,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: DuplexValue::Accept(endpoint)
+                endpoint: endpoint
             })
         }
     }
@@ -2482,7 +2523,7 @@ where
         &mut self,
         session: &Option<Types::OutAuthNSession>,
         ent: ConnectorEntry<Types::Outbound>,
-        endpoint: Types::OutEndpoint,
+        endpoint: Types::Endpoint,
         token: Token
     ) -> Result<(), std::io::Error> {
         let ent = DuplexValue::Conn(ent);
@@ -2522,9 +2563,9 @@ where
     }
 
     fn insert_out_ent_extra(
-        conn_tokens: &mut HashMap<Types::OutEndpoint, Token>,
+        conn_tokens: &mut HashMap<Types::Endpoint, Token>,
         session: &Types::OutAuthNSession,
-        endpoint: &Types::OutEndpoint,
+        endpoint: &Types::Endpoint,
         token: Token
     ) -> Result<(), std::io::Error> {
         let session_endpoint = session.get().peer_addr()?;
@@ -2547,9 +2588,9 @@ where
     }
 
     fn remove_out_ent_token(
-        conn_tokens: &mut HashMap<Types::OutEndpoint, Token>,
-        session_endpoint: Option<Types::OutEndpoint>,
-        endpoint: &Types::OutEndpoint
+        conn_tokens: &mut HashMap<Types::Endpoint, Token>,
+        session_endpoint: Option<Types::Endpoint>,
+        endpoint: &Types::Endpoint
     ) {
         if let Some(token) = conn_tokens.remove(endpoint) {
             trace!(target: "duplex-channel-mode",
@@ -2581,7 +2622,7 @@ where
         ent: SessionNegoState<Types::Inbound>,
         token: Token
     ) {
-        let endpoint: Option<&Types::InEndpoint> = match &ent {
+        let endpoint: Option<&Types::Endpoint> = match &ent {
             SessionNegoState::AuthN { endpoint, .. } |
             SessionNegoState::Active { endpoint } |
             SessionNegoState::Shutdown { endpoint, .. } => Some(endpoint),
@@ -2606,8 +2647,8 @@ where
     }
 
     fn insert_in_ent_token(
-        accept_tokens: &mut HashMap<Types::InEndpoint, Token>,
-        endpoint: &Types::InEndpoint,
+        accept_tokens: &mut HashMap<Types::Endpoint, Token>,
+        endpoint: &Types::Endpoint,
         token: Token
     ) {
         trace!(target: "duplex-channel-mode",
@@ -2622,8 +2663,8 @@ where
     }
 
     fn remove_in_ent_token(
-        accept_tokens: &mut HashMap<Types::InEndpoint, Token>,
-        endpoint: &Types::InEndpoint
+        accept_tokens: &mut HashMap<Types::Endpoint, Token>,
+        endpoint: &Types::Endpoint
     ) {
         if let Some(token) = accept_tokens.remove(endpoint) {
             trace!(target: "duplex-channel-mode",
@@ -2746,15 +2787,9 @@ where
     ///
     /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
     ///
     /// - `ctx`: Context from which to obtain name resolution caches.
-    ///
-    /// - `gentok`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
     ///
     /// - `endpoint`: Counterparty's address.
     ///
@@ -2768,13 +2803,11 @@ where
     /// - `RetryResult::Success(None))`: Session negotiations are still pending
     ///   and the session will eventually be reported by
     ///   [listen](OutboundChannelMode::listen).
-    pub(crate) fn req_stream<Ctx, I>(
+    pub(crate) fn req_stream<Ctx>(
         &mut self,
         ctx: &mut Ctx,
-        gentok: &mut Peekable<I>,
-        registry: &Registry,
         retry: &Retry,
-        endpoint: Types::OutEndpoint,
+        endpoint: Types::Endpoint,
         param: Types::OutParam
     ) -> Result<
         RetryResult<(Token, Option<Types::OutAuthNSession>)>,
@@ -2799,8 +2832,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         debug!(target: "outbound-channel-mode",
                "requesting flow with {}",
                endpoint);
@@ -2810,31 +2842,38 @@ where
                    "creating outbound channel to {}",
                    endpoint);
 
-            let token = *gentok.peek().ok_or(ChannelEntryReqError::NoTokens)?;
+            let token = ctx.token();
             let conn = Types::OutChannel::create_with_endpoint(
                 ctx,
                 self.config.clone(),
                 endpoint.clone(),
                 param
             )
-            .map_err(|err| ChannelEntryReqError::Channel { err: err })?;
+            .map_err(|err| {
+                ctx.free_token(token);
+
+                ChannelEntryReqError::Channel { err: err }
+            })?;
 
             trace!(target: "outbound-channel-mode",
                    "creating connector entry for {}, token {:?}",
                    endpoint, token);
 
             ConnectorEntry::create(
-                registry,
+                ctx.registry(),
                 conn,
                 &self.authn,
                 retry,
                 endpoint.clone(),
                 token
             )
-            .map_err(|err| ChannelEntryReqError::Entry { err: err })?
+            .map_err(|err| {
+                ctx.free_token(token);
+
+                ChannelEntryReqError::Entry { err: err }
+            })?
             .map_ok(|(ent, out)| {
                 let out: Option<Types::OutAuthNSession> = out;
-                let _ = gentok.next();
 
                 trace!(target: "outbound-channel-mode",
                           "connector entry created for {}",
@@ -2862,13 +2901,7 @@ where
     /// be reported in `in_endpoints` and `out_endpoints`.  Any
     /// sessions that are shut down will be unregistered.
     ///
-    /// # Type Parameters
-    ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
-    ///
-    /// - `gentok`: Generator for [Token]s.
     ///
     /// - `out_sessions`: Buffer for new authenticated outbound sessions.
     ///
@@ -2886,7 +2919,7 @@ where
     fn listen(
         &mut self,
         out_sessions: &mut Vec<Types::OutAuthNSession>,
-        out_endpoints: &mut HashSet<Types::OutEndpoint>,
+        out_endpoints: &mut HashSet<Types::Endpoint>,
         registry: &Registry,
         retry: &Retry,
         live: &HashSet<Token>
@@ -3006,7 +3039,7 @@ where
                     Types::OutShutdownNegoError
                 >
             >,
-            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
+            Types::Endpoint
         >
     > {
         let session_endpoint = stream
@@ -3055,7 +3088,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: DuplexValue::Conn(session_endpoint.clone())
+                endpoint: session_endpoint.clone()
             })
         }?;
 
@@ -3080,7 +3113,7 @@ where
         &mut self,
         session: &Option<Types::OutAuthNSession>,
         ent: ConnectorEntry<Types::Outbound>,
-        endpoint: Types::OutEndpoint,
+        endpoint: Types::Endpoint,
         token: Token
     ) -> Result<(), std::io::Error> {
         trace!(target: "outbound-channel-mode",
@@ -3118,9 +3151,9 @@ where
     }
 
     fn insert_out_ent_extra(
-        conn_tokens: &mut HashMap<Types::OutEndpoint, Token>,
+        conn_tokens: &mut HashMap<Types::Endpoint, Token>,
         session: &Types::OutAuthNSession,
-        endpoint: &Types::OutEndpoint,
+        endpoint: &Types::Endpoint,
         token: Token
     ) -> Result<(), std::io::Error> {
         let session_endpoint = session.get().peer_addr()?;
@@ -3143,9 +3176,9 @@ where
     }
 
     fn remove_out_ent_token(
-        conn_tokens: &mut HashMap<Types::OutEndpoint, Token>,
-        session_endpoint: Option<Types::OutEndpoint>,
-        endpoint: &Types::OutEndpoint
+        conn_tokens: &mut HashMap<Types::Endpoint, Token>,
+        session_endpoint: Option<Types::Endpoint>,
+        endpoint: &Types::Endpoint
     ) {
         if let Some(token) = conn_tokens.remove(endpoint) {
             trace!(target: "outbound-channel-mode",
@@ -3296,38 +3329,30 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `gentok`: Generator for [Token]s.
-    ///
-    /// - `out_sessions`: Buffer for new authenticated outbound sessions.
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `in_sessions`: Buffer for new authenticated inbound sessions.
-    ///
-    /// - `out_endpoints`: Set of all active outbound sessions that have pending
-    ///   traffic.
     ///
     /// - `in_endpoints`: Set of all active inbound sessions that have pending
     ///   traffic.
     ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
-    ///
     /// - `live`: All [Token]s that have pending read traffic.
-    fn listen<I>(
+    fn listen<Ctx>(
         &mut self,
-        gentok: &mut Peekable<I>,
+        ctx: &mut Ctx,
         in_sessions: &mut Vec<Types::InAuthNSession>,
-        in_endpoints: &mut HashSet<Types::InEndpoint>,
-        registry: &Registry,
+        in_endpoints: &mut HashSet<Types::Endpoint>,
         live: &HashSet<Token>
     ) -> Result<
         (Option<Vec<Token>>, Option<Vec<Token>>),
         ChannelEntryListenError<Types::InSessionStartError>
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
         let mut deletes = HashSet::with_capacity(self.negos.len());
 
@@ -3341,7 +3366,7 @@ where
                     if let Some(state) = ent.take() {
                         match state.step(
                             in_endpoints,
-                            registry,
+                            ctx.registry(),
                             &self.acceptor,
                             &self.authn,
                             &self.shutdown
@@ -3415,12 +3440,11 @@ where
 
             // Pick up all incoming sessions.
             let incoming = if live.contains(&self.token) {
-                start_incoming::<I, Types>(
-                    gentok,
+                start_incoming::<Ctx, Types>(
+                    ctx,
                     in_sessions,
                     &mut self.retry_when,
                     &mut read,
-                    registry,
                     &mut self.acceptor,
                     &self.shutdown,
                     &self.authn
@@ -3483,7 +3507,7 @@ where
                     Types::OutShutdownNegoError
                 >
             >,
-            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
+            Types::Endpoint
         >
     > {
         let endpoint = stream
@@ -3502,7 +3526,7 @@ where
             let newaccept = accept
                 .take()
                 .ok_or(ChannelEntryShutdownError::NotFound {
-                    endpoint: DuplexValue::Accept(endpoint.clone())
+                    endpoint: endpoint.clone()
                 })?
                 .shutdown(
                     registry,
@@ -3541,7 +3565,7 @@ where
             }
         } else {
             Err(ChannelEntryShutdownError::NotFound {
-                endpoint: DuplexValue::Accept(endpoint)
+                endpoint: endpoint
             })
         }
     }
@@ -3551,7 +3575,7 @@ where
         ent: SessionNegoState<Types::Inbound>,
         token: Token
     ) {
-        let endpoint: Option<&Types::InEndpoint> = match &ent {
+        let endpoint: Option<&Types::Endpoint> = match &ent {
             SessionNegoState::AuthN { endpoint, .. } |
             SessionNegoState::Active { endpoint } |
             SessionNegoState::Shutdown { endpoint, .. } => Some(endpoint),
@@ -3574,8 +3598,8 @@ where
     }
 
     fn insert_in_ent_token(
-        accept_tokens: &mut HashMap<Types::InEndpoint, Token>,
-        endpoint: &Types::InEndpoint,
+        accept_tokens: &mut HashMap<Types::Endpoint, Token>,
+        endpoint: &Types::Endpoint,
         token: Token
     ) {
         trace!(target: "inbound-channel-mode",
@@ -3590,8 +3614,8 @@ where
     }
 
     fn remove_in_ent_token(
-        accept_tokens: &mut HashMap<Types::InEndpoint, Token>,
-        endpoint: &Types::InEndpoint
+        accept_tokens: &mut HashMap<Types::Endpoint, Token>,
+        endpoint: &Types::Endpoint
     ) {
         if let Some(token) = accept_tokens.remove(endpoint) {
             trace!(target: "inbound-channel-mode",
@@ -3652,7 +3676,7 @@ where
     /// - `retry`: [Retry] configuration for retrying connections.
     ///
     /// - `size`: Expected maximum number of sessions; this will not cause an
-    ///   errer if it is too low.
+    ///   error if it is too low.
     pub(crate) fn outbound_with_capacity(
         config: Types::OutConfig,
         authn: Types::OutAuthN,
@@ -3718,7 +3742,7 @@ where
     ///   sessions.
     ///
     /// - `size`: Expected maximum number of sessions; this will not cause an
-    ///   errer if it is too low.
+    ///   error if it is too low.
     pub(crate) fn inbound_with_capacity(
         acceptor: Types::InChannel,
         authn: Types::InAuthN,
@@ -3793,10 +3817,10 @@ where
     ///   sessions.
     ///
     /// - `nins`: Expected maximum number of inbound sessions; this will not
-    ///   cause an errer if it is too low.
+    ///   cause an error if it is too low.
     ///
     /// - `nouts`: Expected maximum number of outbound sessions; this will not
-    ///   cause an errer if it is too low.
+    ///   cause an error if it is too low.
     pub(crate) fn duplex_with_capacity(
         out_config: Types::OutConfig,
         out_authn: Types::OutAuthN,
@@ -3857,15 +3881,9 @@ where
     ///
     /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
     ///
     /// - `ctx`: Context from which to obtain name resolution caches.
-    ///
-    /// - `gentok`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
     ///
     /// - `endpoint`: Counterparty's address.
     ///
@@ -3879,12 +3897,10 @@ where
     /// - `RetryResult::Success(None))`: Session negotiations are still pending
     ///   and the session will eventually be reported by
     ///   [listen](ChannelEntry::listen).
-    pub(crate) fn req_stream<Ctx, I>(
+    pub(crate) fn req_stream<Ctx>(
         &mut self,
         ctx: &mut Ctx,
-        gentok: &mut Peekable<I>,
-        registry: &Registry,
-        endpoint: Types::OutEndpoint,
+        endpoint: Types::Endpoint,
         param: Types::OutParam
     ) -> Result<
         RetryResult<(Token, Option<Types::OutAuthNSession>)>,
@@ -3909,8 +3925,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         debug!(target: "inbound-channel-mode",
                "requesting flow with {}",
                endpoint);
@@ -3918,16 +3933,12 @@ where
         match &mut self.mode {
             ChannelMode::Duplex(ent) => ent.req_stream(
                 ctx,
-                gentok,
-                registry,
                 &self.retry,
                 endpoint,
                 param
             ),
             ChannelMode::Outbound(ent) => ent.req_stream(
                 ctx,
-                gentok,
-                registry,
                 &self.retry,
                 endpoint,
                 param
@@ -3950,11 +3961,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `gentok`: Generator for [Token]s.
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `out_sessions`: Buffer for new authenticated outbound sessions.
     ///
@@ -3966,8 +3977,6 @@ where
     /// - `in_endpoints`: Set of all active inbound sessions that have pending
     ///   traffic.
     ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
-    ///
     /// - `live`: All [Token]s that have pending read traffic.
     ///
     /// # Return Value
@@ -3975,29 +3984,27 @@ where
     /// A pair of `Vec`s, the first containing [Token]s that were
     /// registered, and the second containing `Token`s that were
     /// deregistered.
-    fn listen<I>(
+    fn listen<Ctx>(
         &mut self,
-        gentok: &mut Peekable<I>,
+        ctx: &mut Ctx,
         out_sessions: &mut Vec<Types::OutAuthNSession>,
         in_sessions: &mut Vec<Types::InAuthNSession>,
-        out_endpoints: &mut HashSet<Types::OutEndpoint>,
-        in_endpoints: &mut HashSet<Types::InEndpoint>,
-        registry: &Registry,
+        out_endpoints: &mut HashSet<Types::Endpoint>,
+        in_endpoints: &mut HashSet<Types::Endpoint>,
         live: &HashSet<Token>
     ) -> Result<
         (Option<Vec<Token>>, Option<Vec<Token>>),
         ChannelEntryListenError<Types::InSessionStartError>
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         match &mut self.mode {
             ChannelMode::Duplex(ent) => ent.listen(
-                gentok,
+                ctx,
                 out_sessions,
                 in_sessions,
                 out_endpoints,
                 in_endpoints,
-                registry,
                 &self.retry,
                 live
             ),
@@ -4005,13 +4012,13 @@ where
                 .listen(
                     out_sessions,
                     out_endpoints,
-                    registry,
+                    ctx.registry(),
                     &self.retry,
                     live
                 )
                 .map(|deletes| (None, deletes)),
             ChannelMode::Inbound(ent) => {
-                ent.listen(gentok, in_sessions, in_endpoints, registry, live)
+                ent.listen(ctx, in_sessions, in_endpoints, live)
             }
         }
     }
@@ -4044,7 +4051,7 @@ where
                     Types::OutShutdownNegoError
                 >
             >,
-            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
+            Types::Endpoint
         >
     > {
         match (&mut self.mode, stream) {
@@ -4123,21 +4130,15 @@ where
     ///
     /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
     ///
     /// - `ctx`: Context from which to obtain name resolution caches.
-    ///
-    /// - `gentok`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
     ///
     /// - `channel`: ID of the channel on which to request the session.
     ///
     /// - `endpoint`: Counterparty's address.
     ///
-    /// - `verify_endpoint`: Override to use for SSL verification.
+    /// - `param`: Override to use for SSL verification.
     ///
     /// # Return Value
     ///
@@ -4147,13 +4148,11 @@ where
     /// - `RetryResult::Success(None))`: Session negotiations are still pending
     ///   and the session will eventually be reported by
     ///   [listen](ChannelEntry::listen).
-    pub(crate) fn req_stream<Ctx, I>(
+    pub(crate) fn req_stream<Ctx>(
         &mut self,
         ctx: &mut Ctx,
-        gentok: &mut Peekable<I>,
-        registry: &Registry,
         channel: NearChannelID,
-        endpoint: Types::OutEndpoint,
+        endpoint: Types::Endpoint,
         param: Types::OutParam
     ) -> Result<
         RetryResult<Option<Types::OutAuthNSession>>,
@@ -4178,10 +4177,9 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         Ok(self.channels[channel.0]
-            .req_stream(ctx, gentok, registry, endpoint, param)?
+            .req_stream(ctx, endpoint, param)?
             .map(|(token, out)| {
                 if let Some(curr) = self.tokens.insert(token, channel) {
                     error!(target: "near-channels",
@@ -4225,7 +4223,7 @@ where
                     Types::OutShutdownNegoError
                 >
             >,
-            DuplexValue<Types::InEndpoint, Types::OutEndpoint>
+            Types::Endpoint
         >
     > {
         self.channels[channel.0].shutdown_stream(registry, stream)
@@ -4245,11 +4243,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `gentok`: Generator for [Token]s.
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `out_sessions`: Buffer for new authenticated outbound sessions.
     ///
@@ -4261,8 +4259,6 @@ where
     /// - `in_endpoints`: Set of all active inbound sessions that have pending
     ///   traffic.
     ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
-    ///
     /// - `live`: All [Token]s that have pending read traffic.
     ///
     /// # Return Value
@@ -4270,18 +4266,17 @@ where
     /// A pair of `Vec`s, the first containing [Token]s that were
     /// registered, and the second containing `Token`s that were
     /// deregistered.
-    fn listen<I>(
+    fn listen<Ctx>(
         &mut self,
-        gentok: &mut Peekable<I>,
+        ctx: &mut Ctx,
         out_sessions: &mut Vec<Types::OutAuthNSession>,
         in_sessions: &mut Vec<Types::InAuthNSession>,
-        out_endpoints: &mut HashSet<Types::OutEndpoint>,
-        in_endpoints: &mut HashSet<Types::InEndpoint>,
-        registry: &Registry,
+        out_endpoints: &mut HashSet<Types::Endpoint>,
+        in_endpoints: &mut HashSet<Types::Endpoint>,
         live: &HashSet<Token>
     ) -> Result<(), ChannelEntryListenError<Types::InSessionStartError>>
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         // First, figure out which channels to visit.
         let lives: Vec<NearChannelID> = self
             .tokens
@@ -4297,12 +4292,11 @@ where
 
         for id in lives {
             let (creates, deletes) = self.channels[id.0].listen(
-                gentok,
+                ctx,
                 out_sessions,
                 in_sessions,
                 out_endpoints,
                 in_endpoints,
-                registry,
                 live
             )?;
 
@@ -4313,6 +4307,8 @@ where
                                "token {:?} was not present in tokens table",
                                token);
                     }
+
+                    ctx.free_token(token);
                 }
             }
 
@@ -4329,6 +4325,296 @@ where
 
         Ok(())
     }
+}
+
+impl<Ctx, Types> CreateWithParam<&'_ mut Ctx> for NearChannels<Types>
+where
+    Types: NearDuplexNegoTypes,
+    Ctx: NSNameCachesCtx + TokensCtx {
+    type Config = NearChannelsConfig<
+        Types::InConfig,
+        Types::OutConfig,
+        Types::InAuthNConfig,
+        Types::OutAuthNConfig
+    >;
+    type CreateError = NearChannelsCreateError<
+        Types::InAuthCreateError,
+        Types::OutAuthCreateError,
+        Types::InChannelCreateError
+    >;
+
+    fn create(
+        config: Self::Config,
+        ctx: &mut Ctx
+    ) -> Result<Self, Self::CreateError> {
+        let (channel_configs, default_inbound_authn, default_outbound_authn,
+             default_retry, default_nsessions) = config.take();
+
+        // Ensure no id collisions.
+        let mut names = HashSet::with_capacity(channel_configs.len());
+
+        for config in channel_configs.iter() {
+            if !names.insert(config.name()) {
+                return Err(NearChannelsCreateError::Collision {
+                    name: config.name().to_string()
+                })
+            }
+        }
+
+        let mut ids = HashMap::with_capacity(channel_configs.len());
+        let mut tokens = HashMap::with_capacity(channel_configs.len());
+        let mut names = Vec::with_capacity(channel_configs.len());
+        let mut channels = Vec::with_capacity(channel_configs.len());
+
+        // Create each channel.
+        for config in channel_configs.into_iter() {
+            match config {
+                NearChannelEntryConfig::Outbound { outbound } => {
+                    let (name, connect, authn, retry, nsessions) =
+                        outbound.take();
+                    let authn = authn.unwrap_or(default_outbound_authn.clone());
+                    let retry = retry.unwrap_or(default_retry.clone());
+                    let nsessions = nsessions.or(default_nsessions);
+
+                    info!(target: "near-channels",
+                          "creating outbound near channel \"{}\"",
+                          name);
+
+                    let authn = Types::OutAuthN::create(authn)
+                        .map_err(|err| NearChannelsCreateError::OutAuth {
+                            err: err
+                        })?;
+                    let channel = match nsessions {
+                        Some(nsessions) => ChannelEntry::outbound_with_capacity(
+                            connect,
+                            authn,
+                            retry,
+                            nsessions
+                        ),
+                        None => ChannelEntry::outbound(connect, authn, retry)
+                    };
+                    let id = NearChannelID(channels.len());
+
+                    channels.push(channel);
+                    names.push(name.clone());
+
+                    if let Some(curr) = ids.insert(name.clone(), id) {
+                        error!(target: "near-channels",
+                               "entry for name \"{}\" already existed: {}",
+                               name, curr);
+                    }
+
+                }
+                NearChannelEntryConfig::Inbound { inbound } => {
+                    let (name, listen, authn, retry, nsessions) =
+                        inbound.take();
+                    let authn = authn.unwrap_or(default_inbound_authn.clone());
+                    let retry = retry.unwrap_or(default_retry.clone());
+                    let nsessions = nsessions.or(default_nsessions);
+
+                    info!(target: "near-channels",
+                          "creating inbound near channel \"{}\"",
+                          name);
+
+                    let authn = Types::InAuthN::create(authn)
+                        .map_err(|err| NearChannelsCreateError::InAuth {
+                            err: err
+                        })?;
+                    let acceptor = Types::InChannel::create(ctx, listen)
+                        .map_err(|err| NearChannelsCreateError::Inbound {
+                            err: err
+                        })?;
+                    let token = ctx.token();
+                    let channel = match nsessions {
+                        Some(nsessions) => ChannelEntry::inbound_with_capacity(
+                            acceptor,
+                            authn,
+                            retry,
+                            token,
+                            nsessions
+                        ),
+                        None => ChannelEntry::inbound(
+                            acceptor,
+                            authn,
+                            retry,
+                            token
+                        )
+                    };
+                    let id = NearChannelID(channels.len());
+
+                    channels.push(channel);
+                    names.push(name.clone());
+
+                    if let Some(curr) = ids.insert(name.clone(), id) {
+                        error!(target: "near-channels",
+                               "entry for name \"{}\" already existed: {}",
+                               name, curr);
+                    }
+
+                    if let Some(curr) = tokens.insert(token, id) {
+                        error!(target: "near-channels",
+                               "entry for token {:?} already existed: {}",
+                               token, curr);
+                    }
+                }
+                NearChannelEntryConfig::Duplex { duplex } => {
+                    let (name, listen, connect, in_authn, out_authn,
+                         retry, nsessions) = duplex.take();
+                    let out_authn = out_authn
+                        .unwrap_or(default_outbound_authn.clone());
+                    let in_authn = in_authn
+                        .unwrap_or(default_inbound_authn.clone());
+                    let retry = retry.unwrap_or(default_retry.clone());
+                    let nsessions = nsessions.or(default_nsessions);
+
+                    info!(target: "near-channels",
+                          "creating duplex near channel \"{}\"",
+                          name);
+
+                    let out_authn = Types::OutAuthN::create(out_authn)
+                        .map_err(|err| NearChannelsCreateError::OutAuth {
+                            err: err
+                        })?;
+                    let in_authn = Types::InAuthN::create(in_authn)
+                        .map_err(|err| NearChannelsCreateError::InAuth {
+                            err: err
+                        })?;
+                    let acceptor = Types::InChannel::create(ctx, listen)
+                        .map_err(|err| NearChannelsCreateError::Inbound {
+                            err: err
+                        })?;
+                    let token = ctx.token();
+                    let channel = match nsessions {
+                        Some(nsessions) => ChannelEntry::duplex_with_capacity(
+                            connect,
+                            out_authn,
+                            acceptor,
+                            in_authn,
+                            retry,
+                            token,
+                            nsessions,
+                            nsessions
+                        ),
+                        None => ChannelEntry::duplex(
+                            connect,
+                            out_authn,
+                            acceptor,
+                            in_authn,
+                            retry,
+                            token,
+                        )
+                    };
+                    let id = NearChannelID(channels.len());
+
+                    channels.push(channel);
+                    names.push(name.clone());
+
+                    if let Some(curr) = ids.insert(name.clone(), id) {
+                        error!(target: "near-channels",
+                               "entry for name \"{}\" already existed: {}",
+                               name, curr);
+                    }
+
+                    if let Some(curr) = tokens.insert(token, id) {
+                        error!(target: "near-channels",
+                               "entry for token {:?} already existed: {}",
+                               token, curr);
+                    }
+                }
+            }
+        }
+
+        Ok(NearChannels {
+            ids: ids,
+            names: names,
+            channels: channels,
+            tokens: tokens
+        })
+    }
+}
+
+impl<Ctx, Types> Channels<Ctx> for NearChannels<Types>
+where
+    Types: NearDuplexNegoTypes
+{
+    type ChannelID = NearChannelID;
+    type Param = NearChannelParam;
+    type Addr = Types::Endpoint;
+    type Stream = DuplexValue<
+        Rc<RefCell<Types::InAuthNSession>>,
+        Rc<RefCell<Types::OutAuthNSession>>
+    >;
+    type OutNegoParam = Types::OutParam;
+    type SelectParamIter<'a, I> = NearChannelParamsIter<I>
+    where
+        I: 'a + Iterator<Item = Self::ChannelID>,
+        Self: 'a,
+        Ctx: 'a;
+    type ParamError = Infallible;
+    type ReqStreamError = ChannelEntryReqError<
+        Types::OutCreateError,
+        ConnectorEntryCreateError<
+            Types::OutSessionStartError,
+            SessionCreateError<
+                NegoEntrySessionError<
+                    Types::OutSessionNegoError,
+                    SessionEntryAuthNError<
+                        Types::OutAuthStartError,
+                        Types::OutAuthNegoError
+                    >
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError
+                >
+            >
+        >
+    >;
+
+    #[inline]
+    fn params<'a, I>(
+        &'a mut self,
+        _ctx: &'a mut Ctx,
+        channels: I
+    ) -> Result<RetryResult<(Self::SelectParamIter<'a, I>, Option<Instant>)>,
+                Self::ParamError>
+    where I: 'a + Iterator<Item = Self::ChannelID> {
+        Ok(RetryResult::Success((NearChannelParamsIter {
+            iter: channels,
+            max: self.channels.len()
+        }, None)))
+    }
+
+    #[inline]
+    fn channel_id(
+        &self,
+        name: &str
+    ) -> Option<Self::ChannelID> {
+        self.ids.get(name).cloned()
+    }
+}
+
+impl<I> Iterator for NearChannelParamsIter<I>
+where I: Iterator<Item = NearChannelID> {
+    type Item = (NearChannelID, NearChannelParam);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().and_then(|id| if id.0 < self.max {
+            Some((id, NearChannelParam))
+        } else {
+            self.next()
+        })
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<I> FusedIterator for NearChannelParamsIter<I>
+where I: Iterator<Item = NearChannelID> {
 }
 
 impl<Accept, Conn> Read for DuplexValue<Accept, Conn>
@@ -4453,6 +4739,71 @@ where
     }
 }
 
+impl<Start, Shutdown> ScopedError
+    for SessionEntryShutdownError<Start, Shutdown>
+where Start: ScopedError,
+      Shutdown: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SessionEntryShutdownError::Shutdown { err } => err.scope(),
+            SessionEntryShutdownError::IO { err } => err.scope(),
+            SessionEntryShutdownError::NotActive => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl<Session, Shutdown> ScopedError for SessionCreateError<Session, Shutdown>
+where Session: ScopedError,
+      Shutdown: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            SessionCreateError::Shutdown { err } => err.scope(),
+            SessionCreateError::Session { err } => err.scope(),
+            SessionCreateError::IO { err } => err.scope()
+        }
+    }
+}
+
+impl<Create, Nego> ScopedError for ConnectorEntryCreateError<Create, Nego>
+where
+    Create: ScopedError,
+    Nego: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ConnectorEntryCreateError::Start { err } => err.scope(),
+            ConnectorEntryCreateError::Nego { err } => err.scope()
+        }
+    }
+}
+
+impl<Channel, Entry> ScopedError for ChannelEntryReqError<Channel, Entry>
+where Channel: ScopedError,
+      Entry: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryReqError::Channel { err } => err.scope(),
+            ChannelEntryReqError::Entry { err } => err.scope(),
+            ChannelEntryReqError::IO { err } => err.scope(),
+            ChannelEntryReqError::Collision => ErrorScope::Session,
+            ChannelEntryReqError::Inbound => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+
+impl Display for NearChannelParam {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "near channel param")
+    }
+}
+
 impl Display for NearChannelID {
     fn fmt(
         &self,
@@ -4490,9 +4841,6 @@ where
         match self {
             NearChannelsEntrySessionError::Req { err } => err.fmt(f),
             NearChannelsEntrySessionError::Conn { err } => err.fmt(f),
-            NearChannelsEntrySessionError::NoTokens => {
-                write!(f, "tokens exhausted")
-            }
         }
     }
 }
@@ -4677,12 +5025,49 @@ where
     }
 }
 
+impl<Channel, Entry> Display for ChannelEntryReqError<Channel, Entry>
+where Channel: Display,
+      Entry: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ChannelEntryReqError::Channel { err } => err.fmt(f),
+            ChannelEntryReqError::Entry { err } => err.fmt(f),
+            ChannelEntryReqError::IO { err } => err.fmt(f),
+            ChannelEntryReqError::Collision =>
+                write!(f, "endpoint was already registered"),
+            ChannelEntryReqError::Inbound =>
+                write!(f, "requesting stream from inbound-only channel"),
+        }
+    }
+}
+
+impl<InAuth, OutAuth, Inbound> Display
+    for NearChannelsCreateError<InAuth, OutAuth, Inbound>
+where OutAuth: Display,
+      InAuth: Display,
+      Inbound: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            NearChannelsCreateError::OutAuth { err } => err.fmt(f),
+            NearChannelsCreateError::InAuth { err } => err.fmt(f),
+            NearChannelsCreateError::Inbound { err } => err.fmt(f),
+            NearChannelsCreateError::Collision { name } =>
+                write!(f, "multiple channels with id \"{}\"", name)
+        }
+    }
+}
+
 #[cfg(test)]
 use std::convert::TryFrom;
 #[cfg(test)]
 use std::iter::once;
-#[cfg(test)]
-use std::net::SocketAddr;
 #[cfg(test)]
 use std::thread::spawn;
 #[cfg(test)]
@@ -4783,7 +5168,7 @@ fn get_out_session<Types, Ctx>(
     ctx: &mut Ctx,
     entry: &mut ChannelEntry<Types>,
     poll: &mut Poll,
-    endpoint: Types::OutEndpoint,
+    endpoint: Types::Endpoint,
     param: Types::OutParam,
     token: Token
 ) -> Types::OutAuthNSession
@@ -5144,7 +5529,7 @@ fn entry_test<Types, Ctx>(
     out_config: Types::OutConfig,
     in_authn: Types::InAuthN,
     out_authn: Types::OutAuthN,
-    endpoint: Types::OutEndpoint,
+    endpoint: Types::Endpoint,
     param: Types::OutParam,
     listen: Token,
     in_session: Token,
@@ -5157,7 +5542,7 @@ fn entry_test<Types, Ctx>(
     Types::OutConfig: 'static + Send,
     Types::OutAuthN: 'static + Send,
     Types::OutParam: 'static + Send,
-    Types::OutEndpoint: 'static + Send {
+    Types::Endpoint: 'static + Send {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
 

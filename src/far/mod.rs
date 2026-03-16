@@ -169,8 +169,8 @@ use constellation_common::net::Sender;
 use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
-use constellation_common::sched::SelectError;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::threads::TokensCtx;
 use mio::event::Source;
 use mio::Registry;
 use mio::Token;
@@ -456,14 +456,12 @@ pub trait FarChannelCreate: FarChannel {
     /// This creates an instance of this `FarChannel` from the
     /// configuration given by `config`, which binds to the address
     /// given by `bind`.
-    fn create<Ctx, I>(
+    fn create<Ctx>(
         caches: &mut Ctx,
-        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token>;
+        Ctx: NSNameCachesCtx + TokensCtx;
 }
 
 pub trait FarChannelXfrm<Xfrm, InnerXfrm>: FarChannelSocket

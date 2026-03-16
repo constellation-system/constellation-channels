@@ -182,28 +182,32 @@ pub struct AddrsConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "channel-registry")]
 #[serde(rename_all = "kebab-case")]
-pub struct FarChannelRegistryConfig<Channel, Flows, Shutdown, Xfrm>
+pub struct FarChannelsConfig<Channel, AuthN, Shutdown, Xfrm>
 where
-    Flows: Default,
     Shutdown: Default,
     Xfrm: Default {
     /// Configuration of all channels.
-    channels:
-        Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
+    channels: Vec<FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>>,
     /// Resolver configuration.
     #[serde(default)]
     default_resolve: AddrsConfig,
+    /// Default authentication config.
+    default_authn: AuthN,
     /// Context creation parameters.
     #[serde(default)]
     default_xfrm_params: Xfrm,
     /// Flows creation parameters.
     #[serde(default)]
-    default_flows_params: Flows,
+    default_flows_params: FlowsConfig,
     #[serde(default)]
     default_shutdown_params: Shutdown,
     /// Retry configuration.
+    #[serde(
+        default = "FarChannelsConfig::<Channel, AuthN, Shutdown, Xfrm>::default_retry_value"
+    )]
+    default_retry: Retry,
     #[serde(default)]
-    default_retry: Retry
+    default_flows_size_hint: Option<usize>
 }
 
 /// Configuration parameters for stream creation for
@@ -257,9 +261,8 @@ where
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "far-channel-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
+pub struct FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>
 where
-    Flows: Default,
     Shutdown: Default,
     Xfrm: Default {
     /// Unique name of the channel.
@@ -267,6 +270,11 @@ where
     /// Channel configuration.
     #[serde(flatten)]
     channel: Channel,
+    /// Authenticator configuration.
+    #[serde(
+        default = "FarChannelEntryConfig::<Channel, AuthN, Shutdown, Xfrm>::default_authn"
+    )]
+    authn: Option<AuthN>,
     /// Resolver configuration.
     #[serde(default)]
     resolve: Option<AddrsConfig>,
@@ -275,12 +283,14 @@ where
     xfrm_params: Option<Xfrm>,
     /// Flows creation parameters.
     #[serde(default)]
-    flows_params: Option<Flows>,
+    flows_params: Option<FlowsConfig>,
     #[serde(default)]
     shutdown_params: Option<Shutdown>,
     /// Retry configuration.
     #[serde(default)]
-    retry: Option<Retry>
+    retry: Option<Retry>,
+    #[serde(default)]
+    flows_size_hint: Option<usize>
 }
 
 /// Creation parameters for
@@ -1347,25 +1357,108 @@ pub struct FlowsConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename = "near-channels-entry")]
+#[serde(rename = "near-channels-outbound-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct NearChannelsEntryConfig<In, Out, AuthN> {
+pub struct NearChannelOutboundEntryConfig<Out, AuthN> {
+    /// Channel ID.
+    id: String,
+    /// Outbound connector configuration.
+    connect: Out,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelOutboundEntryConfig::<Out, AuthN>::default_authn"
+    )]
+    authn: Option<AuthN>,
+    /// Retry configuration for connections.
+    #[serde(default)]
+    retry: Option<Retry>,
+    /// Size hint for number of sessions.
+    #[serde(default)]
+    num_sessions: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-inbound-entry")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelInboundEntryConfig<In, AuthN> {
+    /// Channel ID.
+    id: String,
+    /// Inbound acceptor configuration.
+    listen: In,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelInboundEntryConfig::<In, AuthN>::default_authn"
+    )]
+    authn: Option<AuthN>,
+    /// Retry configuration for connections.
+    #[serde(default)]
+    retry: Option<Retry>,
+    /// Size hint for number of sessions.
+    #[serde(default)]
+    num_sessions: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-duplex-entry")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
+    /// Channel ID.
+    id: String,
     /// Inbound acceptor configuration.
     listen: In,
     /// Outbound connector configuration.
     connect: Out,
     /// Entry-specific authenticator configuration.
-    #[serde(default)]
-    authn: Option<AuthN>,
+    #[serde(
+        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN>::default_in_authn"
+    )]
+    inbound_authn: Option<InAuthN>,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN>::default_out_authn"
+    )]
+    outbound_authn: Option<OutAuthN>,
     /// Retry configuration for connections.
     #[serde(default)]
-    retry: Retry,
+    retry: Option<Retry>,
     /// Size hint for number of sessions.
     #[serde(default)]
     num_sessions: Option<usize>,
-    /// Size hint for message backlogs for pending negotiations.
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-entry")]
+#[serde(untagged)]
+pub enum NearChannelEntryConfig<In, Out, InAuthN, OutAuthN> {
+    Inbound {
+        inbound: NearChannelInboundEntryConfig<In, InAuthN>
+    },
+    Outbound {
+        outbound: NearChannelOutboundEntryConfig<Out, OutAuthN>
+    },
+    Duplex {
+        duplex: NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN>
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-config")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelsConfig<In, Out, InAuthN, OutAuthN> {
+    /// Configuration of all channels.
+    channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+    /// Default authentication configuration.
     #[serde(default)]
-    backlog_size: Option<usize>
+    default_inbound_authn: InAuthN,
+    #[serde(default)]
+    default_outbound_authn: OutAuthN,
+    /// Default retry configuration.
+    #[serde(
+        default = "NearChannelsConfig::<In, Out, InAuthN, OutAuthN>::default_retry_value"
+    )]
+    default_retry: Retry,
+    #[serde(default)]
+    default_num_sessions: Option<usize>,
 }
 
 /// Name resolution configuration.
@@ -2691,10 +2784,9 @@ impl AddrsConfig {
     }
 }
 
-impl<Channel, Flows, Shutdown, Xfrm>
-    FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
+impl<Channel, AuthN, Shutdown, Xfrm>
+    FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>
 where
-    Flows: Default,
     Shutdown: Default,
     Xfrm: Default
 {
@@ -2707,26 +2799,35 @@ where
         id: String,
         channel: Channel,
         resolve: Option<AddrsConfig>,
-        flows_params: Option<Flows>,
+        authn_config: Option<AuthN>,
+        flows_params: Option<FlowsConfig>,
         xfrm_params: Option<Xfrm>,
         shutdown_params: Option<Shutdown>,
-        retry: Option<Retry>
+        retry: Option<Retry>,
+        flows_size_hint: Option<usize>
     ) -> Self {
-        FarChannelRegistryEntryConfig {
+        FarChannelEntryConfig {
             id: id,
             channel: channel,
             resolve: resolve,
+            authn: authn_config,
             flows_params: flows_params,
             xfrm_params: xfrm_params,
             shutdown_params: shutdown_params,
-            retry: retry
+            retry: retry,
+            flows_size_hint: flows_size_hint
         }
     }
 
     /// Get the name of the registry entry.
     #[inline]
-    pub fn id(&self) -> &str {
+    pub fn name(&self) -> &str {
         self.id.as_ref()
+    }
+
+    #[inline]
+    pub fn authn(&self) -> Option<&AuthN> {
+        self.authn.as_ref()
     }
 
     /// Get the channel configuration.
@@ -2741,6 +2842,11 @@ where
         self.retry.as_ref()
     }
 
+    #[inline]
+    pub fn flows_size_hint(&self) -> Option<usize> {
+        self.flows_size_hint
+    }
+
     /// Get the resolver configuration.
     #[inline]
     pub fn resolve(&self) -> Option<&AddrsConfig> {
@@ -2749,7 +2855,7 @@ where
 
     /// Get the [Flows] creation parameters.
     #[inline]
-    pub fn flows_params(&self) -> Option<&Flows> {
+    pub fn flows_params(&self) -> Option<&FlowsConfig> {
         self.flows_params.as_ref()
     }
 
@@ -2765,7 +2871,7 @@ where
         self.shutdown_params.as_ref()
     }
 
-    /// Decompose a `FarChannelRegistryEntryConfig` into its components.
+    /// Decompose a `FarChannelEntryConfig` into its components.
     #[inline]
     pub fn take(
         self
@@ -2773,20 +2879,28 @@ where
         String,
         Channel,
         Option<AddrsConfig>,
-        Option<Flows>,
+        Option<AuthN>,
+        Option<FlowsConfig>,
         Option<Xfrm>,
         Option<Shutdown>,
-        Option<Retry>
+        Option<Retry>,
+        Option<usize>
     ) {
         (
             self.id,
             self.channel,
             self.resolve,
+            self.authn,
             self.flows_params,
             self.xfrm_params,
             self.shutdown_params,
-            self.retry
+            self.retry,
+            self.flows_size_hint
         )
+    }
+
+    fn default_authn() -> Option<AuthN> {
+        None
     }
 }
 
@@ -2819,10 +2933,9 @@ where
     }
 }
 
-impl<Channel, Flows, Shutdown, Xfrm>
-    FarChannelRegistryConfig<Channel, Flows, Shutdown, Xfrm>
+impl<Channel, AuthN, Shutdown, Xfrm>
+    FarChannelsConfig<Channel, AuthN, Shutdown, Xfrm>
 where
-    Flows: Default,
     Shutdown: Default,
     Xfrm: Default
 {
@@ -2833,21 +2946,25 @@ where
     #[inline]
     pub fn new(
         channels: Vec<
-            FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>
+            FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>
         >,
         resolve: AddrsConfig,
-        flows_params: Flows,
+        authn_config: AuthN,
+        flows_params: FlowsConfig,
         xfrm_params: Xfrm,
         shutdown_params: Shutdown,
-        retry: Retry
+        retry: Retry,
+        flows_size_hint: Option<usize>
     ) -> Self {
-        FarChannelRegistryConfig {
+        FarChannelsConfig {
             channels: channels,
             default_resolve: resolve,
+            default_authn: authn_config,
             default_flows_params: flows_params,
             default_xfrm_params: xfrm_params,
             default_shutdown_params: shutdown_params,
-            default_retry: retry
+            default_retry: retry,
+            default_flows_size_hint: flows_size_hint
         }
     }
 
@@ -2855,7 +2972,7 @@ where
     #[inline]
     pub fn channels(
         &self
-    ) -> &[FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>] {
+    ) -> &[FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>] {
         &self.channels
     }
 
@@ -2867,7 +2984,7 @@ where
 
     /// Get the flows creation parameters.
     #[inline]
-    pub fn flows_params(&self) -> &Flows {
+    pub fn flows_params(&self) -> &FlowsConfig {
         &self.default_flows_params
     }
 
@@ -2883,26 +3000,45 @@ where
         &self.default_shutdown_params
     }
 
+    /// Get the retry configuration.
+    #[inline]
+    pub fn retry(&self) -> &Retry {
+        &self.default_retry
+    }
+
+    #[inline]
+    pub fn flows_size_hint(&self) -> Option<usize> {
+        self.default_flows_size_hint
+    }
+
     /// Decompose a `FarChannelRegistryConfig` into its components.
     #[inline]
     pub fn take(
         self
     ) -> (
-        Vec<FarChannelRegistryEntryConfig<Channel, Flows, Shutdown, Xfrm>>,
+        Vec<FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>>,
         AddrsConfig,
-        Flows,
+        AuthN,
+        FlowsConfig,
         Xfrm,
         Shutdown,
-        Retry
+        Retry,
+        Option<usize>
     ) {
         (
             self.channels,
             self.default_resolve,
+            self.default_authn,
             self.default_flows_params,
             self.default_xfrm_params,
             self.default_shutdown_params,
-            self.default_retry
+            self.default_retry,
+            self.default_flows_size_hint
         )
+    }
+
+    fn default_retry_value() -> Retry {
+        Retry::TERRESTRIAL_NETWORK_DEFAULT.clone()
     }
 }
 
@@ -3026,24 +3162,106 @@ impl FlowsConfig {
     }
 }
 
-impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
+impl<In, Out, InAuthN, OutAuthN>
+    NearChannelEntryConfig<In, Out, InAuthN, OutAuthN> {
+    pub fn name(&self) -> &str {
+        match self {
+            NearChannelEntryConfig::Outbound { outbound } => outbound.id(),
+            NearChannelEntryConfig::Inbound { inbound } => inbound.id(),
+            NearChannelEntryConfig::Duplex { duplex } => duplex.id()
+        }
+    }
+}
+
+impl<In, Out, InAuthN, OutAuthN>
+    NearChannelsConfig<In, Out, InAuthN, OutAuthN> {
     #[inline]
     pub fn new(
+        channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+        default_inbound_authn: InAuthN,
+        default_outbound_authn: OutAuthN,
+        default_retry: Retry,
+        default_num_sessions: Option<usize>,
+    ) -> Self {
+        NearChannelsConfig {
+        channels: channels,
+        default_inbound_authn: default_inbound_authn,
+        default_outbound_authn: default_outbound_authn,
+        default_retry: default_retry,
+        default_num_sessions: default_num_sessions,
+        }
+    }
+
+    #[inline]
+    pub fn channels(
+        &self
+    ) -> &[NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>] {
+        &self.channels
+    }
+
+    #[inline]
+    pub fn default_outbound_authn(&self) -> &OutAuthN {
+        &self.default_outbound_authn
+    }
+
+    #[inline]
+    pub fn default_inbound_authn(&self) -> &InAuthN {
+        &self.default_inbound_authn
+    }
+
+    #[inline]
+    pub fn default_retry(&self) -> &Retry {
+        &self.default_retry
+    }
+
+    #[inline]
+    pub fn default_num_sessions(&self) -> Option<usize> {
+        self.default_num_sessions
+    }
+
+    #[inline]
+    pub fn take(self) ->
+        (Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+         InAuthN,
+         OutAuthN,
+         Retry,
+         Option<usize>) {
+        (self.channels, self.default_inbound_authn,
+         self.default_outbound_authn, self.default_retry,
+         self.default_num_sessions)
+    }
+
+    fn default_retry_value() -> Retry {
+        Retry::TERRESTRIAL_NETWORK_DEFAULT.clone()
+    }
+}
+
+impl<In, Out, InAuthN, OutAuthN>
+    NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
+    #[inline]
+    pub fn new(
+        id: String,
         listen: In,
         connect: Out,
-        authn: Option<AuthN>,
-        retry: Retry,
+        inbound_authn: Option<InAuthN>,
+        outbound_authn: Option<OutAuthN>,
+        retry: Option<Retry>,
         num_sessions: Option<usize>,
-        backlog_size: Option<usize>
     ) -> Self {
-        NearChannelsEntryConfig {
+        NearChannelDuplexEntryConfig {
+            id: id,
             listen: listen,
             connect: connect,
-            authn: authn,
+            inbound_authn: inbound_authn,
+            outbound_authn: outbound_authn,
             num_sessions: num_sessions,
-            backlog_size: backlog_size,
             retry: retry
         }
+    }
+
+    #[inline]
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     #[inline]
@@ -3057,13 +3275,18 @@ impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
     }
 
     #[inline]
-    pub fn authn(&self) -> Option<&AuthN> {
-        self.authn.as_ref()
+    pub fn inbound_authn(&self) -> Option<&InAuthN> {
+        self.inbound_authn.as_ref()
     }
 
     #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
+    pub fn outbound_authn(&self) -> Option<&OutAuthN> {
+        self.outbound_authn.as_ref()
+    }
+
+    #[inline]
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
     }
 
     #[inline]
@@ -3072,22 +3295,149 @@ impl<In, Out, AuthN> NearChannelsEntryConfig<In, Out, AuthN> {
     }
 
     #[inline]
-    pub fn backlog_size(&self) -> Option<usize> {
-        self.backlog_size
+    pub fn take(
+        self
+    ) -> (String, In, Out, Option<InAuthN>, Option<OutAuthN>,
+          Option<Retry>, Option<usize>) {
+        (
+            self.id,
+            self.listen,
+            self.connect,
+            self.inbound_authn,
+            self.outbound_authn,
+            self.retry,
+            self.num_sessions,
+        )
+    }
+
+    fn default_in_authn() -> Option<InAuthN> {
+        None
+    }
+
+    fn default_out_authn() -> Option<OutAuthN> {
+        None
+    }
+}
+
+impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
+    #[inline]
+    pub fn new(
+        id: String,
+        listen: In,
+        authn: Option<AuthN>,
+        retry: Option<Retry>,
+        num_sessions: Option<usize>,
+    ) -> Self {
+        NearChannelInboundEntryConfig {
+            id: id,
+            listen: listen,
+            authn: authn,
+            num_sessions: num_sessions,
+            retry: retry
+        }
+    }
+
+    #[inline]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[inline]
+    pub fn listen(&self) -> &In {
+        &self.listen
+    }
+
+    #[inline]
+    pub fn authn(&self) -> Option<&AuthN> {
+        self.authn.as_ref()
+    }
+
+    #[inline]
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
+    }
+
+    #[inline]
+    pub fn num_sessions(&self) -> Option<usize> {
+        self.num_sessions
     }
 
     #[inline]
     pub fn take(
         self
-    ) -> (In, Out, Option<AuthN>, Retry, Option<usize>, Option<usize>) {
+    ) -> (String, In, Option<AuthN>, Option<Retry>, Option<usize>) {
         (
+            self.id,
             self.listen,
+            self.authn,
+            self.retry,
+            self.num_sessions,
+        )
+    }
+
+    fn default_authn() -> Option<AuthN> {
+        None
+    }
+}
+
+impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
+    #[inline]
+    pub fn new(
+        id: String,
+        connect: Out,
+        authn: Option<AuthN>,
+        retry: Option<Retry>,
+        num_sessions: Option<usize>,
+    ) -> Self {
+        NearChannelOutboundEntryConfig {
+            id: id,
+            connect: connect,
+            authn: authn,
+            num_sessions: num_sessions,
+            retry: retry
+        }
+    }
+
+    #[inline]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[inline]
+    pub fn connect(&self) -> &Out {
+        &self.connect
+    }
+
+    #[inline]
+    pub fn authn(&self) -> Option<&AuthN> {
+        self.authn.as_ref()
+    }
+
+    #[inline]
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
+    }
+
+    #[inline]
+    pub fn num_sessions(&self) -> Option<usize> {
+        self.num_sessions
+    }
+
+    #[inline]
+    pub fn take(
+        self
+    ) -> (String, Out, Option<AuthN>, Option<Retry>, Option<usize>) {
+        (
+            self.id,
             self.connect,
             self.authn,
             self.retry,
             self.num_sessions,
-            self.backlog_size
         )
+    }
+
+    fn default_authn() -> Option<AuthN> {
+        None
     }
 }
 

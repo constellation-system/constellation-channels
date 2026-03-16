@@ -31,6 +31,8 @@ use std::time::Instant;
 use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
+use constellation_common::config::Create;
+use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrmCreate;
@@ -45,6 +47,8 @@ use constellation_common::retry::RetryResult;
 use constellation_common::retry::WithRetryWhen;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
+use constellation_streams::threads::RegistryCtx;
+use constellation_streams::threads::TokensCtx;
 use log::debug;
 use log::error;
 use log::info;
@@ -58,6 +62,8 @@ use mio::Token;
 use crate::addrs::SocketAddrPolicy;
 use crate::channels::ShutdownError;
 use crate::channels::WithShutdownError;
+use crate::config::AddrsConfig;
+use crate::config::FarChannelsConfig;
 use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
 use crate::far::flows::Flows;
@@ -299,8 +305,6 @@ pub enum FarChannelsRefreshError<Flows, Wrap> {
     Inconsistent,
     /// No valid addresses were produced.
     NoValidAddrs,
-    /// Token iterator exhausted.
-    NoTokens
 }
 
 #[derive(Debug)]
@@ -466,8 +470,6 @@ pub enum AcquiredEntryCreateError<Resolve, Flows, Wrap> {
     },
     /// No valid addresses were produced.
     NoValidAddrs,
-    /// Token iterator exhausted.
-    NoTokens
 }
 
 #[derive(Debug)]
@@ -593,6 +595,22 @@ pub enum ChannelEntryListenError<Listen, Entry, Nego, Shutdown> {
     Nego { err: Nego },
     Shutdown { err: Shutdown },
     None
+}
+
+#[derive(Debug)]
+pub enum FarChannelsCreateError<Auth, Channel, Entry> {
+    Auth {
+        err: Auth
+    },
+    Channel {
+        err: Channel
+    },
+    Entry {
+        err: Entry
+    },
+    Collision {
+        name: String
+    }
 }
 
 impl<AuthPending> SessionNegoState<AuthPending> {
@@ -2270,15 +2288,13 @@ where
     ///
     /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
     ///
-    /// - `tokgen`: Generator for [Token]s.
-    ///
-    /// - `caches`: Context from which to obtain name resolution caches.
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `channel`: [FarChannel] that provided `acquired`.
+    ///
+    /// - `created`: [Vec] into which to store created [Token]s.
     ///
     /// - `flows_config`: Configuration object to use to create a [Flows].
     ///
@@ -2305,12 +2321,10 @@ where
     ///
     /// - `RetryResult::Retry(when)`: Resolution was delayed, and can be retried
     ///   at `when`.
-    fn create<Ctx, I>(
-        tokgen: &mut I,
-        caches: &mut Ctx,
+    fn create<Ctx>(
+        ctx: &mut Ctx,
         channel: &mut Types::Channel,
         created: &mut Vec<Token>,
-        registry: &Registry,
         flows_config: &FlowsConfig,
         resolve_config: &ResolverConfig,
         policy: &SocketAddrPolicy,
@@ -2331,10 +2345,9 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         let mut resolver = acquired
-            .resolver(caches, policy, resolve_config)
+            .resolver(ctx, policy, resolve_config)
             .map_err(|err| AcquiredEntryCreateError::Resolve { err: err })?;
         let res = match &mut resolver {
             // This is the only nontrivial case.  First thing, check
@@ -2373,9 +2386,8 @@ where
                                 .map_err(|err| {
                                     AcquiredEntryCreateError::Flows { err: err }
                                 })?;
-                            let token = tokgen
-                                .next()
-                                .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                            let token = ctx.token();
+                            let registry = ctx.registry();
                             let ent = match nflows_hint {
                                 Some(hint) => FlowsEntry::with_capacity(
                                     registry, session, token, hint
@@ -2393,9 +2405,21 @@ where
                                 }
                             }?;
 
-                            tokens.insert(addr, token.clone());
+                            if let Some(curr) = tokens
+                                .insert(addr.clone(), token.clone()) {
+                                error!(target: "acquired-entry",
+                                       "entry exists for address {}: token {}",
+                                       addr, curr.0);
+
+                            }
+
                             created.push(token.clone());
-                            flows.insert(token, ent);
+
+                            if flows.insert(token.clone(), ent).is_some() {
+                                error!(target: "acquired-entry",
+                                       "entry exists for token {}",
+                                       token.0);
+                            }
                         } else {
                             debug!(target: "acquired-entry",
                                    "discarding address {}",
@@ -2428,9 +2452,8 @@ where
                         .map_err(|err| AcquiredEntryCreateError::Flows {
                             err: err
                         })?;
-                    let token = tokgen
-                        .next()
-                        .ok_or(AcquiredEntryCreateError::NoTokens)?;
+                    let token = ctx.token();
+                    let registry = ctx.registry();
                     let ent = match nflows_hint {
                         Some(hint) => FlowsEntry::with_capacity(
                             registry, session, token, hint
@@ -2444,9 +2467,21 @@ where
                             })
                     }?;
 
-                    tokens.insert(addr.clone(), token.clone());
+                    if let Some(curr) = tokens
+                        .insert(addr.clone(), token.clone()) {
+                        error!(target: "acquired-entry",
+                               "entry exists for address {}: token {}",
+                               addr, curr.0);
+
+                    }
+
                     created.push(token.clone());
-                    flows.insert(token, ent);
+
+                    if flows.insert(token.clone(), ent).is_some() {
+                        error!(target: "acquired-entry",
+                               "entry exists for token {}",
+                               token.0);
+                    }
                 }
 
                 Ok(RetryResult::Success((tokens, flows, None)))
@@ -2465,8 +2500,8 @@ where
                     .map_err(|err| AcquiredEntryCreateError::Flows {
                         err: err
                     })?;
-                let token =
-                    tokgen.next().ok_or(AcquiredEntryCreateError::NoTokens)?;
+                let token = ctx.token();
+                let registry = ctx.registry();
                 let ent = match nflows_hint {
                     Some(hint) => FlowsEntry::with_capacity(
                         registry, session, token, hint
@@ -2477,9 +2512,21 @@ where
                     )
                 }?;
 
-                tokens.insert(param.clone(), token.clone());
+                if let Some(curr) = tokens
+                    .insert(param.clone(), token.clone()) {
+                    error!(target: "acquired-entry",
+                           "entry exists for address {}: token {}",
+                           param, curr.0);
+
+                }
+
                 created.push(token.clone());
-                flows.insert(token, ent);
+
+                if flows.insert(token.clone(), ent).is_some() {
+                    error!(target: "acquired-entry",
+                           "entry exists for token {}",
+                           token.0);
+                }
 
                 Ok(RetryResult::Success((tokens, flows, None)))
             }
@@ -2546,15 +2593,14 @@ where
     /// be shut down with [shutdown_flow](FlowsEntry::shutdown_flow)
     /// to properly handle shutdown negotiations and cleanup.
     /// Information from the call to `refresh` will also be returned.
+    ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context object.
     ///
     /// # Parameters
     ///
-    /// - `tokens`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context to use to manage [Token]s.
     ///
     /// - `channel`: [FarChannel] to use to create [Flows].
     ///
@@ -2572,10 +2618,9 @@ where
     /// - `nego_param`: Parameter used by the outbound negotiator.
     ///
     /// - `endpoint`: The counterparty'ss address.
-    fn req_flow<I>(
+    fn req_flow<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &Types::Channel,
         shutdown: &Types::ShutdownNego,
         shutdown_param: &Types::ShutdownParam,
@@ -2611,8 +2656,8 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
-        self.flows(tokens, registry, channel, policy, channel_param)
+        Ctx: RegistryCtx + TokensCtx {
+        self.flows(ctx, channel, policy, channel_param)
             .map_err(|err| AcquiredEntryFlowError::Flows { err: err })?
             .flat_map_ok(|(ent, addrs, refresh_when)| {
                 Ok(ent
@@ -2646,13 +2691,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context object.
     ///
     /// # Parameters
     ///
-    /// - `tokens`:  Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context to use to manage [Token]s.
     ///
     /// - `channel`: [FarChannel] to use to create [Flows].
     ///
@@ -2675,10 +2718,9 @@ where
     /// - `RetryResult::Retry(when)`: A refresh is needed, but was delayed until
     ///   `when`.
     // XXX change the return type to eliminate the impossible case.
-    fn refresh<I>(
+    fn refresh<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy
     ) -> Result<
@@ -2694,7 +2736,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         match &mut self.resolver {
             // This is the only nontrivial case.  First thing, check
             // the addresses.
@@ -2711,8 +2753,7 @@ where
                            "refreshing addresses for registry entry");
 
                         let out = self.update_refreshed(
-                            tokens,
-                            registry,
+                            ctx,
                             channel,
                             policy,
                             resolved.into_iter()
@@ -2740,13 +2781,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context object.
     ///
     /// # Parameters
     ///
-    /// - `tokens`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context to use to manage [Token]s.
     ///
     /// - `channel`: [FarChannel] to use to create [Flows].
     ///
@@ -2766,10 +2805,9 @@ where
     /// # Return Value
     ///
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
-    fn shutdown_flow<I>(
+    fn shutdown_flow<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy,
         shutdown: &Types::ShutdownNego,
@@ -2790,8 +2828,8 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
-        self.refresh(tokens, registry, channel, policy)
+        Ctx: RegistryCtx + TokensCtx {
+        self.refresh(ctx, channel, policy)
             .map_err(|err| AcquiredEntryShutdownError::Refresh { err: err })?
             .map_ok(move |(addrs, refresh_when)| {
                 // The token might have gotten deleted in the refresh;
@@ -2826,9 +2864,7 @@ where
     ///
     /// # Parameters
     ///
-    /// - `tokens`:  Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context to use to manage [Token]s.
     ///
     /// - `channel`: [FarChannel] to use to create [Flows].
     ///
@@ -2837,10 +2873,9 @@ where
     /// # Return Value
     ///
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
-    fn addrs<I>(
+    fn addrs<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy
     ) -> Result<
@@ -2856,8 +2891,8 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
-        Ok(self.refresh(tokens, registry, channel, policy)?.map(
+        Ctx: RegistryCtx + TokensCtx {
+        Ok(self.refresh(ctx, channel, policy)?.map(
             |(out, refresh_when)| match out {
                 // No refresh was necessary, generate the addresses directly.
                 None => (self.tokens.keys().cloned().collect(), refresh_when),
@@ -2885,13 +2920,11 @@ where
     ///
     /// # Parameters
     ///
+    /// - `ctx`: Context to use to manage [Token]s.
+    ///
     /// - `ext_endpoints`: Set of all endpoints that have pending traffic.
     ///
     /// - `sessions`: Buffer for new authenticated sessions.
-    ///
-    /// - `tokgen`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to register nonblocking I/O.
     ///
     /// - `channel`: [FarChannel] to use to create [Flows].
     ///
@@ -2913,12 +2946,11 @@ where
     /// # Return Value
     ///
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
-    fn listen<I>(
+    fn listen<Ctx>(
         &mut self,
+        ctx: &mut Ctx,
         ext_endpoints: &mut HashSet<Types::PeerAddr>,
         sessions: &mut Vec<Types::AuthNSession>,
-        tokgen: &mut I,
-        registry: &Registry,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy,
         shutdown: &Types::ShutdownNego,
@@ -2951,8 +2983,8 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
-        self.refresh(tokgen, registry, channel, policy)
+        Ctx: RegistryCtx + TokensCtx {
+        self.refresh(ctx, channel, policy)
             .map_err(|err| AcquiredEntryListenError::Refresh { err: err })?
             .map_ok(move |(addrs, refresh_when)| {
                 for (_, ent) in self
@@ -2978,10 +3010,9 @@ where
             })
     }
 
-    fn update_refreshed<I, T>(
+    fn update_refreshed<Ctx, I>(
         &mut self,
-        tokens: &mut T,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy,
         resolved: I
@@ -2999,7 +3030,7 @@ where
     >
     where
         I: Iterator<Item = (SocketAddr, IPEndpoint, Instant)>,
-        T: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         let mut new_tokens = HashMap::with_capacity(self.flows.len());
         let mut new_flows = HashMap::with_capacity(self.flows.len());
         let mut retained = HashSet::with_capacity(self.flows.len());
@@ -3036,9 +3067,7 @@ where
                                "establishing flows for {}",
                                addr);
 
-                        let token = tokens
-                            .next()
-                            .ok_or(FarChannelsRefreshError::NoTokens)?;
+                        let token = ctx.token();
                         let xfrm =
                             Types::InnerXfrm::create(&addr, &self.xfrm_param);
                         let flows = channel
@@ -3050,6 +3079,7 @@ where
                             .map_err(|err| FarChannelsRefreshError::Flows {
                                 err: err
                             })?;
+                        let registry = ctx.registry();
                         let ent = match self.nflows_hint {
                             Some(hint) => FlowsEntry::with_capacity(
                                 registry, flows, token, hint
@@ -3103,9 +3133,10 @@ where
                            "deregistering flows for {}, token {}",
                            addr, tok.0);
 
-                    flows.flows.deregister(registry).map_err(|err| {
+                    flows.flows.deregister(ctx.registry()).map_err(|err| {
                         FarChannelsRefreshError::IO { err: err }
                     })?;
+                    ctx.free_token(tok);
                 } else {
                     error!(target: "acquired-entry",
                            "entry should not be missing for token {}",
@@ -3117,10 +3148,9 @@ where
         }
     }
 
-    fn flows<I>(
+    fn flows<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy,
         param: &Types::ChannelParam
@@ -3141,8 +3171,8 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
-        self.refresh(tokens, registry, channel, policy)
+        Ctx: RegistryCtx + TokensCtx {
+        self.refresh(ctx, channel, policy)
             .map_err(|err| AcquiredEntryFlowsError::Refresh { err: err })?
             .map_ok(move |(addrs, refresh_when)| {
                 let token = self
@@ -3183,15 +3213,9 @@ where
     ///
     /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
-    /// - `I`: Type of generator for [Token]s.
-    ///
     /// # Parameters
     ///
-    /// - `gentok`: Generator for [Token]s.
-    ///
-    /// - `namectx`: Context from which to obtain name resolution caches.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `channel`: [FarChannel] that provided `acquired`.
     ///
@@ -3216,15 +3240,12 @@ where
     /// `when`.
     ///
     /// - `(self, None)`: There is no next refresh or update.
-    pub(crate) fn create<Ctx, I>(
-        gentok: &mut I,
-        namectx: &mut Ctx,
-        registry: &Registry,
+    pub(crate) fn create<Ctx>(
+        ctx: &mut Ctx,
         channel: Types::Channel,
         authn: Types::AuthN,
         flows_config: FlowsConfig,
-        resolve_config: ResolverConfig,
-        addr_policy: SocketAddrPolicy,
+        addrs_config: AddrsConfig,
         xfrm_param: Types::InnerXfrmCreateParam,
         retry: Retry,
         nflows_hint: Option<usize>
@@ -3247,13 +3268,14 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         let shutdown = channel
             .shutdown_negotiator()
             .map_err(|err| ChannelEntryCreateError::Shutdown { err: err })?;
         let in_param = channel.inbound_nego_param();
         let shutdown_param = channel.shutdown_nego_param();
+        let (addrs_config, resolve_config) = addrs_config.take();
+        let addr_policy = SocketAddrPolicy::create(&addrs_config);
         let mut out = ChannelEntry {
             authn: authn,
             channel: channel,
@@ -3271,7 +3293,7 @@ where
         // XXX size hint by depth of the channel.
         let mut tokens = Vec::new();
         let when = out
-            .try_acquire(gentok, namectx, &mut tokens, registry)
+            .try_acquire(ctx, &mut tokens)
             .map_err(|err| ChannelEntryCreateError::Acquire { err: err })?;
 
         Ok((out, tokens, when))
@@ -3314,19 +3336,20 @@ where
     /// needed.  It will then return the same value as the last
     /// `refresh`.
     ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
+    ///
     /// # Parameters
     ///
-    /// - `tokens`:  Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// # Return Value
     ///
     /// Same as for a call to [refresh](ChannelEntry::refresh).
-    fn addrs<I>(
+    fn addrs<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry
+        ctx: &mut Ctx,
     ) -> Result<
         RetryResult<(Vec<Types::ChannelParam>, Option<Instant>)>,
         FarChannelsAddrsError<
@@ -3342,10 +3365,10 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         match self.acquired.as_mut().ok_or(FarChannelsAddrsError::None)? {
             RetryResult::Success(AcquireState::Active { acquired }) => acquired
-                .addrs(tokens, registry, &self.channel, &self.addr_policy)
+                .addrs(ctx, &self.channel, &self.addr_policy)
                 .map_err(|err| FarChannelsAddrsError::Flow { err: err }),
             RetryResult::Success(AcquireState::Pending { .. }) |
             RetryResult::Success(AcquireState::Acquired { .. }) => {
@@ -3374,15 +3397,14 @@ where
     /// be shut down with [shutdown_flow](ChannelEntry::shutdown_flow)
     /// to properly handle shutdown negotiations and cleanup.
     /// Information from the call to `refresh` will also be returned.
+    ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `tokens`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `channel_param`: Resolved channel parameter for which to request a
     ///   [Flow]
@@ -3400,10 +3422,9 @@ where
     /// 1. If a refresh occurred, the new set of channel parameters.
     ///
     /// 1. When the next refresh occurs.
-    pub(crate) fn req_flow<I>(
+    pub(crate) fn req_flow<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        tokens: &mut Ctx,
         param: &Types::ChannelParam,
         endpoint: &Types::PeerAddr,
         out_param: &Types::OutParam
@@ -3435,7 +3456,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         match self
             .acquired
             .as_mut()
@@ -3446,7 +3467,6 @@ where
                 acquired
                     .req_flow(
                         tokens,
-                        registry,
                         &self.channel,
                         &self.shutdown,
                         &self.shutdown_param,
@@ -3486,13 +3506,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `tokens`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `channel_param`: Channel parameter indicating the specific [Flows]
     ///   from which `session` was obtained.
@@ -3502,10 +3520,9 @@ where
     /// # Return Value
     ///
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
-    pub(crate) fn shutdown_flow<I>(
+    pub(crate) fn shutdown_flow<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel_param: &Types::ChannelParam,
         session: Types::AuthNSession
     ) -> Result<
@@ -3523,7 +3540,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         let addr = session
             .get()
             .peer_addr()
@@ -3537,8 +3554,7 @@ where
             RetryResult::Success(AcquireState::Active { acquired, .. }) => {
                 acquired
                     .shutdown_flow(
-                        tokens,
-                        registry,
+                        ctx,
                         &self.channel,
                         &self.addr_policy,
                         &self.shutdown,
@@ -3607,13 +3623,11 @@ where
         }
     }
 
-    fn listen<Ctx, I>(
+    fn listen<Ctx>(
         &mut self,
-        namectx: &mut Ctx,
-        gentok: &mut I,
+        ctx: &mut Ctx,
         ext_endpoints: &mut HashSet<Types::PeerAddr>,
         sessions: &mut Vec<Types::AuthNSession>,
-        registry: &Registry,
         tokens: &HashSet<Token>
     ) -> Result<
         RetryResult<(
@@ -3661,8 +3675,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         match self.acquired.take().ok_or(ChannelEntryListenError::None)? {
             RetryResult::Success(AcquireState::Pending { state }) => match self
                 .channel
@@ -3680,10 +3693,8 @@ where
                     let mut created = Vec::new();
 
                     self.handle_acquired(
-                        gentok,
-                        namectx,
+                        ctx,
                         &mut created,
-                        registry,
                         acquired
                     )
                     .map_err(|err| ChannelEntryListenError::Entry { err: err })
@@ -3705,10 +3716,8 @@ where
                     let mut created = Vec::new();
 
                     self.handle_acquired(
-                        gentok,
-                        namectx,
+                        ctx,
                         &mut created,
-                        registry,
                         acquired
                     )
                     .map_err(|err| ChannelEntryListenError::Entry { err: err })
@@ -3728,10 +3737,9 @@ where
             }
             RetryResult::Success(AcquireState::Active { mut acquired }) => {
                 match acquired.listen(
+                    ctx,
                     ext_endpoints,
                     sessions,
-                    gentok,
-                    registry,
                     &self.channel,
                     &self.addr_policy,
                     &self.shutdown,
@@ -3770,7 +3778,7 @@ where
 
                 match self.channel.complete_shutdown_negotiate(
                     &mut deleted,
-                    registry,
+                    ctx.registry(),
                     pending
                 ) {
                     // Shutdown is complete; there's nothing more to return.
@@ -3813,12 +3821,10 @@ where
         }
     }
 
-    fn try_acquire<Ctx, I>(
+    fn try_acquire<Ctx>(
         &mut self,
-        gentok: &mut I,
-        namectx: &mut Ctx,
+        ctx: &mut Ctx,
         tokens: &mut Vec<Token>,
-        registry: &Registry
     ) -> Result<
         Option<Instant>,
         ChannelEntryAcquireError<
@@ -3837,11 +3843,10 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         match self
             .channel
-            .acquire(tokens, registry)
+            .acquire(tokens, ctx.registry())
             .map_err(|err| ChannelEntryAcquireError::Acquire { err: err })?
         {
             RetryResult::Success(state) => match self
@@ -3864,11 +3869,9 @@ where
                 // point are due to resolution, not acquisition.
                 {
                     match AcquiredEntry::create(
-                        gentok,
-                        namectx,
+                        ctx,
                         &mut self.channel,
                         tokens,
-                        registry,
                         &self.flows_config,
                         &self.resolve_config,
                         &self.addr_policy,
@@ -3910,12 +3913,10 @@ where
         }
     }
 
-    fn handle_acquired<Ctx, I>(
+    fn handle_acquired<Ctx>(
         &mut self,
-        gentok: &mut I,
-        namectx: &mut Ctx,
+        ctx: &mut Ctx,
         tokens: &mut Vec<Token>,
-        registry: &Registry,
         acquired: Types::Acquired
     ) -> Result<
         Option<Instant>,
@@ -3931,15 +3932,12 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         // XXX possibly transition to shutdown on error?
         match AcquiredEntry::create(
-            gentok,
-            namectx,
+            ctx,
             &mut self.channel,
             tokens,
-            registry,
             &self.flows_config,
             &self.resolve_config,
             &self.addr_policy,
@@ -4035,15 +4033,16 @@ where
     /// be shut down with [shutdown_flow](FarChannels::shutdown_flow)
     /// to properly handle shutdown negotiations and cleanup.
     /// Information from the call to `refresh` will also be returned.
+    ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `tokens`: Generator for [Token]s.
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `tokens`: Generator for [Token]s.
     ///
     /// - `channel_param`: Resolved channel parameter for which to request a
     ///   [Flow]
@@ -4064,10 +4063,9 @@ where
     ///
     /// 1. When the next refresh occurs.
     #[inline]
-    pub fn req_flow<I>(
+    pub fn req_flow<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         param: &Types::ChannelParam,
         endpoint: &Types::PeerAddr,
         out_param: &Types::OutParam,
@@ -4100,9 +4098,8 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
-        self.channels[id.0]
-            .req_flow(tokens, registry, param, endpoint, out_param)
+        Ctx: RegistryCtx + TokensCtx {
+        self.channels[id.0].req_flow(ctx, param, endpoint, out_param)
     }
 
     /// Obtain a snapshot of the current set of addresses for one channel.
@@ -4112,11 +4109,13 @@ where
     /// of addresses.  If the channel is not currently active, `None`
     /// will be returned.`
     ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
+    ///
     /// # Parameters
     ///
-    /// - `tokens`:  Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `id`: ID of the channel for which to get addresses.
     ///
@@ -4129,10 +4128,9 @@ where
     ///   current address set.  This set is permanent.
     ///
     /// - `None`: The channel is not active, and has no resolved addresses.
-    pub fn channel_addrs<I>(
+    pub fn channel_addrs<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         id: &FarChannelID
     ) -> Result<
         RetryResult<Option<(Vec<Types::ChannelParam>, Option<Instant>)>>,
@@ -4149,12 +4147,12 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         let channel = &mut self.channels[id.0];
 
         channel.is_active().flat_map_ok(|active| {
             if active {
-                Ok(channel.addrs(tokens, registry)?.map(Some))
+                Ok(channel.addrs(ctx)?.map(Some))
             } else {
                 Ok(RetryResult::Success(None))
             }
@@ -4170,21 +4168,22 @@ where
     /// If any `RetryResult::Retry` is returned, the retry time will
     /// be the latest of all returned.
     ///
+    /// # Type Parameters
+    ///
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
+    ///
     /// # Parameters
     ///
-    /// - `tokens`:  Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// # Return Value
     ///
     /// Array containing the results of
     /// [channel_addrs](FarChannels::channel_addrs) for each channel,
     /// together with its channel ID.
-    pub fn addrs<I>(
+    pub fn addrs<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry
+        ctx: &mut Ctx,
     ) -> Result<
         RetryResult<
             Vec<(
@@ -4205,7 +4204,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         let nchannels = self.channels.len();
         let mut retry: Option<Instant> = None;
         let mut out = Vec::with_capacity(nchannels);
@@ -4213,7 +4212,7 @@ where
         for id in 0..nchannels {
             let id = FarChannelID(id);
 
-            match self.channel_addrs(tokens, registry, &id)? {
+            match self.channel_addrs(ctx, &id)? {
                 RetryResult::Success(res) => out.push((id, res)),
                 RetryResult::Retry(when) => {
                     retry = Some(next_retry_definite(&retry, &when));
@@ -4243,13 +4242,11 @@ where
     ///
     /// # Type Parameters
     ///
-    /// - `I`: Type of generator for [Token]s.
+    /// - `Ctx`: Type of context from which to obtain name resolution caches.
     ///
     /// # Parameters
     ///
-    /// - `tokens`: Generator for [Token]s.
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
+    /// - `ctx`: Context from which to obtain name resolution caches.
     ///
     /// - `channel`: ID of the channel from which `stream` originates.
     ///
@@ -4275,10 +4272,9 @@ where
     /// - `RetryResult::Retry(when)`: A refresh is needed, but was delayed until
     ///   `when`.
     #[inline]
-    pub fn shutdown_flow<I>(
+    pub fn shutdown_flow<Ctx>(
         &mut self,
-        tokens: &mut I,
-        registry: &Registry,
+        ctx: &mut Ctx,
         channel: &FarChannelID,
         channel_param: &Types::ChannelParam,
         session: Types::AuthNSession
@@ -4297,12 +4293,9 @@ where
         >
     >
     where
-        I: Iterator<Item = Token> {
+        Ctx: RegistryCtx + TokensCtx {
         self.channels[channel.0].shutdown_flow(
-            tokens,
-            registry,
-            channel_param,
-            session
+            ctx, channel_param, session
         )
     }
 
@@ -4367,10 +4360,9 @@ where
         }
     }
 
-    pub fn listen<Ctx, I>(
+    pub fn listen<Ctx>(
         &mut self,
-        namectx: &mut Ctx,
-        gentok: &mut I,
+        ctx: &mut Ctx,
         endpoints: &mut HashSet<Types::PeerAddr>,
         sessions: &mut Vec<Types::AuthNSession>,
         updates: &mut Vec<(
@@ -4378,7 +4370,6 @@ where
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
-        registry: &Registry,
         tokens: &HashSet<Token>
     ) -> Result<
         RetryResult<()>,
@@ -4421,8 +4412,7 @@ where
         >
     >
     where
-        I: Iterator<Item = Token>,
-        Ctx: NSNameCachesCtx {
+        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         // First, figure out which channels to visit.
         let lives: Vec<FarChannelID> = self
             .tokens
@@ -4439,7 +4429,7 @@ where
 
         for id in lives {
             match self.channels[id.0].listen(
-                namectx, gentok, endpoints, sessions, registry, tokens
+                ctx, endpoints, sessions, tokens
             )? {
                 RetryResult::Success((creates, deletes, params, when)) => {
                     if let Some(creates) = creates {
@@ -4482,6 +4472,120 @@ where
     }
 }
 
+impl<Ctx, Types> CreateWithParam<&'_ mut Ctx> for FarChannels<Types>
+where
+    Types: FarChannelsTypes,
+    Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
+    type Config = FarChannelsConfig<
+        Types::Config,
+        Types::AuthConfig,
+        Types::ShutdownParam,
+        Types::InnerXfrmCreateParam
+    >;
+    type CreateError = FarChannelsCreateError<
+        Types::AuthCreateError,
+        Types::CreateError,
+        ChannelEntryCreateError<
+            Types::AcquireError,
+            Types::ShutdownNegoCreateError,
+            Types::AcquireNegoError,
+            AcquiredEntryCreateError<
+                Types::ResolverError,
+                FarChannelFlowsError<
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
+                >,
+                Types::WrapError
+            >
+        >
+    >;
+
+    fn create(
+        config: Self::Config,
+        ctx: &mut Ctx
+    ) -> Result<Self, Self::CreateError> {
+        let (channel_configs, default_resolve, default_authn,
+             default_flows_params, default_xfrm_params,
+             default_shutdown_params, default_retry,
+             default_nflows) = config.take();
+
+        // Ensure no id collisions.
+        let mut names = HashSet::with_capacity(channel_configs.len());
+
+        for config in channel_configs.iter() {
+            if !names.insert(config.name()) {
+                return Err(FarChannelsCreateError::Collision {
+                    name: config.name().to_string()
+                })
+            }
+        }
+
+        let mut ids = HashMap::with_capacity(channel_configs.len());
+        let mut tokens = HashMap::with_capacity(channel_configs.len());
+        let mut names = Vec::with_capacity(channel_configs.len());
+        let mut channels = Vec::with_capacity(channel_configs.len());
+
+        for config in channel_configs {
+            let (name, channel, resolve, authn_config, flows_params,
+                 xfrm_params, shutdown_params, retry, nflows) = config.take();
+            let authn_config = authn_config.unwrap_or(default_authn.clone());
+            let resolve = resolve.unwrap_or(default_resolve.clone());
+            let xfrm_params = xfrm_params
+                .unwrap_or(default_xfrm_params.clone());
+            let flows_params = flows_params
+                .unwrap_or(default_flows_params.clone());
+            let shutdown_params = shutdown_params
+                .unwrap_or(default_shutdown_params.clone());
+            let retry = retry.unwrap_or(default_retry.clone());
+            let nflows = nflows.or(default_nflows);
+
+            info!(target: "far-channels",
+                  "creating far channel \"{}\"",
+                  name);
+
+            let authn = Types::AuthN::create(authn_config)
+                .map_err(|err| FarChannelsCreateError::Auth {
+                    err: err
+                })?;
+            let channel = Types::Channel::create(ctx, channel)
+                .map_err(|err| FarChannelsCreateError::Channel {
+                    err: err
+                })?;
+            let channel = ChannelEntry::create(
+                ctx,
+                channel,
+                authn,
+                flows_params,
+                resolve,
+                xfrm_params,
+                retry,
+                nflows
+            ).map_err(|err| FarChannelsCreateError::Entry {
+                err: err
+            })?;
+            let id = FarChannelID(channels.len());
+
+            channels.push(channel);
+            names.push(name.clone());
+
+            if let Some(curr) = ids.insert(name.clone(), id) {
+                error!(target: "far-channels",
+                       "entry for name \"{}\" already existed: {}",
+                       name, curr);
+            }
+        }
+
+        Ok(FarChannels {
+            ids: ids,
+            names: names,
+            channels: channels,
+            tokens: tokens
+        })
+    }
+}
+
 impl<Flows, Wrap> ScopedError for FarChannelsRefreshError<Flows, Wrap>
 where
     Flows: ScopedError,
@@ -4494,9 +4598,8 @@ where
             FarChannelsRefreshError::Flows { err } => err.scope(),
             FarChannelsRefreshError::Wrap { err } => err.scope(),
             FarChannelsRefreshError::IO { err } => err.scope(),
-            FarChannelsRefreshError::Inconsistent |
-            FarChannelsRefreshError::NoValidAddrs |
-            FarChannelsRefreshError::NoTokens => ErrorScope::Unrecoverable
+            FarChannelsRefreshError::Inconsistent => ErrorScope::Unrecoverable,
+            FarChannelsRefreshError::NoValidAddrs => ErrorScope::External
         }
     }
 }
@@ -4684,8 +4787,7 @@ where
             AcquiredEntryCreateError::Flows { err } => err.scope(),
             AcquiredEntryCreateError::Wrap { err } => err.scope(),
             AcquiredEntryCreateError::IO { err } => err.scope(),
-            AcquiredEntryCreateError::NoValidAddrs |
-            AcquiredEntryCreateError::NoTokens => ErrorScope::Unrecoverable
+            AcquiredEntryCreateError::NoValidAddrs => ErrorScope::External
         }
     }
 }
@@ -4797,9 +4899,6 @@ where
             }
             FarChannelsRefreshError::NoValidAddrs => {
                 write!(f, "no valid addresses")
-            }
-            FarChannelsRefreshError::NoTokens => {
-                write!(f, "tokens exhausted")
             }
         }
     }
@@ -4962,9 +5061,6 @@ where
             AcquiredEntryCreateError::IO { err } => err.fmt(f),
             AcquiredEntryCreateError::NoValidAddrs => {
                 write!(f, "no valid addresses")
-            }
-            AcquiredEntryCreateError::NoTokens => {
-                write!(f, "tokens exhausted")
             }
         }
     }
@@ -5187,6 +5283,25 @@ where
             ChannelEntryShutdownError::Active => {
                 write!(f, "channel is still active")
             }
+        }
+    }
+}
+
+impl<Auth, Channel, Entry> Display
+    for FarChannelsCreateError<Auth, Channel, Entry>
+where Auth: Display,
+      Channel: Display,
+      Entry: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            FarChannelsCreateError::Auth { err } => err.fmt(f),
+            FarChannelsCreateError::Channel { err } => err.fmt(f),
+            FarChannelsCreateError::Entry { err } => err.fmt(f),
+            FarChannelsCreateError::Collision { name } =>
+                write!(f, "multiple channels with id \"{}\"", name)
         }
     }
 }
@@ -6125,7 +6240,6 @@ fn test_compound_unix() {
     init();
 
     const SERVER_PATH: &'static str = "test_far_channels_unix_server.sock";
-    const CLIENT_PATH: &'static str = "test_far_channels_unix_client.sock";
     const SERVER_CONFIG: &'static str = concat!(
         "unix-datagram:\n",
         "  path: test_far_channels_unix_server.sock\n",
@@ -6173,7 +6287,6 @@ fn test_compound_dtls_unix() {
     init();
 
     const SERVER_PATH: &'static str = "test_far_channels_dtls_unix_server.sock";
-    const CLIENT_PATH: &'static str = "test_far_channels_dtls_unix_client.sock";
     const SERVER_CONFIG: &'static str = concat!(
         "dtls:\n",
         "  cipher-suites:\n",

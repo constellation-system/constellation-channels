@@ -87,9 +87,11 @@ use crate::far::FarChannelXfrm;
 pub trait FlowAuthNShutdownTypes<Flow>
 where
     Flow: Session {
+    type AuthConfig: Clone;
     type Prin: Display;
     type AuthNSession: AuthNed<Self::Prin, Flow>;
     type AuthPending;
+    type AuthCreateError: Debug + Display;
     type AuthStartError: Debug + Display + ScopedError;
     type AuthNegoError: Debug + Display + ScopedError;
     type AuthN: SessionAuthN<
@@ -99,8 +101,9 @@ where
         Pending = Self::AuthPending,
         StartError = Self::AuthStartError,
         NegotiateError = Self::AuthNegoError
-    >;
-    type ShutdownParam;
+    > + Create<Config = Self::AuthConfig,
+               CreateError = Self::AuthCreateError>;
+    type ShutdownParam: Clone + Default;
     type ShutdownPending;
     type ShutdownStartError: Debug + Display + ScopedError;
     type ShutdownNegoError: Debug + Display + ScopedError;
@@ -159,7 +162,7 @@ where
 pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
     type Config;
     type CreateError: Debug + Display + ScopedError;
-    type InnerXfrmCreateParam: Clone;
+    type InnerXfrmCreateParam: Clone + Default;
     type InnerXfrm: DatagramXfrmCreate<
         Addr = Self::ChannelParam,
         CreateParam = Self::InnerXfrmCreateParam,
@@ -286,6 +289,7 @@ impl<AuthN, Unix, UDP> FlowAuthNShutdownTypes<CompoundFlow<Unix, UDP>>
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
         + DatagramXfrmCreate<Addr = UnixSocketPath>,
@@ -295,7 +299,9 @@ where
     UDP::Error: ScopedError
 {
     type AuthN = AuthN;
+    type AuthConfig = AuthN::Config;
     type AuthNSession = AuthN::AuthNSession;
+    type AuthCreateError = AuthN::CreateError;
     type AuthNegoError = AuthN::NegotiateError;
     type AuthPending = AuthN::Pending;
     type AuthStartError = AuthN::StartError;
@@ -311,6 +317,7 @@ impl<AuthN, Unix, UDP> FlowsEntryTypes<CompoundFlow<Unix, UDP>>
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
         + DatagramXfrmCreate<Addr = UnixSocketPath>,
@@ -342,6 +349,7 @@ impl<AuthN, Unix, UDP> FarChannelsTypes
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
         + DatagramXfrmCreate<Addr = UnixSocketPath>,

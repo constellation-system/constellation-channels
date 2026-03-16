@@ -35,7 +35,6 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
-use std::sync::Arc;
 use std::time::Duration;
 
 use constellation_auth::cred::Credentials;
@@ -54,6 +53,7 @@ use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
+use constellation_streams::threads::TokensCtx;
 use log::debug;
 use log::info;
 use log::trace;
@@ -463,17 +463,15 @@ where
     type Config = DTLSFarChannelConfig<Channel::Config>;
     type CreateError = Channel::CreateError;
 
-    fn create<Ctx, I>(
-        caches: &mut Ctx,
-        tokens: &mut I,
+    fn create<Ctx>(
+        ctx: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
+        Ctx: NSNameCachesCtx + TokensCtx {
         let tls = config.take();
         let (tls, inner, shutdown_retry, shutdown_timeout) = tls.take();
-        let inner = Channel::create(caches, tokens, inner)?;
+        let inner = Channel::create(ctx, inner)?;
 
         Ok(DTLSFarChannel {
             shutdown_timeout: shutdown_timeout,

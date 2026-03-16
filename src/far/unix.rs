@@ -79,6 +79,7 @@ use constellation_common::net::Socket;
 use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::threads::TokensCtx;
 use log::info;
 use log::warn;
 use mio::event::Source;
@@ -355,14 +356,12 @@ impl FarChannelCreate for UnixFarChannel {
     type CreateError = Error;
 
     #[inline]
-    fn create<Ctx, I>(
-        _caches: &mut Ctx,
-        _tokens: &mut I,
+    fn create<Ctx>(
+        _ctx: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
+        Ctx: NSNameCachesCtx + TokensCtx {
         let addr = UnixSocketPath::from(config.path());
 
         Ok(UnixFarChannel { bind: addr })

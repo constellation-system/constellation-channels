@@ -162,6 +162,7 @@ use constellation_socks5::state::SOCKS5UDPInfo;
 use constellation_streams::addrs::AddrsCreate;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
+use constellation_streams::threads::TokensCtx;
 use log::info;
 use mio::event::Source;
 use mio::Registry;
@@ -347,8 +348,7 @@ pub enum SOCKS5CreateError<Proxy, Datagram> {
     /// Datagram channel creation error.
     Datagram {
         datagram: Datagram
-    },
-    NoTokens
+    }
 }
 
 /// Errors that can occur during the [acquire](FarChannel::acquire)
@@ -488,7 +488,6 @@ where
         match self {
             SOCKS5CreateError::Proxy { proxy } => proxy.scope(),
             SOCKS5CreateError::Datagram { datagram } => datagram.scope(),
-            SOCKS5CreateError::NoTokens => ErrorScope::Unrecoverable
         }
     }
 }
@@ -1168,19 +1167,17 @@ where
     type CreateError =
         SOCKS5CreateError<Proxy::CreateError, Datagram::CreateError>;
 
-    fn create<Ctx, I>(
-        caches: &mut Ctx,
-        tokens: &mut I,
+    fn create<Ctx>(
+        ctx: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
-        let token = tokens.next().ok_or(SOCKS5CreateError::NoTokens)?;
+        Ctx: NSNameCachesCtx + TokensCtx {
+        let token = ctx.token();
         let (bind, auth, proxy) = config.take();
-        let datagram = Datagram::create(caches, tokens, bind)
+        let datagram = Datagram::create(ctx, bind)
             .map_err(|e| SOCKS5CreateError::Datagram { datagram: e })?;
-        let proxy = Proxy::create(caches, proxy)
+        let proxy = Proxy::create(ctx, proxy)
             .map_err(|e| SOCKS5CreateError::Proxy { proxy: e })?;
         let shutdown_nego = proxy.shutdown_nego();
 
@@ -1297,7 +1294,6 @@ where
         match self {
             SOCKS5CreateError::Proxy { proxy } => proxy.fmt(f),
             SOCKS5CreateError::Datagram { datagram } => datagram.fmt(f),
-            SOCKS5CreateError::NoTokens => write!(f, "tokens exhausted")
         }
     }
 }

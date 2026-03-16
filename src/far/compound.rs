@@ -69,6 +69,7 @@ use constellation_socks5::comm::SOCKS5UDPXfrm;
 #[cfg(feature = "socks5")]
 use constellation_socks5::error::SOCKS5UDPError;
 use constellation_streams::channels::ChannelParam;
+use constellation_streams::threads::TokensCtx;
 use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
@@ -2783,22 +2784,20 @@ impl FarChannelCreate for CompoundFarIPChannel {
     type Config = CompoundFarIPChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
-    fn create<Ctx, I>(
+    fn create<Ctx>(
         caches: &mut Ctx,
-        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
+        Ctx: NSNameCachesCtx + TokensCtx {
         match config {
             CompoundFarIPChannelConfig::UDP { udp } => {
-                let Ok(udp) = UDPFarChannel::create(caches, tokens, udp);
+                let Ok(udp) = UDPFarChannel::create(caches, udp);
 
                 Ok(CompoundFarIPChannel::UDP { udp: udp })
             }
             CompoundFarIPChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::create(caches, tokens, *dtls)?;
+                let dtls = DTLSFarChannel::create(caches, *dtls)?;
 
                 Ok(CompoundFarIPChannel::DTLS {
                     dtls: Box::new(dtls)
@@ -2806,7 +2805,7 @@ impl FarChannelCreate for CompoundFarIPChannel {
             }
             CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
                 let socks5 =
-                    SOCKS5FarChannel::create(caches, tokens, *socks5_udp)
+                    SOCKS5FarChannel::create(caches, *socks5_udp)
                         .map_err(|err| {
                             CompoundFarChannelCreateError::SOCKS5 {
                                 socks5: Box::new(err)
@@ -3118,18 +3117,16 @@ impl FarChannelCreate for CompoundFarChannel {
     type Config = CompoundFarChannelConfig;
     type CreateError = CompoundFarChannelCreateError;
 
-    fn create<Ctx, I>(
+    fn create<Ctx>(
         caches: &mut Ctx,
-        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
+        Ctx: NSNameCachesCtx + TokensCtx {
         match config {
             CompoundFarChannelConfig::Unix { unix_datagram } => {
                 let unix =
-                    UnixFarChannel::create(caches, tokens, unix_datagram)
+                    UnixFarChannel::create(caches, unix_datagram)
                         .map_err(|err| CompoundFarChannelCreateError::IO {
                             err: err
                         })?;
@@ -3137,14 +3134,14 @@ impl FarChannelCreate for CompoundFarChannel {
                 Ok(CompoundFarChannel::Unix { unix: unix })
             }
             CompoundFarChannelConfig::UDP { udp } => {
-                let Ok(udp) = UDPFarChannel::create(caches, tokens, udp);
+                let Ok(udp) = UDPFarChannel::create(caches, udp);
 
                 Ok(CompoundFarChannel::IP {
                     ip: CompoundFarIPChannel::UDP { udp: udp }
                 })
             }
             CompoundFarChannelConfig::DTLS { dtls } => {
-                let dtls = DTLSFarChannel::create(caches, tokens, *dtls)?;
+                let dtls = DTLSFarChannel::create(caches, *dtls)?;
 
                 Ok(CompoundFarChannel::DTLS {
                     dtls: Box::new(dtls)
@@ -3152,7 +3149,7 @@ impl FarChannelCreate for CompoundFarChannel {
             }
             CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
                 let socks5 =
-                    SOCKS5FarChannel::create(caches, tokens, *socks5_udp)
+                    SOCKS5FarChannel::create(caches, *socks5_udp)
                         .map_err(|err| {
                             CompoundFarChannelCreateError::SOCKS5 {
                                 socks5: Box::new(err)

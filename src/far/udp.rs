@@ -45,6 +45,7 @@ use constellation_common::net::Sender;
 use constellation_common::net::Socket;
 use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
+use constellation_streams::threads::TokensCtx;
 use log::warn;
 use mio::event::Source;
 use mio::net::UdpSocket;
@@ -350,14 +351,12 @@ impl FarChannelCreate for UDPFarChannel {
     type CreateError = Infallible;
 
     #[inline]
-    fn create<Ctx, I>(
-        _caches: &mut Ctx,
-        _tokens: &mut I,
+    fn create<Ctx>(
+        _ctx: &mut Ctx,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
+        Ctx: NSNameCachesCtx + TokensCtx {
         let (addr, port, unsafe_opts) = config.take();
 
         if unsafe_opts.allow_ip_addr_creds() {
