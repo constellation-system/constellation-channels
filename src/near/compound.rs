@@ -736,7 +736,7 @@ pub enum CompoundNearConnectorShutdownNegotiator {
 
 pub enum CompoundNearShutdownNegotiatorState<Stream>
 where
-    Stream: Session {
+    Stream: Session + Read + Write {
     #[cfg(feature = "unix")]
     Unix {
         unix: PassthruSessionNegotiation<
@@ -759,7 +759,7 @@ where
 
 pub enum CompoundNearShutdownNegotiatorPending<Stream>
 where
-    Stream: Session {
+    Stream: Session + Read + Write {
     TLS {
         tls: Box<
             TLSShutdownNegoPending<

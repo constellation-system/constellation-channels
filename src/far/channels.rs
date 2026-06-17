@@ -20,13 +20,18 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::io::Error;
+use std::io::Read;
+use std::io::Write;
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Instant;
+use std::vec::IntoIter;
 
 use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
@@ -47,6 +52,10 @@ use constellation_common::retry::RetryResult;
 use constellation_common::retry::WithRetryWhen;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
+use constellation_streams::channels::Channels;
+use constellation_streams::channels::ChannelsCreate;
+use constellation_streams::channels::ChannelsListen;
+use constellation_streams::channels::ChannelsShutdown;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::TokensCtx;
 use log::debug;
@@ -276,6 +285,13 @@ where
     /// Array of registry entries for each channel.
     channels: Vec<ChannelEntry<Types>>,
     tokens: HashMap<Token, FarChannelID>
+}
+
+pub struct FarChannelsParamsIter<'a, I, Types>
+where I: 'a + Iterator<Item = FarChannelID>,
+    Types: FarChannelsTypes {
+    ids: I,
+    channels: &'a mut [ChannelEntry<Types>],
 }
 
 /// Errors that can occur refreshing name caches and updating entries.
@@ -648,7 +664,7 @@ impl<AuthPending> SessionNegoState<AuthPending> {
         SessionNegoToAuthError<AuthN::NegotiateError, AuthN::StartError>
     >
     where
-        Flow: Session,
+        Flow: Session + Read + Write,
         AuthN: SessionAuthN<Flow>
             + NegotiatorStart<
                 AuthNResult<AuthN::AuthNSession, Flow>,
@@ -698,7 +714,7 @@ impl<AuthPending> SessionNegoState<AuthPending> {
         SessionNegoToAuthError<AuthN::NegotiateError, AuthN::StartError>
     >
     where
-        Flow: Session,
+        Flow: Session + Read + Write,
         AuthN: SessionAuthN<Flow>
             + NegotiatorStart<
                 AuthNResult<AuthN::AuthNSession, Flow>,
@@ -750,7 +766,7 @@ impl<AuthPending> SessionNegoState<AuthPending> {
         AuthNegoStepError<AuthN::NegotiateError>
     >
     where
-        Flow: Session,
+        Flow: Session + Read + Write,
         AuthN: SessionAuthN<Flow, Pending = AuthPending, Param = ()> {
         match self {
             // Resuming session negotiations.
@@ -768,7 +784,7 @@ impl<AuthPending> SessionNegoState<AuthPending> {
 
 impl<Flow, Types> FlowNegoState<Flow, Types>
 where
-    Flow: Session,
+    Flow: Session + Read + Write,
     Types: FlowAuthNShutdownTypes<Flow>
 {
     /// Take an incoming negotiated session and create a state in the
@@ -1671,7 +1687,7 @@ impl FlowsRetry {
 
 impl<Flow, Types> FlowsEntry<Flow, Types>
 where
-    Flow: Session,
+    Flow: Session + Read + Write,
     Types: FlowsEntryTypes<Flow>
 {
     /// Create a new `FlowsEntry` from a [Flows].
@@ -3971,15 +3987,6 @@ impl<Types> FarChannels<Types>
 where
     Types: FarChannelsTypes
 {
-    /// Get the [FarChannelID] for a given channel name.
-    #[inline]
-    pub fn id(
-        &self,
-        name: &str
-    ) -> Option<FarChannelID> {
-        self.ids.get(name).cloned()
-    }
-
     /// Get an iterator over all names and channel IDs.
     #[inline]
     pub fn ids(&self) -> Iter<'_, String, FarChannelID> {
@@ -4017,89 +4024,6 @@ where
         self.channels
             .iter()
             .all(|channel| channel.is_shutdown_safe())
-    }
-
-    /// Request a flow for a given endpoint.
-    ///
-    /// This will first refresh addresses if needed.  It will then
-    /// attempt to negotiate and authenticate a session with the given
-    /// endpoint.  If negotiations can be concluded immediately, then
-    /// the authenticated session will be returned.  Otherwise, the
-    /// request will remain active and will eventually be returned by
-    /// [listen](FarChannels::listen).  Subsequent calls to this
-    /// function with the same `endpoint` will return an error.
-    ///
-    /// If a session is obtained from a call to this function, it must
-    /// be shut down with [shutdown_flow](FarChannels::shutdown_flow)
-    /// to properly handle shutdown negotiations and cleanup.
-    /// Information from the call to `refresh` will also be returned.
-    ///
-    /// # Type Parameters
-    ///
-    /// - `Ctx`: Type of context from which to obtain name resolution caches.
-    ///
-    /// # Parameters
-    ///
-    /// - `ctx`: Context from which to obtain name resolution caches.
-    ///
-    /// - `tokens`: Generator for [Token]s.
-    ///
-    /// - `channel_param`: Resolved channel parameter for which to request a
-    ///   [Flow]
-    ///
-    /// - `nego_param`: Parameter used by the outbound negotiator.
-    ///
-    /// - `endpoint`: The counterparty'ss address.
-    ///
-    /// - `id`: ID of the channel for which to request the flow.
-    ///
-    /// # Return Value
-    ///
-    /// A triple containing three values in order:
-    ///
-    /// 1. The authenticated session, if there is one.
-    ///
-    /// 1. If a refresh occurred, the new set of channel parameters.
-    ///
-    /// 1. When the next refresh occurs.
-    #[inline]
-    pub fn req_flow<Ctx>(
-        &mut self,
-        ctx: &mut Ctx,
-        param: &Types::ChannelParam,
-        endpoint: &Types::PeerAddr,
-        out_param: &Types::OutParam,
-        id: &FarChannelID
-    ) -> Result<
-        RetryResult<(
-            Option<Types::AuthNSession>,
-            Option<Vec<Types::ChannelParam>>,
-            Option<Instant>
-        )>,
-        ChannelEntryReqFlowError<
-            AcquiredEntryFlowError<
-                FarChannelFlowsError<
-                    Types::SocketError,
-                    Types::XfrmCreateError,
-                    Types::InboundNegoCreateError,
-                    Types::OutboundNegoCreateError
-                >,
-                Types::WrapError,
-                FlowStateGetFlowError<
-                    Types::AuthNegoError,
-                    Types::AuthStartError,
-                    FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
-                    ShutdownError<
-                        Types::ShutdownStartError,
-                        Types::ShutdownNegoError
-                    >
-                >
-            >
-        >
-    >
-    where
-        Ctx: RegistryCtx + TokensCtx {
-        self.channels[id.0].req_flow(ctx, param, endpoint, out_param)
     }
 
     /// Obtain a snapshot of the current set of addresses for one channel.
@@ -4158,40 +4082,111 @@ where
             }
         })
     }
+}
 
-    /// Obtain a snapshot of the current set of addresses for all channels.
-    ///
-    /// This will first check to see if each channel needs to be
-    /// refreshed.  It will then take a snapshot of the current set of
-    /// addresses.  The result will be returned for each channel.
-    ///
-    /// If any `RetryResult::Retry` is returned, the retry time will
-    /// be the latest of all returned.
-    ///
-    /// # Type Parameters
-    ///
-    /// - `Ctx`: Type of context from which to obtain name resolution caches.
-    ///
-    /// # Parameters
-    ///
-    /// - `ctx`: Context from which to obtain name resolution caches.
-    ///
-    /// # Return Value
-    ///
-    /// Array containing the results of
-    /// [channel_addrs](FarChannels::channel_addrs) for each channel,
-    /// together with its channel ID.
-    pub fn addrs<Ctx>(
+impl<Ctx, Types> Channels<Ctx> for FarChannels<Types>
+where
+    Types: FarChannelsTypes,
+    Ctx: RegistryCtx + TokensCtx
+{
+    type ChannelID = FarChannelID;
+    type Addr = Types::PeerAddr;
+    type Param = Types::ChannelParam;
+    type Stream = Types::AuthNSession;
+    type OutNegoParam = Types::OutParam;
+    type ReqStreamError = ChannelEntryReqFlowError<
+        AcquiredEntryFlowError<
+            FarChannelFlowsError<
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
+            >,
+            Types::WrapError,
+            FlowStateGetFlowError<
+                Types::AuthNegoError,
+                Types::AuthStartError,
+                FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
+                ShutdownError<
+                    Types::ShutdownStartError,
+                    Types::ShutdownNegoError
+                >
+            >
+        >
+    >;
+    type ParamsIter<I> =
+        IntoIter<(FarChannelID,
+                  RetryResult<(Vec<Types::ChannelParam>, Option<Instant>)>)>
+    where
+        I: Iterator<Item = Self::ChannelID>;
+    type ParamsError = FarChannelsAddrsError<
+        FarChannelsRefreshError<
+            FarChannelFlowsError<
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
+            >,
+            Types::WrapError
+        >
+    >;
+
+    #[inline]
+    fn channel_id(
+        &self,
+        name: &str
+    ) -> Option<FarChannelID> {
+        self.ids.get(name).cloned()
+    }
+
+    #[inline]
+    fn req_stream(
         &mut self,
         ctx: &mut Ctx,
+        channel: &Self::ChannelID,
+        param: &Self::Param,
+        endpoint: &Self::Addr,
+        nego_param: &Self::OutNegoParam
     ) -> Result<
-        RetryResult<
-            Vec<(
-                FarChannelID,
-                Option<(Vec<Types::ChannelParam>, Option<Instant>)>
-            )>
-        >,
-        FarChannelsAddrsError<
+        RetryResult<(Option<Types::AuthNSession>,
+                     Option<Vec<Types::ChannelParam>>,
+                     Option<Instant>)>,
+        Self::ReqStreamError
+    > {
+        self.channels[channel.0].req_flow(ctx, param, endpoint, nego_param)
+    }
+
+    #[inline]
+    fn params<I>(
+        &mut self,
+        ctx: &mut Ctx,
+        channels: I
+    ) -> Result<Self::ParamsIter<I>, Self::ParamsError>
+    where I: Iterator<Item = Self::ChannelID> {
+        let vec: Result<Vec<(FarChannelID,
+                             RetryResult<(Vec<Types::ChannelParam>,
+                                          Option<Instant>)>)>,
+                        Self::ParamsError> = channels
+            .map(|channel| self.channels[channel.0].addrs(ctx)
+                 .map(|addrs| (channel, addrs)))
+            .collect();
+
+        Ok(vec?.into_iter())
+    }
+}
+
+impl<Ctx, Types> ChannelsListen<Ctx> for FarChannels<Types>
+where
+    Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx,
+    Types: FarChannelsTypes {
+    type StreamIter = std::vec::IntoIter<
+        (Self::Addr, Self::ChannelID, Self::Param, Self::Stream)
+    >;
+    type EndpointIter = std::collections::hash_set::IntoIter<
+        (Self::Addr, Self::ChannelID, Self::Param)
+    >;
+    type ListenError = ChannelEntryListenError<
+        AcquiredEntryListenError<
             FarChannelsRefreshError<
                 FarChannelFlowsError<
                     Types::SocketError,
@@ -4200,20 +4195,114 @@ where
                     Types::OutboundNegoCreateError
                 >,
                 Types::WrapError
+            >,
+            FlowsListenError<
+                Types::XfrmError,
+                Types::InStartError,
+                Types::InNegoError,
+                Types::OutNegoError
+            >,
+            Types::AuthStartError,
+            Types::AuthNegoError,
+            ShutdownError<
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
             >
-        >
-    >
-    where
-        Ctx: RegistryCtx + TokensCtx {
-        let nchannels = self.channels.len();
+        >,
+        AcquiredEntryCreateError<
+            Types::ResolverError,
+            FarChannelFlowsError<
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
+            >,
+            Types::WrapError
+        >,
+        Types::AcquireNegoError,
+        Types::AcquireShutdownNegoError
+    >;
+
+    fn listen(
+        &mut self,
+        ctx: &mut Ctx,
+        tokens: &HashSet<Token>
+    ) -> Result<
+        RetryResult<(
+            Self::StreamIter,
+            Self::EndpointIter,
+            Option<Vec<(
+                FarChannelID,
+                Option<Vec<Types::ChannelParam>>,
+            )>>,
+            Option<Instant>
+        )>,
+        Self::ListenError
+    > {
+        let lives: Vec<FarChannelID> = self
+            .tokens
+            .iter()
+            .flat_map(|(token, id)| {
+                if tokens.contains(token) {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut endpoints: HashSet<Types::PeerAddr> =
+            HashSet::with_capacity(lives.len());
+        let mut sessions: Vec<Types::AuthNSession> =
+            Vec::with_capacity(lives.len());
+        let mut updates: Option<Vec<(
+            FarChannelID,
+            Option<Vec<Types::ChannelParam>>,
+            Option<Instant>
+        )>> = None;
         let mut retry: Option<Instant> = None;
-        let mut out = Vec::with_capacity(nchannels);
 
-        for id in 0..nchannels {
-            let id = FarChannelID(id);
+        for id in lives {
+            match self.channels[id.0].listen(
+                ctx, &mut endpoints, &mut sessions, tokens
+            )? {
+                RetryResult::Success((creates, deletes, params, when)) => {
+                    if let Some(creates) = creates {
+                        for token in creates {
+                            if let Some(curr) =
+                                self.tokens.insert(token, id.clone())
+                            {
+                                error!(target: "far-channels",
+                                       "tokens contains entry for {:?} ({})",
+                                       token, curr);
+                            }
+                        }
+                    }
 
-            match self.channel_addrs(ctx, &id)? {
-                RetryResult::Success(res) => out.push((id, res)),
+                    if let Some(deletes) = deletes {
+                        for token in deletes {
+                            if self.tokens.remove(&token).is_none() {
+                                error!(target: "far-channels",
+                                       "token {:?} was not in tokens table",
+                                       token);
+                            }
+                        }
+                    }
+
+                    if params.is_some() || when.is_some() {
+                        match &mut updates {
+                            Some(updates) => {
+                                updates.push((id, params, when));
+                            }
+                            None => {
+                                let vec = Vec::with_capacity(lives.len());
+
+                                vec.push((id, params, when));
+
+                                updates = Some(vec)
+                            }
+                        }
+                    }
+                }
                 RetryResult::Retry(when) => {
                     retry = Some(next_retry_definite(&retry, &when));
                 }
@@ -4223,107 +4312,48 @@ where
         if let Some(when) = retry {
             Ok(RetryResult::Retry(when))
         } else {
-            Ok(RetryResult::Success(out))
+            Ok(RetryResult::Success(
+                (sessions.into_iter(), endpoints.into_iter(), updates)
+            ))
         }
     }
+}
 
-    /// Shut down a session obtained from this `FarChannels`.
-    ///
-    /// This will first attempt to refresh the resolved names if
-    /// needed.  It will then perform shutdown negotiations on
-    /// `session` and handle any cleanup.  The `session` argument will
-    /// be consumed, and the session will no longer be usable.  Actual
-    /// shutdown of the session may occur after some number of
-    /// [listen](FarChannels::listen)s.
-    ///
-    /// If a refresh is performed, the new set of channel parameters
-    /// will be returned.  If there is a time at which to perform the
-    /// next refresh, then that will be returned as well.
-    ///
-    /// # Type Parameters
-    ///
-    /// - `Ctx`: Type of context from which to obtain name resolution caches.
-    ///
-    /// # Parameters
-    ///
-    /// - `ctx`: Context from which to obtain name resolution caches.
-    ///
-    /// - `channel`: ID of the channel from which `stream` originates.
-    ///
-    /// - `channel_param`: Channel parameter indicating the specific [Flows]
-    ///   from which `session` was obtained.
-    ///
-    /// - `session`: The session to shut down.
-    ///
-    /// # Return Value
-    ///
-    /// - `RetryResult::Success((Some(params), Some(when)))`: The set of [Flows]
-    ///   changed to `params`, and the channel needs to be refreshed at `when`
-    ///
-    /// - `RetryResult::Success((None, Some(when)))`: The set of [Flows] is
-    ///   unchanged, and the channel needs to be refreshed at `when`
-    ///
-    /// - `RetryResult::Success((Some(params), None))`: This case should never
-    ///   happen.
-    ///
-    /// - `RetryResult::Success((None, None))`: Should be returned by any entry
-    ///   with a static address set.
-    ///
-    /// - `RetryResult::Retry(when)`: A refresh is needed, but was delayed until
-    ///   `when`.
+impl<Ctx, Types> ChannelsShutdown<Ctx> for FarChannels<Types>
+where
+    Ctx: RegistryCtx,
+    Types: FarChannelsTypes {
+    type ShutdownStreamError = ChannelEntryShutdownFlowError<
+        AcquiredEntryShutdownError<
+            FarChannelFlowsError<
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
+            >,
+            Types::WrapError
+        >
+    >;
+
     #[inline]
-    pub fn shutdown_flow<Ctx>(
+    fn shutdown_stream(
         &mut self,
         ctx: &mut Ctx,
-        channel: &FarChannelID,
-        channel_param: &Types::ChannelParam,
-        session: Types::AuthNSession
+        channel: &Self::ChannelID,
+        param: &Self::Param,
+        session: Self::Stream
     ) -> Result<
-        RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
-        ChannelEntryShutdownFlowError<
-            AcquiredEntryShutdownError<
-                FarChannelFlowsError<
-                    Types::SocketError,
-                    Types::XfrmCreateError,
-                    Types::InboundNegoCreateError,
-                    Types::OutboundNegoCreateError
-                >,
-                Types::WrapError
-            >
-        >
-    >
-    where
-        Ctx: RegistryCtx + TokensCtx {
-        self.channels[channel.0].shutdown_flow(
-            ctx, channel_param, session
-        )
+        RetryResult<()>,
+        Self::ShutdownStreamError
+    > {
+        self.channels[channel.0].shutdown_flow(ctx, channel_param, session)
     }
 
-    /// Shut down all channels.
-    ///
-    /// This will attempt to shut down all channels cleanly.  Callers
-    /// must guarantee that there are no active sessions (see
-    /// [is_shutdown_safe](FarChannels::is_shutdown_safe)); if there
-    /// are active sessions, then this call will fail.
-    ///
-    /// All channels will attempt to shut down their acquired state
-    /// using [shutdown](FarChannel::shutdown).  If this succeeds for
-    /// all channels, `true` will be returned.  Otherwise, it is
-    /// necessary to [listen](FarChannels::listen) until any shutdown
-    /// negotiations conclude, at which point
-    /// [is_shutdown](FarChannels::is_shutdown) returns true.
-    ///
-    /// # Parameters
-    ///
-    /// - `registry`: [Registry] to use to deregister expired [Flows].
-    ///
-    /// # Return Value
-    ///
-    /// Whether or not all channels were shut down immediately.
-    pub fn shutdown(
-        &mut self,
-        registry: &Registry
-    ) -> Result<bool, Vec<FarChannelID>> {
+    fn shutdown(
+        self,
+        ctx: &mut Ctx
+    ) -> Result<(), Self::ShutdownError> {
+        let registry = ctx.registry();
         let mut out = true;
         let mut errs: Option<Vec<FarChannelID>> = None;
         let mut deletes = Vec::new();
@@ -4356,126 +4386,15 @@ where
         if let Some(errs) = errs.take() {
             Err(errs)
         } else {
-            Ok(out)
-        }
-    }
-
-    pub fn listen<Ctx>(
-        &mut self,
-        ctx: &mut Ctx,
-        endpoints: &mut HashSet<Types::PeerAddr>,
-        sessions: &mut Vec<Types::AuthNSession>,
-        updates: &mut Vec<(
-            FarChannelID,
-            Option<Vec<Types::ChannelParam>>,
-            Option<Instant>
-        )>,
-        tokens: &HashSet<Token>
-    ) -> Result<
-        RetryResult<()>,
-        ChannelEntryListenError<
-            AcquiredEntryListenError<
-                FarChannelsRefreshError<
-                    FarChannelFlowsError<
-                        Types::SocketError,
-                        Types::XfrmCreateError,
-                        Types::InboundNegoCreateError,
-                        Types::OutboundNegoCreateError
-                    >,
-                    Types::WrapError
-                >,
-                FlowsListenError<
-                    Types::XfrmError,
-                    Types::InStartError,
-                    Types::InNegoError,
-                    Types::OutNegoError
-                >,
-                Types::AuthStartError,
-                Types::AuthNegoError,
-                ShutdownError<
-                    Types::ShutdownStartError,
-                    Types::ShutdownNegoError
-                >
-            >,
-            AcquiredEntryCreateError<
-                Types::ResolverError,
-                FarChannelFlowsError<
-                    Types::SocketError,
-                    Types::XfrmCreateError,
-                    Types::InboundNegoCreateError,
-                    Types::OutboundNegoCreateError
-                >,
-                Types::WrapError
-            >,
-            Types::AcquireNegoError,
-            Types::AcquireShutdownNegoError
-        >
-    >
-    where
-        Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
-        // First, figure out which channels to visit.
-        let lives: Vec<FarChannelID> = self
-            .tokens
-            .iter()
-            .flat_map(|(token, id)| {
-                if tokens.contains(token) {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let mut retry: Option<Instant> = None;
-
-        for id in lives {
-            match self.channels[id.0].listen(
-                ctx, endpoints, sessions, tokens
-            )? {
-                RetryResult::Success((creates, deletes, params, when)) => {
-                    if let Some(creates) = creates {
-                        for token in creates {
-                            if let Some(curr) =
-                                self.tokens.insert(token, id.clone())
-                            {
-                                error!(target: "far-channels",
-                                       "tokens contains entry for {:?} ({})",
-                                       token, curr);
-                            }
-                        }
-                    }
-
-                    if let Some(deletes) = deletes {
-                        for token in deletes {
-                            if self.tokens.remove(&token).is_none() {
-                                error!(target: "far-channels",
-                                       "token {:?} was not in tokens table",
-                                       token);
-                            }
-                        }
-                    }
-
-                    if params.is_some() || when.is_some() {
-                        updates.push((id, params, when));
-                    }
-                }
-                RetryResult::Retry(when) => {
-                    retry = Some(next_retry_definite(&retry, &when));
-                }
-            }
-        }
-
-        if let Some(when) = retry {
-            Ok(RetryResult::Retry(when))
-        } else {
-            Ok(RetryResult::Success(()))
+            Ok(())
         }
     }
 }
 
-impl<Ctx, Types> CreateWithParam<&'_ mut Ctx> for FarChannels<Types>
+impl<Ctx, Types, Srcs> ChannelsCreate<Ctx, Srcs> for FarChannels<Types>
 where
-    Types: FarChannelsTypes,
-    Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
+    Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx,
+    Types: FarChannelsTypes {
     type Config = FarChannelsConfig<
         Types::Config,
         Types::AuthConfig,
@@ -4502,9 +4421,11 @@ where
         >
     >;
 
+    /// Create an instance of this `Channels`.
     fn create(
+        ctx: &mut Ctx,
         config: Self::Config,
-        ctx: &mut Ctx
+        srcs: Srcs
     ) -> Result<Self, Self::CreateError> {
         let (channel_configs, default_resolve, default_authn,
              default_flows_params, default_xfrm_params,

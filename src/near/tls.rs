@@ -333,7 +333,7 @@ impl ScopedError for TLSCreateError {
 
 impl<Stream, Endpoint> From<TLSConn<Stream, Endpoint>> for SslStream<Stream>
 where
-    Stream: Source + Session,
+    Stream: Source + Session + Read + Write,
     Endpoint: Display
 {
     #[inline]

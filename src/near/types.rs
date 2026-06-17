@@ -422,7 +422,7 @@ where
 impl<AuthN, TLS> NearSessionNegoTypes for CompoundConnectorNegoTypes<AuthN, TLS>
 where
     AuthN: Create + SessionAuthN<CompoundNearClientConn, Param = ()>,
-    <AuthN as Create>::Config: Default,
+    <AuthN as Create>::Config: Clone + Default,
     AuthN::NegotiateError: ScopedError,
     TLS: Clone + Debug + TLSLoadClient
 {

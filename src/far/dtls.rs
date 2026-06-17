@@ -341,7 +341,7 @@ where
 
 impl<Flow> From<DTLSFlow<Flow>> for SslStream<Flow>
 where
-    Flow: Session
+    Flow: Session + Read + Write
 {
     #[inline]
     fn from(val: DTLSFlow<Flow>) -> SslStream<Flow> {

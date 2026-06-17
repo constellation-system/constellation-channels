@@ -39,6 +39,7 @@ use constellation_common::net::Sender;
 use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::channels::ChannelParam;
 use mio::event::Source;
 
 use crate::config::CompoundFarChannelConfig;
@@ -89,7 +90,7 @@ where
     Flow: Session {
     type AuthConfig: Clone;
     type Prin: Display;
-    type AuthNSession: AuthNed<Self::Prin, Flow>;
+    type AuthNSession: AuthNed<Self::Prin, Flow> + Clone;
     type AuthPending;
     type AuthCreateError: Debug + Display;
     type AuthStartError: Debug + Display + ScopedError;
@@ -121,7 +122,7 @@ pub trait FlowsEntryTypes<Flow>: FlowAuthNShutdownTypes<Flow> + Sized
 where
     Flow: Session {
     type LocalAddr: Clone + Display + From<Self::SockAddr>;
-    type PeerAddr: Clone + Display + Eq + Hash;
+    type PeerAddr: Clone + Debug + Display + Eq + Hash;
     type SockAddr: Clone
         + Display
         + TryFrom<Self::LocalAddr, Error = Self::ConvertError>;
@@ -181,7 +182,8 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
         + Write;
     type AcquirePending;
     type AcquireShutdownPending;
-    type ChannelParam: Clone + Display + Eq + Hash;
+    type ChannelParam: Clone + Display + Eq + Hash +
+        ChannelParam<Self::PeerAddr>;
     type AcquireError: Debug + Display + ScopedError;
     type AcquireNegoError: Debug + Display + ScopedError;
     type AcquireShutdownError: Debug + Display + ScopedError;

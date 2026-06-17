@@ -19,6 +19,8 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
+use std::io::Read;
+use std::io::Write;
 use std::time::Instant;
 
 use constellation_auth::authn::AuthNResult;
@@ -40,7 +42,7 @@ use log::info;
 /// active and has already been returned.
 pub(crate) enum SessionState<Stream, AuthN, ShutdownNego>
 where
-    Stream: Session,
+    Stream: Session + Read + Write,
     AuthN: SessionAuthN<Stream>,
     ShutdownNego: NegotiatorStart<(), Stream>,
     ShutdownNego::NegotiateError: ScopedError {
@@ -60,7 +62,7 @@ where
 
 pub(crate) struct SessionNegoState<Stream, AuthN, ShutdownNego>
 where
-    Stream: Session,
+    Stream: Session + Read + Write,
     AuthN: SessionAuthN<Stream>,
     ShutdownNego: NegotiatorStart<(), Stream>,
     ShutdownNego::NegotiateError: ScopedError {

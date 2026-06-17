@@ -155,6 +155,8 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
+use std::io::Read;
+use std::io::Write;
 use std::net::SocketAddr;
 
 use constellation_auth::cred::Credentials;
@@ -525,7 +527,7 @@ where
     <<Self::Socket as Socket>::Addr as TryFrom<Xfrm::LocalAddr>>::Error:
         Display,
     InnerXfrm: DatagramXfrm {
-    type Flow: Session + Credentials;
+    type Flow: Session + Credentials + Read + Write;
     type InboundNego: NegotiatorStart<
         Self::Flow,
         BufferedFlow<Self::Socket, Xfrm>
