@@ -20,14 +20,12 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::io::Error;
 use std::io::Read;
 use std::io::Write;
-use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -37,7 +35,6 @@ use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::config::Create;
-use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrmCreate;
@@ -46,6 +43,7 @@ use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
+use constellation_common::retry::next_retry;
 use constellation_common::retry::next_retry_definite;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
@@ -177,7 +175,8 @@ where
         Types::Xfrm
     >,
     /// Retry information for listening for new sessions.
-    retry: FlowsRetry
+    retry: FlowsRetry,
+    param: Types::ChannelParam
 }
 
 /// Entry associated with an acquired value on a channel.
@@ -415,6 +414,9 @@ pub enum SessionListenError<Flows, Start, AuthN, Shutdown> {
     Step {
         /// The error that occurred stepping session negotiations.
         err: SessionNegoStepError<AuthN, Shutdown>
+    },
+    IO {
+        err: Error
     }
 }
 
@@ -1570,9 +1572,7 @@ where
     ///
     /// # Parameters
     ///
-    /// - `ext_endpoints`: Set of endpoints that have received messages.  If the
-    ///   session is fully-authenticated and receives messages, then `addr` will
-    ///   be added to this.
+    /// - `report_endpoint`: A function used to report endpoints.
     ///
     /// - `shutdown`: [Negotiator] to use to shut down sessions.
     ///
@@ -1584,9 +1584,9 @@ where
     ///   later.
     ///
     /// - `addr`: Counterparty's address.
-    fn step<Addr>(
+    fn step<Addr, E>(
         &mut self,
-        ext_endpoints: &mut HashSet<Addr>,
+        report_endpoint: E,
         shutdown: &Types::ShutdownNego,
         param: &Types::ShutdownParam,
         authn: &Types::AuthN,
@@ -1600,7 +1600,8 @@ where
         >
     >
     where
-        Addr: Display + Eq + Hash {
+        E: FnOnce(Addr),
+        Addr: Clone + Display + Eq + Hash {
         debug!(target: "flows-nego-state",
                "stepping session with {}",
                addr);
@@ -1642,7 +1643,7 @@ where
                 trace!(target: "flows-nego-state",
                        "session is active, recording endpoint");
 
-                ext_endpoints.insert(addr);
+                report_endpoint(addr.clone());
                 self.state = Some(SessionState::Active);
 
                 Ok(None)
@@ -1705,7 +1706,8 @@ where
             Types::OutboundNego,
             Types::Xfrm
         >,
-        token: Token
+        token: Token,
+        param: Types::ChannelParam
     ) -> Result<Self, Error> {
         registry.register(
             &mut flows,
@@ -1718,7 +1720,8 @@ where
         Ok(FlowsEntry {
             retry: FlowsRetry::new(),
             sessions: sessions,
-            flows: flows
+            flows: flows,
+            param: param
         })
     }
 
@@ -1740,6 +1743,7 @@ where
             Types::Xfrm
         >,
         token: Token,
+        param: Types::ChannelParam,
         nsessions: usize
     ) -> Result<Self, Error> {
         registry.register(
@@ -1753,7 +1757,8 @@ where
         Ok(FlowsEntry {
             retry: FlowsRetry::new(),
             sessions: sessions,
-            flows: flows
+            flows: flows,
+            param: param
         })
     }
 
@@ -1922,9 +1927,10 @@ where
     ///
     /// # Parameters
     ///
-    /// - `ext_endpoints`: Set of all endpoints that have pending traffic.
+    /// - `report_session`: A function used to report authenticated
+    ///   sessions.
     ///
-    /// - `sessions`: Buffer for new authenticated sessions.
+    /// - `report_endpoint`: A function used to report endpoints.
     ///
     /// - `shutdown`: [Negotiator] to use to shut down sessions.
     ///
@@ -1936,10 +1942,10 @@ where
     ///   later.
     ///
     /// - `param`: Parameter used by the inbound negotiator.
-    fn listen(
+    fn listen<S, E>(
         &mut self,
-        ext_endpoints: &mut HashSet<Types::PeerAddr>,
-        sessions: &mut Vec<Types::AuthNSession>,
+        mut report_session: S,
+        mut report_endpoint: E,
         shutdown: &Types::ShutdownNego,
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
@@ -1958,7 +1964,12 @@ where
             Types::AuthNegoError,
             ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
         >
-    > {
+    >
+    where
+        S: FnMut(Types::ChannelParam,
+                 Types::AuthNSession) -> Result<(), Error>,
+        E: FnMut(Types::PeerAddr, Types::ChannelParam),
+    {
         let mut endpoints = HashSet::new();
         let mut flows = Vec::new();
 
@@ -2057,7 +2068,10 @@ where
                                    "reporting completed session");
 
                             // Session negotiations complete; report it out.
-                            sessions.push(session)
+                            report_session(self.param.clone(), session)
+                                .map_err(|err| SessionListenError::IO {
+                                    err: err
+                                })?;
                         }
                     }
                     Entry::Vacant(ent) => {
@@ -2093,7 +2107,10 @@ where
                                    "reporting completed session");
 
                             // Session negotiations complete; report it out.
-                            sessions.push(session)
+                            report_session(self.param.clone(), session)
+                                .map_err(|err| SessionListenError::IO {
+                                    err: err
+                                })?;
                         }
                     }
                 }
@@ -2105,6 +2122,8 @@ where
                        "traffic on flow {}",
                        endpoint);
 
+                let param = self.param.clone();
+
                 // Look up the session.
                 if let Entry::Occupied(mut ent) =
                     self.sessions.entry(endpoint.clone())
@@ -2115,7 +2134,7 @@ where
                     if let Some(session) = ent
                         .get_mut()
                         .step(
-                            ext_endpoints,
+                            |endpoint| report_endpoint(endpoint, param),
                             shutdown,
                             shutdown_param,
                             authn,
@@ -2128,7 +2147,10 @@ where
                                "reporting completed session");
 
                         // Session negotiations complete; report it out.
-                        sessions.push(session);
+                        report_session(self.param.clone(), session)
+                            .map_err(|err| SessionListenError::IO {
+                                err: err
+                            })?;
                     }
 
                     if !ent.get().is_live() {
@@ -2406,19 +2428,19 @@ where
                             let registry = ctx.registry();
                             let ent = match nflows_hint {
                                 Some(hint) => FlowsEntry::with_capacity(
-                                    registry, session, token, hint
+                                    registry, session, token, addr.clone(), hint
                                 )
                                 .map_err(|err| AcquiredEntryCreateError::IO {
                                     err: err
                                 }),
-                                None => {
-                                    FlowsEntry::new(registry, session, token)
-                                        .map_err(|err| {
-                                            AcquiredEntryCreateError::IO {
-                                                err: err
-                                            }
-                                        })
-                                }
+                                None => FlowsEntry::new(
+                                    registry, session, token, addr.clone()
+                                )
+                                .map_err(|err| {
+                                    AcquiredEntryCreateError::IO {
+                                        err: err
+                                    }
+                                })
                             }?;
 
                             if let Some(curr) = tokens
@@ -2472,15 +2494,17 @@ where
                     let registry = ctx.registry();
                     let ent = match nflows_hint {
                         Some(hint) => FlowsEntry::with_capacity(
-                            registry, session, token, hint
+                            registry, session, token, addr.clone(), hint
                         )
                         .map_err(|err| {
                             AcquiredEntryCreateError::IO { err: err }
                         }),
-                        None => FlowsEntry::new(registry, session, token)
-                            .map_err(|err| AcquiredEntryCreateError::IO {
-                                err: err
-                            })
+                        None => FlowsEntry::new(
+                            registry, session, token, addr.clone()
+                        )
+                        .map_err(|err| AcquiredEntryCreateError::IO {
+                            err: err
+                        })
                     }?;
 
                     if let Some(curr) = tokens
@@ -2520,10 +2544,12 @@ where
                 let registry = ctx.registry();
                 let ent = match nflows_hint {
                     Some(hint) => FlowsEntry::with_capacity(
-                        registry, session, token, hint
+                        registry, session, token, param.clone(), hint
                     )
                     .map_err(|err| AcquiredEntryCreateError::IO { err: err }),
-                    None => FlowsEntry::new(registry, session, token).map_err(
+                    None => FlowsEntry::new(
+                        registry, session, token, param.clone()
+                    ).map_err(
                         |err| AcquiredEntryCreateError::IO { err: err }
                     )
                 }?;
@@ -2938,9 +2964,10 @@ where
     ///
     /// - `ctx`: Context to use to manage [Token]s.
     ///
-    /// - `ext_endpoints`: Set of all endpoints that have pending traffic.
+    /// - `report_session`: A function used to report authenticated
+    ///   sessions.
     ///
-    /// - `sessions`: Buffer for new authenticated sessions.
+    /// - `report_endpoint`: A function used to report endpoints.
     ///
     /// - `channel`: [FarChannel] to use to create [Flows].
     ///
@@ -2962,18 +2989,18 @@ where
     /// # Return Value
     ///
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
-    fn listen<Ctx>(
+    fn listen<Ctx, S, E>(
         &mut self,
         ctx: &mut Ctx,
-        ext_endpoints: &mut HashSet<Types::PeerAddr>,
-        sessions: &mut Vec<Types::AuthNSession>,
+        mut report_session: S,
+        mut report_endpoint: E,
         channel: &Types::Channel,
         policy: &SocketAddrPolicy,
         shutdown: &Types::ShutdownNego,
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
         retry: &Retry,
-        param: &Types::InParam,
+        nego_param: &Types::InParam,
         tokens: &HashSet<Token>
     ) -> Result<
         RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
@@ -2999,6 +3026,9 @@ where
         >
     >
     where
+        S: FnMut(Types::ChannelParam,
+                 Types::AuthNSession) -> Result<(), Error>,
+        E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: RegistryCtx + TokensCtx {
         self.refresh(ctx, channel, policy)
             .map_err(|err| AcquiredEntryListenError::Refresh { err: err })?
@@ -3009,13 +3039,13 @@ where
                     .filter(|(token, _)| tokens.contains(token))
                 {
                     ent.listen(
-                        ext_endpoints,
-                        sessions,
+                        &mut report_session,
+                        &mut report_endpoint,
                         shutdown,
                         shutdown_param,
                         authn,
                         retry,
-                        param
+                        nego_param
                     )
                     .map_err(|err| {
                         AcquiredEntryListenError::Listen { err: err }
@@ -3098,15 +3128,17 @@ where
                         let registry = ctx.registry();
                         let ent = match self.nflows_hint {
                             Some(hint) => FlowsEntry::with_capacity(
-                                registry, flows, token, hint
+                                registry, flows, token, addr.clone(), hint
                             )
                             .map_err(|err| FarChannelsRefreshError::IO {
                                 err: err
                             }),
-                            None => FlowsEntry::new(registry, flows, token)
-                                .map_err(|err| FarChannelsRefreshError::IO {
-                                    err: err
-                                })
+                            None => FlowsEntry::new(
+                                registry, flows, token, addr.clone()
+                            )
+                            .map_err(|err| FarChannelsRefreshError::IO {
+                                err: err
+                            })
                         }?;
 
                         new_flows.insert(token.clone(), ent);
@@ -3639,11 +3671,11 @@ where
         }
     }
 
-    fn listen<Ctx>(
+    fn listen<Ctx, E, S>(
         &mut self,
         ctx: &mut Ctx,
-        ext_endpoints: &mut HashSet<Types::PeerAddr>,
-        sessions: &mut Vec<Types::AuthNSession>,
+        report_session: S,
+        report_endpoint: E,
         tokens: &HashSet<Token>
     ) -> Result<
         RetryResult<(
@@ -3691,6 +3723,9 @@ where
         >
     >
     where
+        S: FnMut(Types::ChannelParam,
+                 Types::AuthNSession) -> Result<(), Error>,
+        E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         match self.acquired.take().ok_or(ChannelEntryListenError::None)? {
             RetryResult::Success(AcquireState::Pending { state }) => match self
@@ -3754,8 +3789,8 @@ where
             RetryResult::Success(AcquireState::Active { mut acquired }) => {
                 match acquired.listen(
                     ctx,
-                    ext_endpoints,
-                    sessions,
+                    report_session,
+                    report_endpoint,
                     &self.channel,
                     &self.addr_policy,
                     &self.shutdown,
@@ -4182,7 +4217,7 @@ where
     type StreamIter = std::vec::IntoIter<
         (Self::Addr, Self::ChannelID, Self::Param, Self::Stream)
     >;
-    type EndpointIter = std::collections::hash_set::IntoIter<
+    type EndpointIter = IntoIter<
         (Self::Addr, Self::ChannelID, Self::Param)
     >;
     type ListenError = ChannelEntryListenError<
@@ -4250,20 +4285,34 @@ where
                 }
             })
             .collect();
-        let mut endpoints: HashSet<Types::PeerAddr> =
-            HashSet::with_capacity(lives.len());
-        let mut sessions: Vec<Types::AuthNSession> =
-            Vec::with_capacity(lives.len());
+        let mut sessions = Vec::with_capacity(self.channels.len());
+        let mut endpoints = Vec::with_capacity(self.tokens.len());
         let mut updates: Option<Vec<(
             FarChannelID,
             Option<Vec<Types::ChannelParam>>,
-            Option<Instant>
         )>> = None;
-        let mut retry: Option<Instant> = None;
+        let mut next: Option<Instant> = None;
+        let mut all_retries = true;
+        let nlives = lives.len();
 
         for id in lives {
             match self.channels[id.0].listen(
-                ctx, &mut endpoints, &mut sessions, tokens
+                ctx,
+                |param, stream| {
+                    let endpoint = stream.get().peer_addr()?;
+
+                    sessions.push(
+                        (endpoint, id.clone(), param.clone(), stream)
+                    );
+
+                    Ok(())
+                },
+                |endpoint, param| {
+                    endpoints.push(
+                        (endpoint.clone(), id.clone(), param.clone())
+                    );
+                },
+                tokens
             )? {
                 RetryResult::Success((creates, deletes, params, when)) => {
                     if let Some(creates) = creates {
@@ -4291,29 +4340,39 @@ where
                     if params.is_some() || when.is_some() {
                         match &mut updates {
                             Some(updates) => {
-                                updates.push((id, params, when));
+                                updates.push((id, params));
                             }
                             None => {
-                                let vec = Vec::with_capacity(lives.len());
+                                let mut vec = Vec::with_capacity(nlives);
 
-                                vec.push((id, params, when));
+                                vec.push((id, params));
 
                                 updates = Some(vec)
                             }
                         }
                     }
+
+                    next = next_retry(&next, &when);
+                    all_retries = false;
                 }
                 RetryResult::Retry(when) => {
-                    retry = Some(next_retry_definite(&retry, &when));
+                    next = Some(next_retry_definite(&next, &when));
                 }
             }
         }
 
-        if let Some(when) = retry {
-            Ok(RetryResult::Retry(when))
+        if let Some(when) = next {
+            if all_retries {
+                Ok(RetryResult::Retry(when))
+            } else {
+                Ok(RetryResult::Success(
+                    (sessions.into_iter(), endpoints.into_iter(),
+                     updates, Some(when))
+                ))
+            }
         } else {
             Ok(RetryResult::Success(
-                (sessions.into_iter(), endpoints.into_iter(), updates)
+                (sessions.into_iter(), endpoints.into_iter(), updates, None)
             ))
         }
     }
@@ -4339,9 +4398,9 @@ where
     fn shutdown_stream(
         &mut self,
         ctx: &mut Ctx,
-        channel: &Self::ChannelID,
-        param: &Self::Param,
-        session: Self::Stream
+        channel: &FarChannelID,
+        param: &Types::ChannelParam,
+        session: Types::AuthNSession
     ) -> Result<
         RetryResult<()>,
         Self::ShutdownStreamError
@@ -4725,7 +4784,8 @@ where
         match self {
             SessionListenError::Flows { err } => err.scope(),
             SessionListenError::Start { err } => err.scope(),
-            SessionListenError::Step { err } => err.scope()
+            SessionListenError::Step { err } => err.scope(),
+            SessionListenError::IO { err } => err.scope()
         }
     }
 }
@@ -4894,7 +4954,8 @@ where
         match self {
             SessionListenError::Flows { err } => err.fmt(f),
             SessionListenError::Start { err } => err.fmt(f),
-            SessionListenError::Step { err } => err.fmt(f)
+            SessionListenError::Step { err } => err.fmt(f),
+            SessionListenError::IO { err } => err.fmt(f)
         }
     }
 }

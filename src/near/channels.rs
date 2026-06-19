@@ -794,7 +794,7 @@ where
     ///
     /// # Parameters
     ///
-    /// - `report_endpoints`: A function used to report endpoints.
+    /// - `report_endpoint`: A function used to report endpoints.
     ///
     /// - `registry`: The [Registry] to use to unregister shut down sessions.
     ///
@@ -827,7 +827,7 @@ where
             ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
         >
     >
-    where F: FnOnce(&Types::Endpoint) {
+    where F: FnOnce(Types::Endpoint) {
         trace!(target: "session-nego-entry",
                "stepping negotiations");
 
@@ -1079,7 +1079,7 @@ where
             Types::ShutdownNegoError
         >
     >
-    where F: FnOnce(&Types::Endpoint) {
+    where F: FnOnce(Types::Endpoint) {
         match self {
             SessionNegoState::Session { pending } => channel
                 .complete_negotiate(pending)
@@ -1117,7 +1117,7 @@ where
                     )
                 })),
             SessionNegoState::Active { endpoint } => {
-                report_endpoint(&endpoint);
+                report_endpoint(endpoint.clone());
 
                 Ok(NegotiatorResult::Pending(SessionNegoState::Active {
                     endpoint: endpoint
@@ -1324,7 +1324,7 @@ where
             >
         >
     >
-    where F: FnOnce(&Types::Endpoint) {
+    where F: FnOnce(Types::Endpoint) {
         let state = self.state.take();
 
         trace!(target: "connector-entry",
@@ -1616,7 +1616,7 @@ where
             >
         >
     >
-    where F: FnOnce(&Types::Endpoint) {
+    where F: FnOnce(Types::Endpoint) {
         match state.do_step(
             report_endpoint,
             registry,
@@ -2153,7 +2153,7 @@ where
         S: FnMut(
             DuplexValue<Types::InAuthNSession, Types::OutAuthNSession>
         ) -> Result<(), std::io::Error>,
-        E: FnMut(&Types::Endpoint),
+        E: FnMut(Types::Endpoint),
         Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
         let mut deletes = HashSet::with_capacity(self.negos.len());
@@ -2960,7 +2960,7 @@ where
         S: FnMut(
             DuplexValue<Types::InAuthNSession, Types::OutAuthNSession>
         ) -> Result<(), std::io::Error>,
-        E: FnMut(&Types::Endpoint)
+        E: FnMut(Types::Endpoint)
     {
         let mut deletes: Option<Vec<Token>> = None;
         let len = self.negos.len();
@@ -3395,7 +3395,7 @@ where
         S: FnMut(
             DuplexValue<Types::InAuthNSession, Types::OutAuthNSession>
         ) -> Result<(), std::io::Error>,
-        E: FnMut(&Types::Endpoint),
+        E: FnMut(Types::Endpoint),
         Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
         let mut deletes = HashSet::with_capacity(self.negos.len());
@@ -4041,7 +4041,7 @@ where
         S: FnMut(
             DuplexValue<Types::InAuthNSession, Types::OutAuthNSession>
         ) -> Result<(), std::io::Error>,
-        E: FnMut(&Types::Endpoint),
+        E: FnMut(Types::Endpoint),
         Ctx: RegistryCtx + TokensCtx {
         match &mut self.mode {
             ChannelMode::Duplex(ent) => ent.listen(
@@ -4357,8 +4357,7 @@ where
 
                     Ok(())
                 },
-                |endpoint| endpoints.push((endpoint.clone(), id,
-                                           NearChannelParam)),
+                |endpoint| endpoints.push((endpoint, id, NearChannelParam)),
                 live,
             )?;
 
