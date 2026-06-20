@@ -39,6 +39,7 @@ use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::config::Create;
+use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::Negotiator;
@@ -49,7 +50,6 @@ use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use constellation_streams::channels::ChannelParam;
 use constellation_streams::channels::Channels;
-use constellation_streams::channels::ChannelsCreate;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
 use constellation_streams::threads::RegistryCtx;
@@ -4505,7 +4505,7 @@ where
     I: Iterator<Item = NearChannelID> {
 }
 
-impl<Ctx, Srcs, Types> ChannelsCreate<Ctx, Srcs> for NearChannels<Types>
+impl<'a, Ctx, Types> CreateWithParam<&'a mut Ctx> for NearChannels<Types>
 where
     Types: NearDuplexNegoTypes,
     Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
@@ -4522,10 +4522,8 @@ where
     >;
 
     fn create(
-        ctx: &mut Ctx,
         config: Self::Config,
-        // XXX Need to find out what srcs is supposed to do here and use it.
-        srcs: Srcs
+        ctx: &'a mut Ctx,
     ) -> Result<Self, Self::CreateError> {
         let (channel_configs, default_inbound_authn, default_outbound_authn,
              default_retry, default_nsessions) = config.take();

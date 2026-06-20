@@ -35,6 +35,7 @@ use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::config::Create;
+use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrmCreate;
@@ -51,7 +52,6 @@ use constellation_common::retry::WithRetryWhen;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
 use constellation_streams::channels::Channels;
-use constellation_streams::channels::ChannelsCreate;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
 use constellation_streams::threads::RegistryCtx;
@@ -4450,7 +4450,7 @@ where
     }
 }
 
-impl<Ctx, Types, Srcs> ChannelsCreate<Ctx, Srcs> for FarChannels<Types>
+impl<'a, Ctx, Types> CreateWithParam<&'a mut Ctx> for FarChannels<Types>
 where
     Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx,
     Types: FarChannelsTypes {
@@ -4482,9 +4482,8 @@ where
 
     /// Create an instance of this `Channels`.
     fn create(
-        ctx: &mut Ctx,
         config: Self::Config,
-        srcs: Srcs
+        ctx: &'a mut Ctx,
     ) -> Result<Self, Self::CreateError> {
         let (channel_configs, default_resolve, default_authn,
              default_flows_params, default_xfrm_params,
@@ -4503,7 +4502,7 @@ where
         }
 
         let mut ids = HashMap::with_capacity(channel_configs.len());
-        let mut tokens = HashMap::with_capacity(channel_configs.len());
+        let mut token_map = HashMap::with_capacity(channel_configs.len());
         let mut names = Vec::with_capacity(channel_configs.len());
         let mut channels = Vec::with_capacity(channel_configs.len());
 
@@ -4533,7 +4532,7 @@ where
                 .map_err(|err| FarChannelsCreateError::Channel {
                     err: err
                 })?;
-            let channel = ChannelEntry::create(
+            let (channel, tokens, when) = ChannelEntry::create(
                 ctx,
                 channel,
                 authn,
@@ -4550,6 +4549,14 @@ where
             channels.push(channel);
             names.push(name.clone());
 
+            for token in tokens {
+                if let Some(curr) = token_map.insert(token, id.clone()) {
+                    error!(target: "far-channels",
+                           "entry for token {} already existed: {}",
+                           token.0, curr);
+                }
+            }
+
             if let Some(curr) = ids.insert(name.clone(), id) {
                 error!(target: "far-channels",
                        "entry for name \"{}\" already existed: {}",
@@ -4561,7 +4568,7 @@ where
             ids: ids,
             names: names,
             channels: channels,
-            tokens: tokens
+            tokens: token_map
         })
     }
 }
