@@ -1942,6 +1942,8 @@ where
     ///   later.
     ///
     /// - `param`: Parameter used by the inbound negotiator.
+    ///
+    /// - `shutdown_only`: Whether to allow new incoming sessions.
     fn listen<S, E>(
         &mut self,
         mut report_session: S,
@@ -1950,7 +1952,8 @@ where
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
         retry: &Retry,
-        param: &Types::InParam
+        param: &Types::InParam,
+        shutdown_only: bool
     ) -> Result<
         (),
         SessionListenError<
@@ -1987,12 +1990,17 @@ where
                         if let Some(res) = res {
                             match res {
                                 // New flow was created.
-                                ListenResult::New { endpoint, flow } => {
+                                ListenResult::New { endpoint, flow } =>
+                                if !shutdown_only {
                                     trace!(target: "flows-nego-state",
                                            "got new flow from {}",
                                            endpoint);
 
                                     flows.push((endpoint, flow));
+                                } else {
+                                    trace!(target: "flows-nego-state",
+                                           "ignoring flow from {}",
+                                           endpoint);
                                 }
                                 // Update to an existing flow.
                                 ListenResult::Existing { endpoint } => {
@@ -2027,7 +2035,8 @@ where
                 }
             }
 
-            // Process all new sessions.
+            // Process all new sessions.  The flows buffer will be
+            // empty for shutdown_only.
             for (endpoint, flow) in flows.drain(..) {
                 debug!(target: "flows-nego-state",
                        "handling incoming flow {}",
@@ -4380,7 +4389,7 @@ where
 
 impl<Ctx, Types> ChannelsShutdown<Ctx> for FarChannels<Types>
 where
-    Ctx: RegistryCtx,
+    Ctx: RegistryCtx + TokensCtx,
     Types: FarChannelsTypes {
     type ShutdownStreamError = ChannelEntryShutdownFlowError<
         AcquiredEntryShutdownError<
@@ -4402,10 +4411,13 @@ where
         param: &Types::ChannelParam,
         session: Types::AuthNSession
     ) -> Result<
-        RetryResult<()>,
+        RetryResult<(
+            Option<Vec<Self::Param>>,
+            Option<Instant>
+        )>,
         Self::ShutdownStreamError
     > {
-        self.channels[channel.0].shutdown_flow(ctx, channel_param, session)
+        self.channels[channel.0].shutdown_flow(ctx, param, session)
     }
 
     fn shutdown(

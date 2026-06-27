@@ -64,10 +64,7 @@ use mio::Registry;
 use mio::Token;
 
 use crate::channels::ShutdownError;
-use crate::config::NearChannelDuplexEntryConfig;
 use crate::config::NearChannelEntryConfig;
-use crate::config::NearChannelInboundEntryConfig;
-use crate::config::NearChannelOutboundEntryConfig;
 use crate::config::NearChannelsConfig;
 use crate::near::types::NearDuplexNegoTypes;
 use crate::near::types::NearSessionNegoTypes;
@@ -422,12 +419,6 @@ pub enum ConnectorEntryStepError<Start, Connect, Step> {
 }
 
 #[derive(Debug)]
-pub enum ChannelModeShutdownError {
-    IO { err: std::io::Error },
-    NotEmpty
-}
-
-#[derive(Debug)]
 pub enum ChannelEntryReqError<Channel, Entry> {
     /// Error creating the channel instance.
     Channel {
@@ -465,18 +456,37 @@ pub enum ChannelEntryShutdownError<Shutdown, Endpoint> {
         /// The endpoint.
         endpoint: Endpoint
     },
+    /// The channel was not exclusively owned.
+    Nonexclusive,
     /// The negotiation state was not in a state that can be shut down.
     Inconsistent,
     /// The channel type does not match the stream type.
-    Mismatch,
-    /// The channel was not exclusively owned.
-    Nonexclusive
+    Mismatch
+}
+
+/// Errors that can occur for a [ChannelEntry] when listening.
+#[derive(Debug)]
+pub enum ChannelEntryListenError<Start> {
+    /// An error occurred starting a new session.
+    Start {
+        /// The error that occurred starting the session.
+        err: Start
+    },
+    /// A low-level I/O error occurred.
+    IO {
+        /// The low-level I/O error.
+        err: std::io::Error
+    },
 }
 
 #[derive(Debug)]
-pub enum ChannelEntryListenError<Start> {
-    Start { err: Start },
-    IO { err: std::io::Error },
+pub enum ChannelEntryShutdownListenError<Start, Shutdown, Endpoint> {
+    Listen {
+        err: ChannelEntryListenError<Start>
+    },
+    Shutdown {
+        err: ChannelEntryShutdownError<Shutdown, Endpoint>
+    }
 }
 
 #[derive(Debug)]
@@ -1962,7 +1972,7 @@ where
 
     /// Check if this `DuplexChannelMode` contains any active sessions.
     #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         match (
             self.accept_tokens.is_empty(),
             self.conn_tokens.is_empty(),
@@ -1979,17 +1989,12 @@ where
         }
     }
 
-    pub(crate) fn shutdown(
+    #[inline]
+    fn shutdown(
         mut self,
         registry: &Registry
-    ) -> Result<(), ChannelModeShutdownError> {
-        if self.is_empty() {
-            self.acceptor
-                .deregister(registry)
-                .map_err(|err| ChannelModeShutdownError::IO { err })
-        } else {
-            Err(ChannelModeShutdownError::NotEmpty)
-        }
+    ) -> Result<(), std::io::Error> {
+        self.acceptor.deregister(registry)
     }
 
     /// Request a stream for a given endpoint.
@@ -2365,6 +2370,11 @@ where
     /// - `registry`: The [Registry] to use to unregister shut down sessions.
     ///
     /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// If the stream was shut down, `Some(token)` where `token` is
+    /// the [Token] for the stream.
     fn shutdown_conn(
         &mut self,
         registry: &Registry,
@@ -2468,6 +2478,11 @@ where
     /// - `registry`: The [Registry] to use to unregister shut down sessions.
     ///
     /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// If the stream was shut down, `Some(token)` where `token` is
+    /// the [Token] for the stream.
     fn shutdown_accept(
         &mut self,
         registry: &Registry,
@@ -2779,7 +2794,7 @@ where
 
     /// Check if this `OutboundChannelMode` contains any active sessions.
     #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         match (self.tokens.is_empty(), self.negos.is_empty()) {
             (true, true) => true,
             (false, false) => false,
@@ -2792,15 +2807,12 @@ where
         }
     }
 
-    pub(crate) fn shutdown(
+    #[inline]
+    fn shutdown(
         self,
         _registry: &Registry
-    ) -> Result<(), ChannelModeShutdownError> {
-        if self.is_empty() {
-            Ok(())
-        } else {
-            Err(ChannelModeShutdownError::NotEmpty)
-        }
+    ) -> Result<(), std::io::Error> {
+        Ok(())
     }
 
     /// Request a stream for a given endpoint.
@@ -3059,6 +3071,11 @@ where
     /// - `registry`: The [Registry] to use to unregister shut down sessions.
     ///
     /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// If the stream was shut down, `Some(token)` where `token` is
+    /// the [Token] for the stream.
     fn shutdown_conn(
         &mut self,
         registry: &Registry,
@@ -3326,7 +3343,7 @@ where
 
     /// Check if this `ChannelEntry` contains any active sessions.
     #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         match (self.tokens.is_empty(), self.negos.is_empty()) {
             (true, true) => true,
             (false, false) => false,
@@ -3339,17 +3356,12 @@ where
         }
     }
 
-    pub(crate) fn shutdown(
+    #[inline]
+    fn shutdown(
         mut self,
         registry: &Registry
-    ) -> Result<(), ChannelModeShutdownError> {
-        if self.is_empty() {
-            self.acceptor
-                .deregister(registry)
-                .map_err(|err| ChannelModeShutdownError::IO { err })
-        } else {
-            Err(ChannelModeShutdownError::NotEmpty)
-        }
+    ) -> Result<(), std::io::Error> {
+            self.acceptor.deregister(registry)
     }
 
     /// Listen for incoming traffic and new sessions for this channel.
@@ -3536,6 +3548,11 @@ where
     /// - `registry`: The [Registry] to use to unregister shut down sessions.
     ///
     /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// If the stream was shut down, `Some(token)` where `token` is
+    /// the [Token] for the stream.
     fn shutdown_accept(
         &mut self,
         registry: &Registry,
@@ -3901,7 +3918,7 @@ where
     pub(crate) fn shutdown(
         self,
         registry: &Registry
-    ) -> Result<(), ChannelModeShutdownError> {
+    ) -> Result<(), std::io::Error> {
         match self.mode {
             ChannelMode::Duplex(ent) => ent.shutdown(&registry),
             ChannelMode::Outbound(ent) => ent.shutdown(&registry),
@@ -3972,7 +3989,7 @@ where
     >
     where
         Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
-        debug!(target: "inbound-channel-mode",
+        debug!(target: "channel-entry",
                "requesting flow with {}",
                endpoint);
 
@@ -4052,8 +4069,7 @@ where
                 live,
                 false
             ),
-            ChannelMode::Outbound(ent) => ent
-                .listen(
+            ChannelMode::Outbound(ent) => ent.listen(
                     report_session,
                     report_endpoint,
                     ctx.registry(),
@@ -4071,19 +4087,224 @@ where
         &mut self,
         ctx: &mut Ctx,
         live: &HashSet<Token>,
-    ) -> Result<bool, ChannelEntryListenError<Types::InSessionStartError>>
+    ) -> Result<
+        (Option<Vec<Token>>, Option<Vec<Token>>),
+        ChannelEntryShutdownListenError<
+            Types::InSessionStartError,
+            DuplexValue<
+                SessionEntryShutdownError<
+                    Types::InShutdownStartError,
+                    Types::InShutdownNegoError
+                >,
+                SessionEntryShutdownError<
+                    Types::OutShutdownStartError,
+                    Types::OutShutdownNegoError
+                >
+            >,
+            Types::Endpoint
+        >
+    >
     where
         Ctx: RegistryCtx + TokensCtx {
-        match &mut self.mode {
-            ChannelMode::Duplex(ent) => ent
-                .shutdown_listen(ctx, &self.retry, live),
-            ChannelMode::Outbound(ent) => ent
-                .shutdown_listen(ctx.registry(), &self.retry, live)
-                .map(|deletes| (None, deletes)),
-            ChannelMode::Inbound(ent) => {
-                ent.shutdown_listen(ctx, live)
+        let mut sessions: Option<
+                Vec<DuplexValue<
+                    Rc<RefCell<Types::InAuthNSession>>,
+                    Rc<RefCell<Types::OutAuthNSession>>
+                >>
+        > = None;
+
+        let (creates, deletes) = match &mut self.mode {
+            ChannelMode::Duplex(ent) => {
+                let nnegos = ent.negos.len();
+
+                ent.listen(
+                    ctx,
+                    |session| {
+                        let session = match session {
+                            DuplexValue::Accept(accept) => {
+                                let accept = Rc::new(RefCell::new(accept));
+                                let accept = DuplexValue::Accept(accept);
+
+                                accept
+                            }
+                            DuplexValue::Conn(conn) => {
+                                let conn = Rc::new(RefCell::new(conn));
+                                let conn = DuplexValue::Conn(conn);
+
+                                conn
+                            }
+                        };
+
+                        match &mut sessions {
+                            Some(sessions) => {
+                                sessions.push(session);
+                            }
+                            None => {
+                                let mut vec = Vec::with_capacity(nnegos);
+
+                                vec.push(session);
+                                sessions = Some(vec);
+                            }
+                        }
+
+                        Ok(())
+                    },
+                    |endpoint| {
+                        trace!(target: "channel-entry",
+                               "ignoring inbound traffic from {}",
+                               endpoint);
+                    },
+                    &self.retry,
+                    live,
+                    true
+                )
+                    .map_err(|err| ChannelEntryShutdownListenError::Listen {
+                        err: err
+                    })?
             }
-        }
+            ChannelMode::Outbound(ent) => {
+                let nnegos = ent.negos.len();
+
+                let deletes = ent.listen(
+                    |session| {
+                        let session = match session {
+                            DuplexValue::Accept(accept) => {
+                                let accept = Rc::new(RefCell::new(accept));
+                                let accept = DuplexValue::Accept(accept);
+
+                                accept
+                            }
+                            DuplexValue::Conn(conn) => {
+                                let conn = Rc::new(RefCell::new(conn));
+                                let conn = DuplexValue::Conn(conn);
+
+                                conn
+                            }
+                        };
+
+                        match &mut sessions {
+                            Some(sessions) => {
+                                sessions.push(session);
+                            }
+                            None => {
+                                let mut vec = Vec::with_capacity(nnegos);
+
+                                vec.push(session);
+                                sessions = Some(vec);
+                            }
+                        }
+
+                        Ok(())
+                    },
+                    |endpoint| {
+                        trace!(target: "channel-entry",
+                               "ignoring inbound traffic from {}",
+                               endpoint);
+                    },
+                    ctx.registry(),
+                    &self.retry,
+                    live
+                )
+                    .map_err(|err| ChannelEntryShutdownListenError::Listen {
+                        err: err
+                    })?;
+
+                (None, deletes)
+            },
+            ChannelMode::Inbound(ent) => {
+                let nnegos = ent.negos.len();
+
+                ent.listen(
+                    ctx,
+                    |session| {
+                        let session = match session {
+                            DuplexValue::Accept(accept) => {
+                                let accept = Rc::new(RefCell::new(accept));
+                                let accept = DuplexValue::Accept(accept);
+
+                                accept
+                            }
+                            DuplexValue::Conn(conn) => {
+                                let conn = Rc::new(RefCell::new(conn));
+                                let conn = DuplexValue::Conn(conn);
+
+                                conn
+                            }
+                        };
+
+                        match &mut sessions {
+                            Some(sessions) => {
+                                sessions.push(session)
+                            }
+                            None => {
+                                let mut vec = Vec::with_capacity(nnegos);
+
+                                vec.push(session);
+                                sessions = Some(vec)
+                            }
+                        }
+
+                        Ok(())
+                    },
+                    |endpoint| {
+                        trace!(target: "channel-entry",
+                               "ignoring inbound traffic from {}",
+                               endpoint);
+                    },
+                    live,
+                    true
+                )
+                    .map_err(|err| ChannelEntryShutdownListenError::Listen {
+                        err: err
+                    })?
+            }
+        };
+
+        let creates = if let Some(sessions) = sessions {
+            let nshutdowns = sessions.len();
+            let mut shutdowns: Option<HashSet<Token>> = None;
+
+            for session in sessions.into_iter() {
+                if let Some(token) = self
+                    .shutdown_stream(ctx.registry(), session)
+                    .map_err(|err| ChannelEntryShutdownListenError::Shutdown {
+                        err: err
+                    })? {
+                    match &mut shutdowns {
+                        Some(shutdowns) => {
+                            shutdowns.insert(token);
+                        }
+                        None => {
+                            let mut set = HashSet::with_capacity(nshutdowns);
+
+                            set.insert(token);
+
+                            shutdowns = Some(set)
+                        }
+                    }
+                }
+            }
+
+            if let Some(shutdowns) = shutdowns {
+                if let Some(creates) = creates {
+                    Some(creates
+                         .into_iter()
+                         .filter(|token| shutdowns.contains(token))
+                         .collect())
+                } else {
+                    error!(target: "channel-entry",
+                           "creates should not be None if shutdowns is Some");
+
+                    None
+                }
+            } else {
+                creates
+            }
+        } else {
+            creates
+        };
+
+        Ok((creates, deletes))
     }
 
     /// Shut down a session.
@@ -4097,6 +4318,11 @@ where
     /// - `registry`: The [Registry] to use to unregister shut down sessions.
     ///
     /// - `stream`: The [Session] to shut down.
+    ///
+    /// # Return Value
+    ///
+    /// If the stream was shut down, `Some(token)` where `token` is
+    /// the [Token] for the stream.
     fn shutdown_stream(
         &mut self,
         registry: &Registry,
@@ -4160,7 +4386,7 @@ impl<Types> NearChannels<Types>
 where
     Types: NearDuplexNegoTypes
 {
-    /// Get the [FarChannelID] for a given channel name.
+    /// Get the [NearChannelID] for a given channel name.
     ///
     /// # Parameters
     ///
@@ -4183,7 +4409,7 @@ where
     ///
     /// # Parameters
     ///
-    /// - `id`: [FarChannelID] for which to get the channel name.
+    /// - `id`: [NearChannelID] for which to get the channel name.
     #[inline]
     pub fn name(
         &self,
@@ -4407,11 +4633,21 @@ where
         >,
         Types::Endpoint
     >;
-    type ShutdownListenError =
-        ChannelEntryListenError<Types::InSessionStartError>;
-    type ShutdownError = ChannelModeShutdownError;
+    type ShutdownListenError = ChannelEntryShutdownListenError<
+        Types::InSessionStartError,
+        DuplexValue<
+            SessionEntryShutdownError<
+                Types::InShutdownStartError,
+                Types::InShutdownNegoError
+            >,
+            SessionEntryShutdownError<
+                Types::OutShutdownStartError,
+                Types::OutShutdownNegoError
+            >
+        >,
+        Types::Endpoint
+    >;
 
-    #[inline]
     fn shutdown_stream(
         &mut self,
         ctx: &mut Ctx,
@@ -4419,26 +4655,33 @@ where
         _param: &Self::Param,
         stream: DuplexValue<Rc<RefCell<Types::InAuthNSession>>,
                             Rc<RefCell<Types::OutAuthNSession>>>
-    ) -> Result<Option<Token>, Self::ShutdownStreamError> {
-        self.channels[channel.0].shutdown_stream(ctx.registry(), stream)
-    }
+    ) -> Result<
+        RetryResult<(
+            Option<Vec<Self::Param>>,
+            Option<Instant>
+        )>,
+        Self::ShutdownStreamError
+    > {
+        if let Some(token) = self
+            .channels[channel.0]
+            .shutdown_stream(ctx.registry(), stream)? {
+            if self.tokens.remove(&token).is_none() {
+                error!(target: "near-channels",
+                       "token {:?} was not present in tokens table",
+                       token);
+            }
 
-    fn shutdown(
-        self,
-        ctx: &mut Ctx
-    ) -> Result<(), Self::ShutdownError> {
-        for ent in self.channels.into_iter() {
-            ent.shutdown(ctx.registry())?
+            ctx.free_token(token);
         }
 
-        Ok(())
+        Ok(RetryResult::Success((None, None)))
     }
 
     fn shutdown_listen(
-        &mut self,
+        mut self,
         ctx: &mut Ctx,
         live: &HashSet<Token>
-    ) -> Result<RetryResult<bool>, Self::ShutdownListenError> {
+    ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError> {
         // First, figure out which channels to visit.
         let lives: Vec<NearChannelID> = self
             .tokens
@@ -4453,10 +4696,19 @@ where
             .collect();
 
         for id in lives {
-            let (creates, deletes) = self.channels[id.0].shutdown_listen(
-                ctx,
-                live,
-            )?;
+            let (creates, deletes) = self
+                .channels[id.0]
+                .shutdown_listen(ctx, live)?;
+
+            if let Some(creates) = creates {
+                for token in creates {
+                    if let Some(curr) = self.tokens.insert(token, id.clone()) {
+                        error!(target: "near-channels",
+                               "tokens table contains entry for {:?} ({})",
+                               token, curr);
+                    }
+                }
+            }
 
             if let Some(deletes) = deletes {
                 for token in deletes {
@@ -4469,21 +4721,20 @@ where
                     ctx.free_token(token);
                 }
             }
-
-            if let Some(creates) = creates {
-                for token in creates {
-                    if let Some(curr) = self.tokens.insert(token, id.clone()) {
-                        error!(target: "near-channels",
-                               "tokens table contains entry for {:?} ({})",
-                               token, curr);
-                    }
-                }
-            }
         }
 
-        Ok(RetryResult::Success(
-            (sessions.into_iter(), endpoints.into_iter())
-        ))
+        if self.channels.iter().all(|ent| ent.is_empty()) {
+            for ent in self.channels.into_iter() {
+                ent.shutdown(ctx.registry())
+                    .map_err(|err| ChannelEntryShutdownListenError::Listen {
+                        err: ChannelEntryListenError::IO { err: err }
+                    })?
+            }
+
+            Ok(None)
+        } else {
+            Ok(Some((self, None)))
+        }
     }
 }
 
@@ -4897,15 +5148,6 @@ where Session: ScopedError,
     }
 }
 
-impl ScopedError for ChannelModeShutdownError {
-    fn scope(&self) -> ErrorScope {
-        match self {
-            ChannelModeShutdownError::IO { err } => err.scope(),
-            ChannelModeShutdownError::NotEmpty => ErrorScope::Unrecoverable
-        }
-    }
-}
-
 impl<Create, Nego> ScopedError for ConnectorEntryCreateError<Create, Nego>
 where
     Create: ScopedError,
@@ -4929,6 +5171,17 @@ where Start: ScopedError {
     }
 }
 
+impl<Start, Shutdown, Endpoint> ScopedError
+    for ChannelEntryShutdownListenError<Start, Shutdown, Endpoint>
+where Start: ScopedError,
+      Shutdown: ScopedError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryShutdownListenError::Listen { err } => err.scope(),
+            ChannelEntryShutdownListenError::Shutdown { err } => err.scope(),
+        }
+    }
+}
 
 impl<Channel, Entry> ScopedError for ChannelEntryReqError<Channel, Entry>
 where Channel: ScopedError,
@@ -5133,20 +5386,6 @@ where
     }
 }
 
-impl Display for ChannelModeShutdownError {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>
-    ) -> Result<(), Error> {
-        match self {
-            ChannelModeShutdownError::IO { err } => err.fmt(f),
-            ChannelModeShutdownError::NotEmpty => {
-                write!(f, "channel still has active sessions")
-            }
-        }
-    }
-}
-
 impl<Create, Nego> Display for ConnectorEntryCreateError<Create, Nego>
 where
     Create: Display,
@@ -5191,6 +5430,23 @@ where Start: Display {
         match self {
             ChannelEntryListenError::Start { err } => err.fmt(f),
             ChannelEntryListenError::IO { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Start, Shutdown, Endpoint> Display
+    for ChannelEntryShutdownListenError<Start, Shutdown, Endpoint>
+where
+    Start: Display,
+    Shutdown: Display,
+    Endpoint: Display {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ChannelEntryShutdownListenError::Listen { err } => err.fmt(f),
+            ChannelEntryShutdownListenError::Shutdown { err } => err.fmt(f),
         }
     }
 }

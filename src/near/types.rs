@@ -393,10 +393,12 @@ where
 impl<AuthN, TLS> NearSessionNegoTypes for CompoundAcceptorNegoTypes<AuthN, TLS>
 where
     AuthN: Create + SessionAuthN<CompoundNearServerConn, Param = ()>,
+    AuthN::Config: Clone + Default,
     AuthN::NegotiateError: ScopedError,
     TLS: Clone + Debug + TLSLoadServer
 {
     type AuthN = AuthN;
+    type AuthNConfig = AuthN::Config;
     type AuthNPending = AuthN::Pending;
     type AuthNSession = AuthN::AuthNSession;
     type AuthCreateError = AuthN::CreateError;
@@ -430,6 +432,7 @@ where
     type AuthNConfig = <AuthN as Create>::Config;
     type AuthNPending = AuthN::Pending;
     type AuthNSession = AuthN::AuthNSession;
+    type AuthCreateError = AuthN::CreateError;
     type AuthNegoError = AuthN::NegotiateError;
     type AuthStartError = AuthN::StartError;
     type Channel = CompoundNearConnector<TLS>;
