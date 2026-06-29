@@ -460,15 +460,13 @@ fn run_refresh_thread(
 
                                         earliest = Some(
                                             next_retry_definite(&earliest,
-                                                                &Instant::now())
+                                                                &when)
                                         );
                                     }
                                     // The entry is brand new, and
                                     // needs to be resolved for the
                                     // frist time.
                                     None => {
-                                        let now = Instant::now();
-
                                         error!(target: "ns-name-cache-refresh",
                                            "entry for {} not initialized",
                                            name);
@@ -492,8 +490,6 @@ fn run_refresh_thread(
                         }
                     } else {
                         // A stale cache entry, needs to be purged.
-                        let now = Instant::now();
-
                         debug!(target: "ns-name-cache-refresh",
                                "entry for {} is expired",
                                name);
@@ -535,8 +531,7 @@ fn run_refresh_thread(
                                         .check_refresh(name, renewal, &retry);
 
                                     earliest = Some(
-                                        next_retry_definite(&earliest,
-                                                            &Instant::now())
+                                        next_retry_definite(&earliest, &when)
                                     );
                                 }
                                 Err(_) => {

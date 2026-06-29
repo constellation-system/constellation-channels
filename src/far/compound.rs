@@ -3272,15 +3272,13 @@ impl FarChannelCreate for Box<CompoundFarIPChannel> {
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
-    fn create<Ctx, I>(
+    fn create<Ctx>(
         caches: &mut Ctx,
-        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
-        CompoundFarIPChannel::create(caches, tokens, config.as_ref().clone())
+        Ctx: NSNameCachesCtx + TokensCtx {
+        CompoundFarIPChannel::create(caches, config.as_ref().clone())
             .map(Box::new)
     }
 }
@@ -3391,15 +3389,13 @@ impl FarChannelCreate for Box<CompoundFarChannel> {
     type CreateError = CompoundFarChannelCreateError;
 
     #[inline]
-    fn create<Ctx, I>(
+    fn create<Ctx>(
         caches: &mut Ctx,
-        tokens: &mut I,
         config: Self::Config
     ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx,
-        I: Iterator<Item = Token> {
-        CompoundFarChannel::create(caches, tokens, config.as_ref().clone())
+        Ctx: NSNameCachesCtx + TokensCtx {
+        CompoundFarChannel::create(caches, config.as_ref().clone())
             .map(Box::new)
     }
 }

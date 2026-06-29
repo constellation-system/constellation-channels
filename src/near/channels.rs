@@ -84,7 +84,7 @@ pub struct NearChannelID(usize);
 /// [NearChannel]s have distinct types for inbound and outbound
 /// sessions.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-enum DuplexValue<Accept, Conn> {
+pub enum DuplexValue<Accept, Conn> {
     /// Value associated with the inbound (accepting) channel.
     Accept(Accept),
     /// Value associated with the outbound (connecting) channel.
@@ -486,6 +486,9 @@ pub enum ChannelEntryShutdownListenError<Start, Shutdown, Endpoint> {
     },
     Shutdown {
         err: ChannelEntryShutdownError<Shutdown, Endpoint>
+    },
+    Finish {
+        errs: Vec<(NearChannelID, std::io::Error)>
     }
 }
 
@@ -2203,7 +2206,12 @@ where
                                         let session =
                                             DuplexValue::Conn(session);
 
-                                        report_session(session);
+                                        report_session(session)
+                                            .map_err(|err| {
+                                                ChannelEntryListenError::IO {
+                                                    err: err
+                                                }
+                                            })?;
                                     }
                                     // Session shut down; clean up after it.
                                     StepResult::Shutdown { endpoint } => {
@@ -2264,7 +2272,12 @@ where
                                             *token
                                         );
                                         *ent = Some(state);
-                                        report_session(session);
+                                        report_session(session)
+                                            .map_err(|err| {
+                                                ChannelEntryListenError::IO {
+                                                    err: err
+                                                }
+                                            })?;
                                     }
                                     // Session shut down; clean up after it.
                                     Ok(StepResult::Shutdown { endpoint }) => {
@@ -3006,7 +3019,10 @@ where
 
                             let session = DuplexValue::Conn(session);
 
-                            report_session(session);
+                            report_session(session)
+                                .map_err(|err| ChannelEntryListenError::IO {
+                                    err: err
+                                })?;
                         }
                         // Session shut down; clean up after it.
                         StepResult::Shutdown { endpoint } => {
@@ -3446,7 +3462,10 @@ where
                                     *token
                                 );
                                 *ent = Some(state);
-                                report_session(session);
+                                report_session(session)
+                                    .map_err(|err| ChannelEntryListenError::IO {
+                                        err: err
+                                    })?;
                             }
                             // Session shut down; clean up after it.
                             Ok(StepResult::Shutdown { endpoint }) => {
@@ -4682,6 +4701,9 @@ where
         ctx: &mut Ctx,
         live: &HashSet<Token>
     ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError> {
+        debug!(target: "near-channels",
+               "listening for shutdown");
+
         // First, figure out which channels to visit.
         let lives: Vec<NearChannelID> = self
             .tokens
@@ -4695,6 +4717,7 @@ where
             })
             .collect();
 
+        // Visit all live channels and listen for shutdown.
         for id in lives {
             let (creates, deletes) = self
                 .channels[id.0]
@@ -4723,16 +4746,43 @@ where
             }
         }
 
+        // See if we can shut down all channels.
         if self.channels.iter().all(|ent| ent.is_empty()) {
-            for ent in self.channels.into_iter() {
-                ent.shutdown(ctx.registry())
-                    .map_err(|err| ChannelEntryShutdownListenError::Listen {
-                        err: ChannelEntryListenError::IO { err: err }
-                    })?
+            // We can; we should be able to shut down now.
+            debug!(target: "near-channels",
+                   "shutting down near channels");
+
+            let mut errs: Option<Vec<(NearChannelID, std::io::Error)>> = None;
+            let nchannels = self.channels.len();
+
+            for (id, ent) in self.channels.into_iter().enumerate() {
+                if let Err(err) = ent.shutdown(ctx.registry()) {
+                    let id = NearChannelID(id);
+
+                    match &mut errs {
+                        Some(errs) => {
+                            errs.push((id, err))
+                        }
+                        None => {
+                            let mut vec = Vec::with_capacity(nchannels);
+
+                            vec.push((id, err));
+                            errs = Some(vec)
+                        }
+                    }
+                }
             }
 
-            Ok(None)
+            if let Some(errs) = errs {
+                Err(ChannelEntryShutdownListenError::Finish { errs: errs })
+            } else {
+                Ok(None)
+            }
         } else {
+            // There are still live channels.
+            trace!(target: "near-channels",
+                   "live channels still exist");
+
             Ok(Some((self, None)))
         }
     }
@@ -5179,6 +5229,8 @@ where Start: ScopedError,
         match self {
             ChannelEntryShutdownListenError::Listen { err } => err.scope(),
             ChannelEntryShutdownListenError::Shutdown { err } => err.scope(),
+            ChannelEntryShutdownListenError::Finish { .. } =>
+                ErrorScope::Unrecoverable
         }
     }
 }
@@ -5447,6 +5499,15 @@ where
         match self {
             ChannelEntryShutdownListenError::Listen { err } => err.fmt(f),
             ChannelEntryShutdownListenError::Shutdown { err } => err.fmt(f),
+            ChannelEntryShutdownListenError::Finish { errs } => {
+                writeln!(f, "errors shutting down channels:")?;
+
+                for (id, err) in errs.into_iter() {
+                    writeln!(f, "{}: {}", id, err)?;
+                }
+
+                Ok(())
+            }
         }
     }
 }

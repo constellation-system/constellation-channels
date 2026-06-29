@@ -119,7 +119,7 @@ enum SessionNegoState<AuthPending> {
 /// active and has already been returned.
 enum SessionState<Stream, Types>
 where
-    Stream: Session,
+    Stream: Session + Read + Write,
     Types: FlowAuthNShutdownTypes<Stream> {
     /// Session negotiation is pending.
     Pending {
@@ -147,7 +147,7 @@ struct FlowsRetry {
 /// Negotiation state for an individual flow.
 struct FlowNegoState<Flow, Types>
 where
-    Flow: Session,
+    Flow: Session + Read + Write,
     Types: FlowAuthNShutdownTypes<Flow> {
     /// Current session negotiation state, if there are active
     /// negotiations.
@@ -162,7 +162,7 @@ where
 /// negotiations.
 struct FlowsEntry<Flow, Types>
 where
-    Flow: Session,
+    Flow: Session + Read + Write,
     Types: FlowsEntryTypes<Flow> {
     /// All sessions either active or in negotiation.
     sessions: HashMap<Types::PeerAddr, FlowNegoState<Flow, Types>>,
@@ -613,6 +613,23 @@ pub enum ChannelEntryListenError<Listen, Entry, Nego, Shutdown> {
     Nego { err: Nego },
     Shutdown { err: Shutdown },
     None
+}
+
+#[derive(Debug)]
+pub enum ChannelEntryShutdownError<Start, Nego> {
+    Start { err: Start },
+    Nego { err: Nego },
+    Active
+}
+
+#[derive(Debug)]
+pub enum FarChannelsShutdownListenError<Start, Listen, Entry, Nego, Shutdown> {
+    Listen {
+        err: ChannelEntryListenError<Listen, Entry, Nego, Shutdown>
+    },
+    Shutdown {
+        err: ChannelEntryShutdownError<Start, Shutdown>
+    }
 }
 
 #[derive(Debug)]
@@ -2037,22 +2054,60 @@ where
 
             // Process all new sessions.  The flows buffer will be
             // empty for shutdown_only.
-            for (endpoint, flow) in flows.drain(..) {
-                debug!(target: "flows-nego-state",
-                       "handling incoming flow {}",
-                       endpoint);
+            if !shutdown_only {
+                for (endpoint, flow) in flows.drain(..) {
+                    debug!(target: "flows-nego-state",
+                           "handling incoming flow {}",
+                           endpoint);
 
-                match self.sessions.entry(endpoint.clone()) {
-                    Entry::Occupied(mut ent) => {
-                        trace!(target: "flows-nego-state",
-                               "entry for flow {} already exists",
-                               ent.key());
+                    match self.sessions.entry(endpoint.clone()) {
+                        Entry::Occupied(mut ent) => {
+                            trace!(target: "flows-nego-state",
+                                   "entry for flow {} already exists",
+                                   ent.key());
 
-                        read = true;
+                            read = true;
 
-                        if let Some(session) = ent
-                            .get_mut()
-                            .recv_flow(
+                            if let Some(session) = ent
+                                .get_mut()
+                                .recv_flow(
+                                    shutdown,
+                                    shutdown_param,
+                                    authn,
+                                    retry,
+                                    flow,
+                                    endpoint
+                                )
+                                .map_err(|err| match err {
+                                    WithShutdownError::Inner { err } => {
+                                        SessionListenError::Start { err: err }
+                                    }
+                                    WithShutdownError::Shutdown { err } => {
+                                        SessionListenError::Step {
+                                            err:
+                                            SessionNegoStepError::Shutdown {
+                                                err: err
+                                            }
+                                        }
+                                    }
+                                })?
+                            {
+                                debug!(target: "flows-nego-state",
+                                       "reporting completed session");
+
+                                // Session negotiations complete; report it out.
+                                report_session(self.param.clone(), session)
+                                    .map_err(|err| SessionListenError::IO {
+                                        err: err
+                                    })?;
+                            }
+                        }
+                        Entry::Vacant(ent) => {
+                            trace!(target: "flows-nego-state",
+                                   "no entry for flow {}",
+                                   ent.key());
+
+                            let (state, session) = FlowNegoState::create(
                                 shutdown,
                                 shutdown_param,
                                 authn,
@@ -2071,58 +2126,27 @@ where
                                         }
                                     }
                                 }
-                            })?
-                        {
-                            debug!(target: "flows-nego-state",
-                                   "reporting completed session");
+                            })?;
 
-                            // Session negotiations complete; report it out.
-                            report_session(self.param.clone(), session)
-                                .map_err(|err| SessionListenError::IO {
-                                    err: err
-                                })?;
-                        }
-                    }
-                    Entry::Vacant(ent) => {
-                        trace!(target: "flows-nego-state",
-                               "no entry for flow {}",
-                               ent.key());
+                            ent.insert(state);
 
-                        let (state, session) = FlowNegoState::create(
-                            shutdown,
-                            shutdown_param,
-                            authn,
-                            retry,
-                            flow,
-                            endpoint
-                        )
-                        .map_err(|err| match err {
-                            WithShutdownError::Inner { err } => {
-                                SessionListenError::Start { err: err }
-                            }
-                            WithShutdownError::Shutdown { err } => {
-                                SessionListenError::Step {
-                                    err: SessionNegoStepError::Shutdown {
+                            if let Some(session) = session {
+                                debug!(target: "flows-nego-state",
+                                       "reporting completed session");
+
+                                // Session negotiations complete; report it out.
+                                report_session(self.param.clone(), session)
+                                    .map_err(|err| SessionListenError::IO {
                                         err: err
-                                    }
-                                }
+                                    })?;
                             }
-                        })?;
-
-                        ent.insert(state);
-
-                        if let Some(session) = session {
-                            debug!(target: "flows-nego-state",
-                                   "reporting completed session");
-
-                            // Session negotiations complete; report it out.
-                            report_session(self.param.clone(), session)
-                                .map_err(|err| SessionListenError::IO {
-                                    err: err
-                                })?;
                         }
                     }
                 }
+            } else if !flows.is_empty() {
+                error!(target: "flows-nego-state",
+                       "incoming flows should not be retained in \
+                        shutdown-only mode");
             }
 
             // Process all negotiation steps.
@@ -2284,7 +2308,7 @@ where
 
 impl<Flow, Types> Source for FlowsEntry<Flow, Types>
 where
-    Flow: Session,
+    Flow: Session + Read + Write,
     Types: FlowsEntryTypes<Flow>
 {
     #[inline]
@@ -2995,6 +3019,8 @@ where
     ///
     /// - `tokens`: All [Token]s that have pending read traffic.
     ///
+    /// - `shutdown_only`: Whether to allow new incoming sessions.
+    ///
     /// # Return Value
     ///
     /// Same as for a call to [refresh](AcquiredEntry::refresh).
@@ -3010,7 +3036,8 @@ where
         authn: &Types::AuthN,
         retry: &Retry,
         nego_param: &Types::InParam,
-        tokens: &HashSet<Token>
+        tokens: &HashSet<Token>,
+        shutdown_only: bool
     ) -> Result<
         RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
         AcquiredEntryListenError<
@@ -3054,7 +3081,8 @@ where
                         shutdown_param,
                         authn,
                         retry,
-                        nego_param
+                        nego_param,
+                        shutdown_only
                     )
                     .map_err(|err| {
                         AcquiredEntryListenError::Listen { err: err }
@@ -3244,13 +3272,6 @@ where
                 Ok((flows, addrs, refresh_when))
             })
     }
-}
-
-#[derive(Debug)]
-pub enum ChannelEntryShutdownError<Start, Nego> {
-    Start { err: Start },
-    Nego { err: Nego },
-    Active
 }
 
 impl<Types> ChannelEntry<Types>
@@ -3680,12 +3701,45 @@ where
         }
     }
 
+    /// Listen for incoming traffic and new sessions for all [Flows]
+    /// for this `AcquiredEntry`.
+    ///
+    /// This will first do a [refresh](AcquiredEntry::refresh) if
+    /// needed.  It will then fully exhaust all incoming traffic
+    /// corresponding to any [Token] in `tokens`.  All pending
+    /// negotiations will be updated, and any new sessions will be
+    /// reported.  If any new [Flow]s are obtained, then negotiations
+    /// will begin for them.
+    ///
+    /// New authenticated sessions will be reported in `sessions`.
+    /// Traffic on existing active sessions will be reported in
+    /// `ext_endpoints`.
+    ///
+    /// The return value is the same as for the call to `refresh`.
+    ///
+    /// # Parameters
+    ///
+    /// - `ctx`: Context to use to manage [Token]s.
+    ///
+    /// - `report_session`: A function used to report authenticated
+    ///   sessions.
+    ///
+    /// - `report_endpoint`: A function used to report endpoints.
+    ///
+    /// - `tokens`: All [Token]s that have pending read traffic.
+    ///
+    /// - `shutdown_only`: Whether to allow new incoming sessions.
+    ///
+    /// # Return Value
+    ///
+    /// Same as for a call to [refresh](AcquiredEntry::refresh).
     fn listen<Ctx, E, S>(
         &mut self,
         ctx: &mut Ctx,
         report_session: S,
         report_endpoint: E,
-        tokens: &HashSet<Token>
+        tokens: &HashSet<Token>,
+        shutdown_only: bool
     ) -> Result<
         RetryResult<(
             Option<Vec<Token>>,
@@ -3807,7 +3861,8 @@ where
                     &self.authn,
                     &self.retry,
                     &self.in_param,
-                    tokens
+                    tokens,
+                    shutdown_only
                 ) {
                     Ok(RetryResult::Success((refreshed, when))) => {
                         let state = AcquireState::Active { acquired: acquired };
@@ -4321,7 +4376,8 @@ where
                         (endpoint.clone(), id.clone(), param.clone())
                     );
                 },
-                tokens
+                tokens,
+                false
             )? {
                 RetryResult::Success((creates, deletes, params, when)) => {
                     if let Some(creates) = creates {
@@ -4389,7 +4445,7 @@ where
 
 impl<Ctx, Types> ChannelsShutdown<Ctx> for FarChannels<Types>
 where
-    Ctx: RegistryCtx + TokensCtx,
+    Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx,
     Types: FarChannelsTypes {
     type ShutdownStreamError = ChannelEntryShutdownFlowError<
         AcquiredEntryShutdownError<
@@ -4401,6 +4457,44 @@ where
             >,
             Types::WrapError
         >
+    >;
+    type ShutdownListenError = FarChannelsShutdownListenError<
+        Types::AcquireShutdownError,
+        AcquiredEntryListenError<
+            FarChannelsRefreshError<
+                FarChannelFlowsError<
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
+                >,
+                Types::WrapError
+            >,
+            FlowsListenError<
+                Types::XfrmError,
+                Types::InStartError,
+                Types::InNegoError,
+                Types::OutNegoError
+            >,
+            Types::AuthStartError,
+            Types::AuthNegoError,
+            ShutdownError<
+                Types::ShutdownStartError,
+                Types::ShutdownNegoError
+            >
+        >,
+        AcquiredEntryCreateError<
+            Types::ResolverError,
+            FarChannelFlowsError<
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
+            >,
+            Types::WrapError
+        >,
+        Types::AcquireNegoError,
+        Types::AcquireShutdownNegoError
     >;
 
     #[inline]
@@ -4420,44 +4514,136 @@ where
         self.channels[channel.0].shutdown_flow(ctx, param, session)
     }
 
-    fn shutdown(
-        self,
-        ctx: &mut Ctx
-    ) -> Result<(), Self::ShutdownError> {
-        let registry = ctx.registry();
-        let mut out = true;
-        let mut errs: Option<Vec<FarChannelID>> = None;
-        let mut deletes = Vec::new();
-        let nchans = self.channels.len();
+    fn shutdown_listen(
+        mut self,
+        ctx: &mut Ctx,
+        live: &HashSet<Token>
+    ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError> {
+        let lives: Vec<FarChannelID> = self
+            .tokens
+            .iter()
+            .flat_map(|(token, id)| {
+                if live.contains(token) {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut sessions: Option<Vec<(Types::PeerAddr, FarChannelID,
+                                      Types::ChannelParam,
+                                      Types::AuthNSession)>> =
+            None;
+        let mut next: Option<Instant> = None;
+        let nlives = lives.len();
 
-        for (id, chan) in self.channels.iter_mut().enumerate() {
-            match chan.shutdown(&mut deletes, registry) {
-                Ok(shutdown) => out = out && shutdown,
-                Err(err) => {
-                    error!(target: "far-channels",
-                           "error shutting down channel {}: {}",
-                           self.names[id], err);
+        for id in lives {
+            // Should not be getting notifications on a shut down channel.
+            if !self.channels[id.0].is_shutdown() {
+                // Listen if we need to.
+                if !self.channels[id.0].is_shutdown_safe() {
+                    match self.channels[id.0].listen(
+                        ctx,
+                        |param, stream| {
+                            let endpoint = stream.get().peer_addr()?;
 
-                    let id = FarChannelID(id);
+                            match &mut sessions {
+                                Some(sessions) => {
+                                    sessions.push(
+                                        (endpoint, id.clone(),
+                                         param.clone(), stream)
+                                    );
+                                }
+                                None => {
+                                    let mut vec = Vec::with_capacity(nlives);
 
-                    match &mut errs {
-                        Some(errs) => errs.push(id),
-                        None => {
-                            let mut vec = Vec::with_capacity(nchans);
+                                    vec.push(
+                                        (endpoint, id.clone(),
+                                         param.clone(), stream)
+                                    );
+                                    sessions = Some(vec);
+                                }
+                            }
 
-                            vec.push(id);
+                            Ok(())
+                        },
+                        |endpoint, param| {
+                            trace!(target: "far-channels",
+                                   "ignoring inbound traffic from {} ({})",
+                                   endpoint, param);
+                        },
+                        live,
+                        false
+                    ).map_err(|err| FarChannelsShutdownListenError::Listen {
+                        err: err
+                    })? {
+                        RetryResult::Success((creates, deletes, _, when)) => {
+                            if let Some(creates) = creates {
+                                for token in creates {
+                                    if let Some(curr) =
+                                        self.tokens.insert(token, id.clone())
+                                    {
+                                        error!(target: "far-channels",
+                                               "tokens has entry for {:?} ({})",
+                                               token, curr);
+                                    }
+                                }
+                            }
 
-                            errs = Some(vec);
+                            if let Some(deletes) = deletes {
+                                for token in deletes {
+                                    if self.tokens.remove(&token).is_none() {
+                                        error!(target: "far-channels",
+                                               "token {:?} was not in tokens",
+                                               token);
+                                    }
+                                }
+                            }
+
+                            next = next_retry(&next, &when);
+                        }
+                        RetryResult::Retry(when) => {
+                            next = Some(next_retry_definite(&next, &when));
                         }
                     }
                 }
+
+                // See if we can shut down the acquired.
+                if self.channels[id.0].is_shutdown_safe() {
+                    // Try to shut down the acquired.
+                    let mut deletes = Vec::new();
+
+                    self.channels[id.0].shutdown(&mut deletes, ctx.registry())
+                        .map_err(|err| {
+                            FarChannelsShutdownListenError::Shutdown {
+                                err: err
+                            }
+                        })?;
+
+                    for token in deletes {
+                        if self.tokens.remove(&token).is_none() {
+                            error!(target: "far-channels",
+                                   "token {:?} was not in tokens",
+                                   token);
+                        }
+                    }
+                }
+            } else {
+                error!(target: "far-channels",
+                       "ignoring traffic on shut down channel {}",
+                       id);
             }
         }
 
-        if let Some(errs) = errs.take() {
-            Err(errs)
+       // See if we can shut down all channels.
+        if self.channels.iter().all(|ent| ent.is_shutdown()) {
+            Ok(None)
         } else {
-            Ok(())
+            // There are still live channels.
+            trace!(target: "far-channels",
+                   "live channels still exist");
+
+            Ok(Some((self, next)))
         }
     }
 }
@@ -4544,7 +4730,7 @@ where
                 .map_err(|err| FarChannelsCreateError::Channel {
                     err: err
                 })?;
-            let (channel, tokens, when) = ChannelEntry::create(
+            let (channel, tokens, _) = ChannelEntry::create(
                 ctx,
                 channel,
                 authn,
@@ -4768,6 +4954,36 @@ where
             ChannelEntryListenError::Nego { err } => err.scope(),
             ChannelEntryListenError::Shutdown { err } => err.scope(),
             ChannelEntryListenError::None => ErrorScope::Session
+        }
+    }
+}
+
+impl<Start, Nego> ScopedError for ChannelEntryShutdownError<Start, Nego>
+where Start: ScopedError,
+      Nego: ScopedError {
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        match self {
+            ChannelEntryShutdownError::Start { err } => err.scope(),
+            ChannelEntryShutdownError::Nego { err } => err.scope(),
+            ChannelEntryShutdownError::Active => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl<Start, Listen, Entry, Nego, Shutdown> ScopedError
+    for FarChannelsShutdownListenError<Start, Listen, Entry, Nego, Shutdown>
+where Start: ScopedError,
+      Listen: ScopedError,
+      Entry: ScopedError,
+      Nego: ScopedError,
+      Shutdown: ScopedError
+{
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        match self {
+            FarChannelsShutdownListenError::Shutdown { err } => err.scope(),
+            FarChannelsShutdownListenError::Listen { err } => err.scope(),
         }
     }
 }
@@ -5147,6 +5363,25 @@ where
     }
 }
 
+impl<Start, Listen, Entry, Nego, Shutdown> Display
+    for FarChannelsShutdownListenError<Start, Listen, Entry, Nego, Shutdown>
+where Start: Display,
+      Listen: Display,
+      Entry: Display,
+      Nego: Display,
+      Shutdown: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            FarChannelsShutdownListenError::Shutdown { err } => err.fmt(f),
+            FarChannelsShutdownListenError::Listen { err } => err.fmt(f),
+        }
+    }
+}
+
 impl<Flows, Wrap> Display for AcquiredEntryFlowsError<Flows, Wrap>
 where
     Flows: Display,
@@ -5312,10 +5547,6 @@ use std::convert::TryFrom;
 #[cfg(test)]
 use std::io::ErrorKind;
 #[cfg(test)]
-use std::io::Read;
-#[cfg(test)]
-use std::io::Write;
-#[cfg(test)]
 use std::iter::empty;
 #[cfg(test)]
 use std::iter::once;
@@ -5384,6 +5615,61 @@ type TestFarChannelsTypes = CompoundFarChannelsTypes<
 >;
 
 #[cfg(test)]
+struct TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    registry: &'a Registry,
+    inner: &'a mut Ctx,
+    freed: Vec<Token>,
+    tokens: I
+}
+
+#[cfg(test)]
+impl<'a, Ctx, I> NSNameCachesCtx for TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Self::NameCaches {
+        self.inner.name_caches()
+    }
+}
+
+#[cfg(test)]
+impl<'a, Ctx, I> RegistryCtx for TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    #[inline]
+    fn registry(&self) -> &Registry {
+        &self.registry
+    }
+}
+
+#[cfg(test)]
+impl<'a, Ctx, I> TokensCtx for TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    #[inline]
+    fn token(&mut self) -> Token {
+        self.tokens.next()
+            .expect("Expected token")
+    }
+
+    #[inline]
+    fn free_token(
+        &mut self,
+        token: Token
+    ) {
+        self.freed.push(token)
+    }
+}
+
+#[cfg(test)]
 impl From<CompoundFarChannelSessionCred> for TestPrin {
     #[inline]
     fn from(_val: CompoundFarChannelSessionCred) -> TestPrin {
@@ -5422,10 +5708,14 @@ fn get_acquired<Types, Ctx>(
 where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
+    let ctx = TestCtx {
+        registry: poll.registry(),
+        inner: ctx,
+        freed: Vec::new(),
+        tokens: once(token)
+    };
     let (mut ent, creates, _) = ChannelEntry::create(
-        &mut once(token),
         ctx,
-        poll.registry(),
         channel,
         authn,
         flows_config,
@@ -5447,7 +5737,7 @@ where
     if is_acquired {
         loop {
             match ent
-                .addrs(&mut empty(), poll.registry())
+                .addrs(ctx, poll.registry())
                 .expect("Expected success")
             {
                 RetryResult::Success((params, when)) => {
@@ -5495,12 +5785,11 @@ where
 
             match ent
                 .listen(
-                    ctx,
-                    &mut empty(),
+                    &mut ctx,
                     endpoints,
                     sessions,
-                    poll.registry(),
-                    &live
+                    &live,
+                    false
                 )
                 .expect("Expected success")
             {

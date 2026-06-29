@@ -87,7 +87,7 @@ use crate::far::FarChannelXfrm;
 
 pub trait FlowAuthNShutdownTypes<Flow>
 where
-    Flow: Session {
+    Flow: Session + Read + Write {
     type AuthConfig: Clone;
     type Prin: Display;
     type AuthNSession: AuthNed<Self::Prin, Flow> + Clone;
@@ -120,7 +120,7 @@ where
 
 pub trait FlowsEntryTypes<Flow>: FlowAuthNShutdownTypes<Flow> + Sized
 where
-    Flow: Session {
+    Flow: Session + Read + Write {
     type LocalAddr: Clone + Display + From<Self::SockAddr>;
     type PeerAddr: Clone + Debug + Display + Eq + Hash;
     type SockAddr: Clone
