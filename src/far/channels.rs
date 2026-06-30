@@ -5696,8 +5696,7 @@ fn get_acquired<Types, Ctx>(
     channel: Types::Channel,
     authn: Types::AuthN,
     flows_config: FlowsConfig,
-    resolve_config: ResolverConfig,
-    addr_policy: SocketAddrPolicy,
+    addrs_config: AddrsConfig,
     xfrm_param: Types::InnerXfrmCreateParam,
     token: Token
 ) -> (
@@ -5708,19 +5707,17 @@ fn get_acquired<Types, Ctx>(
 where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
-    let ctx = TestCtx {
-        registry: poll.registry(),
-        inner: ctx,
-        freed: Vec::new(),
-        tokens: once(token)
-    };
     let (mut ent, creates, _) = ChannelEntry::create(
-        ctx,
+        &mut TestCtx {
+            registry: poll.registry(),
+            inner: ctx,
+            freed: Vec::new(),
+            tokens: empty()
+        },
         channel,
         authn,
         flows_config,
-        resolve_config,
-        addr_policy,
+        addrs_config,
         xfrm_param,
         Retry::default(),
         None
@@ -5736,10 +5733,12 @@ where
 
     if is_acquired {
         loop {
-            match ent
-                .addrs(ctx, poll.registry())
-                .expect("Expected success")
-            {
+            match ent.addrs(&mut TestCtx {
+                registry: poll.registry(),
+                inner: ctx,
+                freed: Vec::new(),
+                tokens: empty()
+            }).expect("Expected success") {
                 RetryResult::Success((params, when)) => {
                     return (ent, params, when);
                 }
@@ -5785,9 +5784,20 @@ where
 
             match ent
                 .listen(
-                    &mut ctx,
-                    endpoints,
-                    sessions,
+                    &mut TestCtx {
+                        registry: poll.registry(),
+                        inner: ctx,
+                        freed: Vec::new(),
+                        tokens: once(token)
+                    },
+                    |_, session| {
+                        sessions.push(session);
+
+                        Ok(())
+                    },
+                    |endpoint, _| {
+                        endpoints.insert(endpoint);
+                    },
                     &live,
                     false
                 )
@@ -5815,7 +5825,7 @@ fn get_in_session<Ctx, Types>(
     ent: &mut ChannelEntry<Types>,
     ctx: &mut Ctx,
     poll: &mut Poll,
-    endpoints: &mut HashSet<Types::PeerAddr>
+    endpoints: &mut HashSet<Types::PeerAddr>,
 ) -> Types::AuthNSession
 where
     Types: FarChannelsTypes,
@@ -5852,12 +5862,22 @@ where
                "listening");
 
         ent.listen(
-            ctx,
-            &mut empty(),
-            endpoints,
-            &mut sessions,
-            poll.registry(),
-            &live
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: ctx,
+                freed: Vec::new(),
+                tokens: empty()
+            },
+            |_, session| {
+                sessions.push(session);
+
+                Ok(())
+            },
+            |endpoint, _| {
+                endpoints.insert(endpoint);
+            },
+            &live,
+            false
         )
         .expect("");
 
@@ -5884,8 +5904,12 @@ where
     Ctx: NSNameCachesCtx {
     match ent
         .req_flow(
-            &mut empty(),
-            poll.registry(),
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: ctx,
+                freed: Vec::new(),
+                tokens: empty()
+            },
             channel_param,
             endpoint,
             out_param
@@ -5935,12 +5959,22 @@ where
                        "listening");
 
                 let _ = ent.listen(
-                    ctx,
-                    &mut empty(),
-                    endpoints,
-                    &mut sessions,
-                    poll.registry(),
-                    &live
+                    &mut TestCtx {
+                        registry: poll.registry(),
+                        inner: ctx,
+                        freed: Vec::new(),
+                        tokens: empty()
+                    },
+                    |_, session| {
+                        sessions.push(session);
+
+                        Ok(())
+                    },
+                    |endpoint, _| {
+                        endpoints.insert(endpoint);
+                    },
+                    &live,
+                    false
                 );
 
                 live.clear();
@@ -6010,12 +6044,22 @@ where
                            "listening");
 
                     ent.listen(
-                        ctx,
-                        &mut empty(),
-                        &mut endpoints,
-                        &mut sessions,
-                        poll.registry(),
-                        &live
+                        &mut TestCtx {
+                            registry: poll.registry(),
+                            inner: ctx,
+                            freed: Vec::new(),
+                            tokens: empty()
+                        },
+                        |_, session| {
+                            sessions.push(session);
+
+                            Ok(())
+                        },
+                        |endpoint, _| {
+                            endpoints.insert(endpoint);
+                        },
+                        &live,
+                        false
                     )
                     .expect("");
 
@@ -6092,12 +6136,22 @@ where
                            "listening");
 
                     ent.listen(
-                        ctx,
-                        &mut empty(),
-                        &mut endpoints,
-                        &mut sessions,
-                        poll.registry(),
-                        &live
+                        &mut TestCtx {
+                            registry: poll.registry(),
+                            inner: ctx,
+                            freed: Vec::new(),
+                            tokens: empty()
+                        },
+                        |_, session| {
+                            sessions.push(session);
+
+                            Ok(())
+                        },
+                        |endpoint, _| {
+                            endpoints.insert(endpoint);
+                        },
+                        &live,
+                        false
                     )
                     .expect("");
 
@@ -6128,7 +6182,16 @@ fn shutdown_session<Ctx, Types>(
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
     match ent
-        .shutdown_flow(&mut empty(), poll.registry(), channel_param, session)
+        .shutdown_flow(
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: ctx,
+                freed: Vec::new(),
+                tokens: empty()
+            },
+            channel_param,
+            session
+        )
         .expect("Expected success")
     {
         RetryResult::Success((params, _)) => {
@@ -6170,12 +6233,22 @@ fn shutdown_session<Ctx, Types>(
                "listening");
 
         ent.listen(
-            ctx,
-            &mut empty(),
-            &mut endpoints,
-            &mut sessions,
-            poll.registry(),
-            &live
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: ctx,
+                freed: Vec::new(),
+                tokens: empty()
+            },
+            |param, session| {
+                sessions.push((session, param));
+
+                Ok(())
+            },
+            |endpoint, param| {
+                endpoints.insert((endpoint, param));
+            },
+            &live,
+            false
         )
         .expect("");
 
@@ -6232,12 +6305,22 @@ fn shutdown_entry<Ctx, Types>(
                    "listening");
 
             ent.listen(
-                ctx,
-                &mut empty(),
-                &mut endpoints,
-                &mut sessions,
-                poll.registry(),
-                &live
+                &mut TestCtx {
+                    registry: poll.registry(),
+                    inner: ctx,
+                    freed: Vec::new(),
+                    tokens: empty()
+                },
+                |_, session| {
+                    sessions.push(session);
+
+                    Ok(())
+                },
+                |endpoint, _| {
+                    endpoints.insert(endpoint);
+                },
+                &live,
+                false
             )
             .expect("");
 
@@ -6284,11 +6367,16 @@ fn entry_test<Types, Ctx>(
     let server_xfrm_param = xfrm_param.clone();
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
-        let policy = SocketAddrPolicy::create(addr_kinds);
+        let addr_config = AddrsConfig::new(addr_kinds.to_vec(),
+                                           server_resolve_config);
         let mut poll = Poll::new().expect("Expected success");
         let listener = Types::Channel::create(
-            &mut server_nscaches,
-            &mut empty(),
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: &mut server_nscaches,
+                freed: Vec::new(),
+                tokens: empty()
+            },
             server_config
         )
         .expect("Expected success");
@@ -6302,8 +6390,7 @@ fn entry_test<Types, Ctx>(
             listener,
             server_authn,
             server_flows_config,
-            server_resolve_config,
-            policy,
+            addr_config,
             server_xfrm_param,
             Token(0)
         );
@@ -6389,11 +6476,15 @@ fn entry_test<Types, Ctx>(
     let mut client_nscaches = nscaches.clone();
     let client_barrier = barrier;
     let send = spawn(move || {
-        let policy = SocketAddrPolicy::create(addr_kinds);
+        let addr_config = AddrsConfig::new(addr_kinds.to_vec(), resolve_config);
         let mut poll = Poll::new().expect("Expected success");
         let conn = Types::Channel::create(
-            &mut client_nscaches,
-            &mut empty(),
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: &mut client_nscaches,
+                freed: Vec::new(),
+                tokens: empty()
+            },
             client_config
         )
         .expect("Expected success");
@@ -6407,8 +6498,7 @@ fn entry_test<Types, Ctx>(
             conn,
             client_authn,
             flows_config,
-            resolve_config,
-            policy,
+            addr_config,
             xfrm_param,
             Token(0)
         );

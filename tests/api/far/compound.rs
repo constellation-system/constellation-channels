@@ -45,7 +45,6 @@ use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPDatagramXfrm;
 use constellation_channels::far::unix::UnixDatagramXfrm;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
-use constellation_common::config::Create;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::RetryResult;
@@ -55,6 +54,7 @@ use mio::Poll;
 use mio::Token;
 
 use crate::init;
+use crate::api::ExampleCtx;
 
 #[test]
 fn test_compound_dtls_unix() {
@@ -115,13 +115,13 @@ fn test_compound_dtls_unix() {
     let client_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CLIENT_PATH).unwrap()
     );
-    let mut server_nscaches = nscaches.clone();
+    let server_nscaches = nscaches.clone();
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(server_nscaches);
         let mut listener = CompoundFarChannel::create(
-            &mut server_nscaches,
-            &mut empty(),
+            &mut ctx,
             server_config
         )
         .expect("Expected success");
@@ -191,7 +191,7 @@ fn test_compound_dtls_unix() {
     let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
-    let mut client_nscaches = nscaches.clone();
+    let client_nscaches = nscaches.clone();
     let client_barrier = barrier;
     let send = spawn(move || {
         let servername = "test-server.nowhere.com";
@@ -203,9 +203,9 @@ fn test_compound_dtls_unix() {
                 CompoundOutboundNegotiatorParam::Basic
             ))
         };
+        let mut ctx = ExampleCtx::new(client_nscaches);
         let mut conn = CompoundFarChannel::create(
-            &mut client_nscaches,
-            &mut empty(),
+            &mut ctx,
             client_config
         )
         .expect("expected success");
@@ -337,13 +337,13 @@ fn test_compound_dtls_udp() {
 
     let client_addr =
         CompoundFarChannelXfrmPeerAddr::udp("[::1]:7004".parse().unwrap());
-    let mut server_nscaches = nscaches.clone();
+    let server_nscaches = nscaches.clone();
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(server_nscaches);
         let mut listener = CompoundFarChannel::create(
-            &mut server_nscaches,
-            &mut empty(),
+            &mut ctx,
             server_config
         )
         .expect("Expected success");
@@ -414,7 +414,7 @@ fn test_compound_dtls_udp() {
 
     let server_addr =
         CompoundFarChannelXfrmPeerAddr::udp("[::1]:7003".parse().unwrap());
-    let mut client_nscaches = nscaches.clone();
+    let client_nscaches = nscaches.clone();
     let client_barrier = barrier;
     let send = spawn(move || {
         let servername = "test-server.nowhere.com";
@@ -426,9 +426,9 @@ fn test_compound_dtls_udp() {
                 CompoundOutboundNegotiatorParam::Basic
             ))
         };
+        let mut ctx = ExampleCtx::new(client_nscaches);
         let mut conn = CompoundFarChannel::create(
-            &mut client_nscaches,
-            &mut empty(),
+            &mut ctx,
             client_config
         )
         .expect("expected success");
@@ -592,13 +592,13 @@ fn test_compound_dtls_double() {
     let client_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CLIENT_PATH).unwrap()
     );
-    let mut server_nscaches = nscaches.clone();
+    let server_nscaches = nscaches.clone();
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(server_nscaches);
         let mut listener = CompoundFarChannel::create(
-            &mut server_nscaches,
-            &mut empty(),
+            &mut ctx,
             server_config
         )
         .expect("Expected success");
@@ -668,7 +668,7 @@ fn test_compound_dtls_double() {
     let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
-    let mut client_nscaches = nscaches.clone();
+    let client_nscaches = nscaches.clone();
     let client_barrier = barrier;
     let send = spawn(move || {
         let servername = "test-server.nowhere.com";
@@ -683,9 +683,9 @@ fn test_compound_dtls_double() {
         let negoparam = CompoundOutboundNegotiatorParam::DTLS {
             dtls: Box::new(DTLSOutboundParam::new(endpoint, negoparam))
         };
+        let mut ctx = ExampleCtx::new(client_nscaches);
         let mut conn = CompoundFarChannel::create(
-            &mut client_nscaches,
-            &mut empty(),
+            &mut ctx,
             client_config
         )
         .expect("expected success");

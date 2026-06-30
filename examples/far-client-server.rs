@@ -17,38 +17,35 @@
 // <https://www.gnu.org/licenses/>.
 
 use std::convert::TryFrom;
-use std::iter::empty;
 use std::net::SocketAddr;
 
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::DTLSFarChannelConfig;
 use constellation_channels::config::FlowsConfig;
-use constellation_channels::config::UDPFarChannelConfig;
 use constellation_channels::far::compound::CompoundFarChannel;
 use constellation_channels::far::compound::CompoundFarChannelAcquireState;
 use constellation_channels::far::compound::CompoundFarChannelParam;
 use constellation_channels::far::compound::CompoundFarChannelXfrm;
 use constellation_channels::far::compound::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::far::compound::CompoundOutboundNegotiatorParam;
-use constellation_channels::far::dtls::DTLSFarChannel;
 use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::flows::accept_one;
 use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPDatagramXfrm;
-use constellation_channels::far::udp::UDPFarChannel;
 use constellation_channels::far::unix::UnixDatagramXfrm;
 use constellation_channels::far::FarChannel;
 use constellation_channels::far::FarChannelCreate;
 use constellation_channels::far::FarChannelFlows;
+use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpointAddr;
-use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::retry::RetryResult;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::threads::Tokens;
+use constellation_streams::threads::TokensCtx;
 use log::LevelFilter;
 use mio::Interest;
 use mio::Poll;
@@ -125,14 +122,48 @@ const CLIENT_CONFIG: &'static str = concat!(
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
+struct ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    inner: Ctx,
+    tokens: Tokens
+}
+
+impl<Ctx> NSNameCachesCtx for ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Self::NameCaches {
+        self.inner.name_caches()
+    }
+}
+
+impl<Ctx> TokensCtx for ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    #[inline]
+    fn token(&mut self) -> Token {
+        self.tokens.token()
+    }
+
+    #[inline]
+    fn free_token(
+        &mut self,
+        token: Token
+    ) {
+        self.tokens.free_token(token)
+    }
+}
+
 fn server() {
     let mut poll = Poll::new().expect("Expected success");
     let server_config: CompoundFarChannelConfig =
         serde_yaml::from_str(SERVER_CONFIG).unwrap();
-    let mut nscaches = SharedNSNameCaches::new();
-    let mut listener =
-        CompoundFarChannel::create(&mut nscaches, &mut empty(), server_config)
-            .expect("Expected success");
+    let mut ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new()
+    };
+    let mut listener = CompoundFarChannel::create(&mut ctx, server_config)
+        .expect("Expected success");
     let config = FlowsConfig::default();
     let acquire = match listener
         .acquire(&mut vec![], poll.registry())
@@ -201,10 +232,12 @@ fn client() {
         UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
     let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-    let mut nscaches = SharedNSNameCaches::new();
-    let mut conn =
-        CompoundFarChannel::create(&mut nscaches, &mut empty(), client_config)
-            .expect("expected success");
+    let mut ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new()
+    };
+    let mut conn = CompoundFarChannel::create(&mut ctx, client_config)
+        .expect("expected success");
     let config = FlowsConfig::default();
     let acquire = match conn
         .acquire(&mut vec![], poll.registry())

@@ -16,5 +16,53 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use constellation_channels::resolve::cache::NSNameCachesCtx;
+use constellation_streams::threads::Tokens;
+use constellation_streams::threads::TokensCtx;
+use mio::Token;
+
 mod far;
 mod near;
+
+pub(crate) struct ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    inner: Ctx,
+    tokens: Tokens
+}
+
+impl<Ctx> ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    #[inline]
+    fn new(ctx: Ctx) -> Self {
+        ExampleCtx {
+            inner: ctx,
+            tokens: Tokens::new()
+        }
+    }
+}
+
+impl<Ctx> NSNameCachesCtx for ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Self::NameCaches {
+        self.inner.name_caches()
+    }
+}
+
+impl<Ctx> TokensCtx for ExampleCtx<Ctx>
+where Ctx: NSNameCachesCtx {
+    #[inline]
+    fn token(&mut self) -> Token {
+        self.tokens.token()
+    }
+
+    #[inline]
+    fn free_token(
+        &mut self,
+        token: Token
+    ) {
+        self.tokens.free_token(token)
+    }
+}

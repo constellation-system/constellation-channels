@@ -16,7 +16,6 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::iter::empty;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -40,6 +39,7 @@ use mio::Poll;
 use mio::Token;
 
 use crate::init;
+use crate::api::ExampleCtx;
 
 #[test]
 fn test_send_recv() {
@@ -62,13 +62,13 @@ fn test_send_recv() {
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
-    let mut server_nscaches = nscaches.clone();
+    let server_nscaches = nscaches.clone();
     let server_barrier = barrier.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(server_nscaches);
         let mut listener = UDPFarChannel::create(
-            &mut server_nscaches,
-            &mut empty(),
+            &mut ctx,
             server_config
         )
         .expect("Expected success");
@@ -124,13 +124,13 @@ fn test_send_recv() {
         assert_eq!(FIRST_BYTES, buf);
     });
 
-    let mut client_nscaches = nscaches.clone();
+    let client_nscaches = nscaches.clone();
     let client_barrier = barrier;
     let send = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(client_nscaches);
         let mut conn = UDPFarChannel::create(
-            &mut client_nscaches,
-            &mut empty(),
+            &mut ctx,
             client_config
         )
         .expect("expected success");

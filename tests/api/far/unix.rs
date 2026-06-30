@@ -17,7 +17,6 @@
 // <https://www.gnu.org/licenses/>.
 
 use std::fs::metadata;
-use std::iter::empty;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread::spawn;
@@ -41,6 +40,7 @@ use mio::Poll;
 use mio::Token;
 
 use crate::init;
+use crate::api::ExampleCtx;
 
 #[test]
 fn test_send_recv() {
@@ -68,12 +68,12 @@ fn test_send_recv() {
 
     let client_addr = UnixSocketPath::from(&client_path);
     let server_barrier = barrier.clone();
-    let mut server_nscaches = nscaches.clone();
+    let server_nscaches = nscaches.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(server_nscaches);
         let mut listener = UnixFarChannel::create(
-            &mut server_nscaches,
-            &mut empty(),
+            &mut ctx,
             server_config
         )
         .expect("Expected success");
@@ -131,12 +131,12 @@ fn test_send_recv() {
 
     let server_addr = UnixSocketPath::from(&server_path);
     let client_barrier = barrier;
-    let mut client_nscaches = nscaches.clone();
+    let client_nscaches = nscaches.clone();
     let send = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
+        let mut ctx = ExampleCtx::new(client_nscaches);
         let mut conn = UnixFarChannel::create(
-            &mut client_nscaches,
-            &mut empty(),
+            &mut ctx,
             client_config
         )
         .expect("expected success");
