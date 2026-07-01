@@ -236,7 +236,7 @@ pub trait NearDuplexNegoTypes {
         StartError = Self::OutShutdownStartError,
         NegotiateError = Self::OutShutdownNegoError
     >;
-    type OutParam: Clone + Debug + Display + Eq + Hash;
+    type OutParam: Clone + Debug + Display;
     type OutChannel: NearConnector
         + NearChannelCreateWithEndpoint<
             Conn = Self::OutConn,
@@ -460,7 +460,7 @@ where
     Out::Channel: NearConnector
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
     <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone,
-    <Out::Channel as NearChannelCreateWithEndpoint>::Param: Clone + Debug + Display + Eq + Hash
+    <Out::Channel as NearChannelCreateWithEndpoint>::Param: Clone + Debug + Display
 {
     type Endpoint = In::Endpoint;
     type InConfig = <In::Channel as NearChannelCreate>::Config;

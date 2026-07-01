@@ -5583,6 +5583,8 @@ where OutAuth: Display,
 #[cfg(test)]
 use std::convert::TryFrom;
 #[cfg(test)]
+use std::iter::empty;
+#[cfg(test)]
 use std::iter::once;
 #[cfg(test)]
 use std::thread::spawn;
@@ -5619,7 +5621,7 @@ use crate::near::compound::CompoundNearClientConn;
 #[cfg(test)]
 use crate::near::compound::CompoundNearCredential;
 #[cfg(test)]
-use crate::near::compound::CompoundNearNameAddr;
+use crate::near::compound::CompoundNearConcreteAddr;
 #[cfg(test)]
 use crate::near::compound::CompoundNearServerConn;
 #[cfg(test)]
@@ -5662,6 +5664,61 @@ type TestDuplexNegoTypes =
     SimpleNearDuplexNegoTypes<TestAcceptorNegoTypes, TestConnectorNegoTypes>;
 
 #[cfg(test)]
+struct TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    registry: &'a Registry,
+    inner: &'a mut Ctx,
+    freed: Vec<Token>,
+    tokens: I
+}
+
+#[cfg(test)]
+impl<'a, Ctx, I> NSNameCachesCtx for TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Self::NameCaches {
+        self.inner.name_caches()
+    }
+}
+
+#[cfg(test)]
+impl<'a, Ctx, I> RegistryCtx for TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    #[inline]
+    fn registry(&self) -> &Registry {
+        &self.registry
+    }
+}
+
+#[cfg(test)]
+impl<'a, Ctx, I> TokensCtx for TestCtx<'a, Ctx, I>
+where Ctx: NSNameCachesCtx,
+      I: Iterator<Item = Token>
+{
+    #[inline]
+    fn token(&mut self) -> Token {
+        self.tokens.next()
+            .expect("Expected token")
+    }
+
+    #[inline]
+    fn free_token(
+        &mut self,
+        token: Token
+    ) {
+        self.freed.push(token)
+    }
+}
+
+#[cfg(test)]
 impl From<CompoundNearCredential> for TestPrin {
     #[inline]
     fn from(_val: CompoundNearCredential) -> TestPrin {
@@ -5694,7 +5751,16 @@ where
     let mut gentok = once(token).peekable();
 
     match entry
-        .req_stream(ctx, &mut gentok, poll.registry(), endpoint, param)
+        .req_stream(
+            &mut TestCtx {
+                registry: poll.registry(),
+                inner: ctx,
+                freed: Vec::new(),
+                tokens: empty()
+            },
+            endpoint,
+            param
+        )
         .expect("Expected success")
     {
         RetryResult::Success((newtok, Some(out))) => {
@@ -5707,16 +5773,14 @@ where
         }
         RetryResult::Success((newtok, None)) => {
             let mut events = Events::with_capacity(2);
-            let mut out_sessions = Vec::new();
-            let mut in_sessions = Vec::new();
-            let mut out_endpoints = HashSet::new();
-            let mut in_endpoints = HashSet::new();
+            let mut sessions = Vec::new();
+            let mut endpoints = HashSet::new();
             let mut live = HashSet::new();
             let mut count = 0;
 
             assert_eq!(newtok, token);
 
-            while out_sessions.is_empty() {
+            while sessions.is_empty() {
                 trace!(target: "get-out-session",
                        "polling");
 
@@ -5744,12 +5808,20 @@ where
 
                 let (creates, deletes) = entry
                     .listen(
-                        &mut gentok,
-                        &mut out_sessions,
-                        &mut in_sessions,
-                        &mut out_endpoints,
-                        &mut in_endpoints,
-                        poll.registry(),
+                        &mut TestCtx {
+                            registry: poll.registry(),
+                            inner: ctx,
+                            freed: Vec::new(),
+                            tokens: &mut gentok
+                        },
+                        |session| {
+                            sessions.push(session);
+
+                            Ok(())
+                        },
+                        |endpoint| {
+                            endpoints.insert(endpoint);
+                        },
                         &live
                     )
                     .expect("Expected success");
@@ -5768,34 +5840,38 @@ where
             trace!(target: "get-out-session",
                    "got outbound session");
 
-            assert!(in_sessions.is_empty());
-            assert!(out_endpoints.is_empty());
-            assert!(in_endpoints.is_empty());
+            assert!(endpoints.is_empty());
 
-            out_sessions.pop().expect("Expected some")
+            if let DuplexValue::Conn(out) = sessions
+                .pop()
+                .expect("Expected some") {
+                out
+            } else {
+                panic!("expected outbound sesssion")
+            }
         }
         _ => panic!("Should not see retry delay here")
     }
 }
 
 #[cfg(test)]
-fn get_in_session<Types>(
+fn get_in_session<Types, Ctx>(
+    ctx: &mut Ctx,
     entry: &mut ChannelEntry<Types>,
     poll: &mut Poll,
     token: Token
 ) -> Types::InAuthNSession
 where
+    Ctx: NSNameCachesCtx,
     Types: NearDuplexNegoTypes {
     let mut gentok = vec![token, Token(7777)].into_iter().peekable();
     let mut events = Events::with_capacity(2);
-    let mut out_sessions = Vec::new();
-    let mut in_sessions = Vec::new();
-    let mut out_endpoints = HashSet::new();
-    let mut in_endpoints = HashSet::new();
+    let mut sessions = Vec::new();
+    let mut endpoints = HashSet::new();
     let mut live = HashSet::new();
     let mut count = 0;
 
-    while in_sessions.is_empty() {
+    while sessions.is_empty() {
         trace!(target: "get-in-session",
                "polling");
 
@@ -5823,12 +5899,20 @@ where
 
         let (creates, deletes) = entry
             .listen(
-                &mut gentok,
-                &mut out_sessions,
-                &mut in_sessions,
-                &mut out_endpoints,
-                &mut in_endpoints,
-                poll.registry(),
+                &mut TestCtx {
+                    registry: poll.registry(),
+                    inner: ctx,
+                    freed: Vec::new(),
+                    tokens: &mut gentok
+                },
+                |session| {
+                    sessions.push(session);
+
+                    Ok(())
+                },
+                |endpoint| {
+                    endpoints.insert(endpoint);
+                },
                 &live
             )
             .expect("Expected success");
@@ -5847,20 +5931,26 @@ where
     trace!(target: "get-in-session",
            "got inbound session");
 
-    assert!(out_sessions.is_empty());
-    assert!(out_endpoints.is_empty());
-    assert!(in_endpoints.is_empty());
+    assert!(endpoints.is_empty());
 
-    in_sessions.pop().expect("Expected some")
+    if let DuplexValue::Accept(out) = sessions
+        .pop()
+        .expect("Expected some") {
+        out
+    } else {
+        panic!("expected outbound sesssion")
+    }
 }
 
 #[cfg(test)]
-fn shutdown_out_session<Types>(
+fn shutdown_out_session<Types, Ctx>(
+    ctx: &mut Ctx,
     entry: &mut ChannelEntry<Types>,
     poll: &mut Poll,
     stream: Types::OutAuthNSession,
     token: Token
 ) where
+    Ctx: NSNameCachesCtx,
     Types: NearDuplexNegoTypes {
     let mut gentok = once(token).peekable();
     let (_, stream) = stream.take();
@@ -5877,10 +5967,8 @@ fn shutdown_out_session<Types>(
         }
         None => {
             let mut events = Events::with_capacity(2);
-            let mut out_sessions = Vec::new();
-            let mut in_sessions = Vec::new();
-            let mut out_endpoints = HashSet::new();
-            let mut in_endpoints = HashSet::new();
+            let mut sessions = Vec::new();
+            let mut endpoints = HashSet::new();
             let mut live = HashSet::new();
             let mut count = 0;
 
@@ -5912,12 +6000,20 @@ fn shutdown_out_session<Types>(
 
                 let (creates, deletes) = entry
                     .listen(
-                        &mut gentok,
-                        &mut out_sessions,
-                        &mut in_sessions,
-                        &mut out_endpoints,
-                        &mut in_endpoints,
-                        poll.registry(),
+                        &mut TestCtx {
+                            registry: poll.registry(),
+                            inner: ctx,
+                            freed: Vec::new(),
+                            tokens: &mut gentok
+                        },
+                        |session| {
+                            sessions.push(session);
+
+                            Ok(())
+                        },
+                        |endpoint| {
+                            endpoints.insert(endpoint);
+                        },
                         &live
                     )
                     .expect("Expected success");
@@ -5938,21 +6034,21 @@ fn shutdown_out_session<Types>(
             trace!(target: "shutdown-out-session",
                    "got outbound session");
 
-            assert!(out_sessions.is_empty());
-            assert!(in_sessions.is_empty());
-            assert!(out_endpoints.is_empty());
-            assert!(in_endpoints.is_empty());
+            assert!(sessions.is_empty());
+            assert!(endpoints.is_empty());
         }
     }
 }
 
 #[cfg(test)]
-fn shutdown_in_session<Types>(
+fn shutdown_in_session<Types, Ctx>(
+    ctx: &mut Ctx,
     entry: &mut ChannelEntry<Types>,
     poll: &mut Poll,
     stream: Types::InAuthNSession,
     token: Token
 ) where
+    Ctx: NSNameCachesCtx,
     Types: NearDuplexNegoTypes {
     let mut gentok = once(token).peekable();
     let (_, stream) = stream.take();
@@ -5969,10 +6065,8 @@ fn shutdown_in_session<Types>(
         }
         None => {
             let mut events = Events::with_capacity(2);
-            let mut out_sessions = Vec::new();
-            let mut in_sessions = Vec::new();
-            let mut out_endpoints = HashSet::new();
-            let mut in_endpoints = HashSet::new();
+            let mut sessions = Vec::new();
+            let mut endpoints = HashSet::new();
             let mut live = HashSet::new();
             let mut count = 0;
 
@@ -6004,12 +6098,20 @@ fn shutdown_in_session<Types>(
 
                 let (creates, deletes) = entry
                     .listen(
-                        &mut gentok,
-                        &mut out_sessions,
-                        &mut in_sessions,
-                        &mut out_endpoints,
-                        &mut in_endpoints,
-                        poll.registry(),
+                        &mut TestCtx {
+                            registry: poll.registry(),
+                            inner: ctx,
+                            freed: Vec::new(),
+                            tokens: &mut gentok
+                        },
+                        |session| {
+                            sessions.push(session);
+
+                            Ok(())
+                        },
+                        |endpoint| {
+                            endpoints.insert(endpoint);
+                        },
                         &live
                     )
                     .expect("Expected success");
@@ -6030,17 +6132,15 @@ fn shutdown_in_session<Types>(
             trace!(target: "shutdown-in-session",
                    "got outbound session");
 
-            assert!(out_sessions.is_empty());
-            assert!(in_sessions.is_empty());
-            assert!(out_endpoints.is_empty());
-            assert!(in_endpoints.is_empty());
+            assert!(sessions.is_empty());
+            assert!(endpoints.is_empty());
         }
     }
 }
 
 #[cfg(test)]
-fn entry_test<Types, Ctx>(
-    mut nscaches: Ctx,
+fn entry_test<Types>(
+    mut nscaches: SharedNSNameCaches,
     mut acceptor: Types::InChannel,
     out_config: Types::OutConfig,
     in_authn: Types::InAuthN,
@@ -6051,7 +6151,6 @@ fn entry_test<Types, Ctx>(
     in_session: Token,
     out_session: Token
 ) where
-    Ctx: 'static + NSNameCachesCtx + Send,
     Types: NearDuplexNegoTypes,
     Types::InChannel: 'static + Send,
     Types::InAuthN: 'static + Send,
@@ -6059,6 +6158,7 @@ fn entry_test<Types, Ctx>(
     Types::OutAuthN: 'static + Send,
     Types::OutParam: 'static + Send,
     Types::Endpoint: 'static + Send {
+    let mut listen_nscaches = nscaches.clone();
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
 
@@ -6075,7 +6175,8 @@ fn entry_test<Types, Ctx>(
                "listening");
 
         let mut session: Types::InAuthNSession =
-            get_in_session(&mut entry, &mut poll, in_session);
+            get_in_session(&mut listen_nscaches, &mut entry,
+                           &mut poll, in_session);
 
         assert!(!entry.is_empty());
 
@@ -6096,7 +6197,8 @@ fn entry_test<Types, Ctx>(
         trace!(target: "entry-test-server",
                "shutting down");
 
-        shutdown_in_session(&mut entry, &mut poll, session, in_session);
+        shutdown_in_session(&mut listen_nscaches, &mut entry, &mut poll,
+                            session, in_session);
 
         assert!(entry.is_empty());
 
@@ -6141,7 +6243,8 @@ fn entry_test<Types, Ctx>(
         trace!(target: "entry-test-client",
                "shutting down");
 
-        shutdown_out_session(&mut entry, &mut poll, session, out_session);
+        shutdown_out_session(&mut nscaches, &mut entry,
+                             &mut poll, session, out_session);
 
         assert!(entry.is_empty());
         assert_eq!(SECOND_BYTES, buf);
@@ -6155,7 +6258,7 @@ fn entry_test<Types, Ctx>(
 fn compound_entry_test(
     server_conf: &str,
     client_conf: &str,
-    endpoint: CompoundNearNameAddr,
+    endpoint: CompoundNearConcreteAddr,
     param_conf: Option<&str>
 ) {
     init();
@@ -6173,7 +6276,7 @@ fn compound_entry_test(
     let in_session = Token(1);
     let out_session = Token(0);
 
-    entry_test::<TestDuplexNegoTypes, _>(
+    entry_test::<TestDuplexNegoTypes>(
         nscaches,
         acceptor,
         client_conf,
@@ -6194,7 +6297,7 @@ fn test_unix() {
     const SERVER_CONF: &'static str =
         concat!("unix-stream:\n", "  path: test_near_channels_unix.sock");
     const CLIENT_CONF: &'static str = concat!("unix-stream:");
-    let endpoint = CompoundNearNameAddr::Unix {
+    let endpoint = CompoundNearConcreteAddr::Unix {
         unix: UnixSocketAddr::try_from("test_near_channels_unix.sock")
             .expect("Expected success")
     };
@@ -6209,7 +6312,7 @@ fn test_tcp() {
     const SERVER_CONF: &'static str =
         concat!("tcp:\n", "  addr: ::0\n", "  port: 8100\n");
     const CLIENT_CONF: &'static str = concat!("tcp:",);
-    let endpoint = CompoundNearNameAddr::TCP {
+    let endpoint = CompoundNearConcreteAddr::TCP {
         tcp: "[::1]:8100".parse().expect("Expected success")
     };
 
@@ -6258,7 +6361,7 @@ fn test_tls_unix() {
     );
     const PARAM_CONF: &'static str =
         concat!("tls:\n", "  verify-endpoint: test-server.nowhere.com",);
-    let endpoint = CompoundNearNameAddr::Unix {
+    let endpoint = CompoundNearConcreteAddr::Unix {
         unix: UnixSocketAddr::try_from("test_near_channels_tls_unix.sock")
             .expect("Expected success")
     };
@@ -6309,7 +6412,7 @@ fn test_tls_tcp() {
     );
     const PARAM_CONF: &'static str =
         concat!("tls:\n", "  verify-endpoint: test-server.nowhere.com",);
-    let endpoint = CompoundNearNameAddr::TCP {
+    let endpoint = CompoundNearConcreteAddr::TCP {
         tcp: "[::1]:8101".parse().expect("Expected success")
     };
 
