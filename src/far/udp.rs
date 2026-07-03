@@ -90,16 +90,16 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::udp::UDPFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "addr: ::1\n",
 ///     "port: 7006\n",
 /// );
 /// let udp_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
-/// let mut channel = UDPFarChannel::create(&mut nscaches, &mut empty(),
-///                                         udp_config)
+/// let mut channel = UDPFarChannel::create(&mut ctx, udp_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UDPFarChannel {
@@ -134,7 +134,7 @@ impl Source for UDPFarSocket {
         token: Token,
         interests: Interest
     ) -> Result<(), Error> {
-        self.socket.register(&registry, token, interests)
+        self.socket.register(registry, token, interests)
     }
 
     #[inline]
@@ -144,7 +144,7 @@ impl Source for UDPFarSocket {
         token: Token,
         interests: Interest
     ) -> Result<(), Error> {
-        self.socket.reregister(&registry, token, interests)
+        self.socket.reregister(registry, token, interests)
     }
 
     #[inline]
@@ -152,7 +152,7 @@ impl Source for UDPFarSocket {
         &mut self,
         registry: &Registry
     ) -> Result<(), Error> {
-        self.socket.deregister(&registry)
+        self.socket.deregister(registry)
     }
 }
 
@@ -337,7 +337,7 @@ impl FarChannelSocket for UDPFarChannel {
         &self,
         param: &SocketAddr
     ) -> Result<UDPFarSocket, Error> {
-        let socket = UdpSocket::bind(param.clone())?;
+        let socket = UdpSocket::bind(*param)?;
 
         Ok(UDPFarSocket {
             unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
@@ -416,9 +416,7 @@ where
     }
 
     #[inline]
-    fn inbound_nego_param(&self) -> () {
-        ()
-    }
+    fn inbound_nego_param(&self) {}
 
     #[inline]
     fn outbound_negotiator(
@@ -435,9 +433,7 @@ where
     }
 
     #[inline]
-    fn shutdown_nego_param(&self) -> () {
-        ()
-    }
+    fn shutdown_nego_param(&self) {}
 }
 
 impl Socket for UDPFarSocket {
@@ -484,7 +480,7 @@ impl Sender for UDPFarSocket {
         addr: &Self::Addr,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        self.socket.send_to(buf, addr.clone())
+        self.socket.send_to(buf, *addr)
     }
 
     fn send_to_vectored(

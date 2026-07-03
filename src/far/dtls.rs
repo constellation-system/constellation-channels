@@ -124,6 +124,7 @@ use crate::tls::TLSStartError;
 /// # use constellation_channels::far::dtls::DTLSFarChannel;
 /// # use constellation_channels::far::udp::UDPFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "addr: ::1\n",
@@ -136,10 +137,10 @@ use crate::tls::TLSStartError;
 ///     "key: tests/data/certs/server/private/test_server_key.pem\n",
 /// );
 /// let dtls_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let mut channel = DTLSFarChannel::<UDPFarChannel>
-///     ::create(&mut nscaches, &mut empty(), dtls_config)
+///     ::create(&mut ctx, dtls_config)
 ///     .expect("Expected success");
 /// ```
 pub struct DTLSFarChannel<Channel> {
@@ -590,7 +591,6 @@ where
     fn shutdown_nego_param(
         &self
     ) -> <Self::ShutdownNego as NegotiatorStart<(), Self::Flow>>::Param {
-        ()
     }
 }
 

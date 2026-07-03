@@ -129,15 +129,15 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::unix::UnixFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "path: example.sock\n",
 /// );
 /// let unix_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
-/// let mut channel = UnixFarChannel::create(&mut nscaches, &mut empty(),
-///                                          unix_config)
+/// let mut channel = UnixFarChannel::create(&mut ctx, unix_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UnixFarChannel {
@@ -150,11 +150,6 @@ pub struct UnixFarChannel {
 /// This is a wrapper to disambiguate implementations of [Socket],
 /// [Receiver], and [Sender].
 pub struct UnixDatagramSocket {
-    /// The underlying [UnixDatagram].
-    socket: UnixDatagram
-}
-
-pub struct UnixDatagramFlows {
     /// The underlying [UnixDatagram].
     socket: UnixDatagram
 }
@@ -410,9 +405,7 @@ where
     }
 
     #[inline]
-    fn inbound_nego_param(&self) -> () {
-        ()
-    }
+    fn inbound_nego_param(&self) {}
 
     #[inline]
     fn outbound_negotiator(
@@ -429,9 +422,7 @@ where
     }
 
     #[inline]
-    fn shutdown_nego_param(&self) -> () {
-        ()
-    }
+    fn shutdown_nego_param(&self) {}
 }
 
 impl Drop for UnixDatagramSocket {

@@ -232,6 +232,7 @@ use crate::resolve::Resolver;
 /// # use constellation_channels::far::udp::UDPFarChannel;
 /// # use constellation_channels::near::tcp::TCPResolvingNearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "addr: 0.0.0.0\n",
@@ -244,12 +245,11 @@ use crate::resolve::Resolver;
 ///     "  password: abc123\n"
 /// );
 /// let socks5_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let channel: SOCKS5FarChannel<TCPResolvingNearConnector, SocketAddr,
 ///                               UDPFarChannel> =
-///     SOCKS5FarChannel::create(&mut nscaches, &mut once(Token(0)),
-///                              socks5_config).unwrap();
+///     SOCKS5FarChannel::create(&mut ctx, socks5_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections
@@ -300,8 +300,6 @@ where
     datagram: Datagram,
     /// The [NearConnector] that will be used to connect to the proxy.
     proxy: Proxy,
-    /// The current number of retries.
-    nretries: usize,
     /// Token to use for the keepalive connection.
     token: Token
 }
@@ -342,13 +340,9 @@ pub enum SOCKS5AcquiredShutdownPending<Proxy, DatagramState, Datagram> {
 #[derive(Debug)]
 pub enum SOCKS5CreateError<Proxy, Datagram> {
     /// Proxy negotiation channel creation error.
-    Proxy {
-        proxy: Proxy
-    },
+    Proxy { proxy: Proxy },
     /// Datagram channel creation error.
-    Datagram {
-        datagram: Datagram
-    }
+    Datagram { datagram: Datagram }
 }
 
 /// Errors that can occur during the [acquire](FarChannel::acquire)
@@ -487,7 +481,7 @@ where
     fn scope(&self) -> ErrorScope {
         match self {
             SOCKS5CreateError::Proxy { proxy } => proxy.scope(),
-            SOCKS5CreateError::Datagram { datagram } => datagram.scope(),
+            SOCKS5CreateError::Datagram { datagram } => datagram.scope()
         }
     }
 }
@@ -827,10 +821,10 @@ where
         registry: &Registry
     ) -> Result<RetryResult<Self::AcquireState>, Self::AcquireError> {
         self.proxy
-            .start(registry, self.token.clone())
+            .start(registry, self.token)
             .map_err(|err| SOCKS5AcquireError::Proxy { proxy: err })?
             .flat_map_ok(|proxy| {
-                tokens.push(self.token.clone());
+                tokens.push(self.token);
 
                 self.datagram
                     .acquire(tokens, registry)
@@ -1001,7 +995,7 @@ where
                     SOCKS5AcquiredShutdownNegoError::IO { err: err }
                 })?;
 
-                tokens.push(self.token.clone());
+                tokens.push(self.token);
 
                 Ok(self
                     .datagram
@@ -1044,7 +1038,7 @@ where
                             SOCKS5AcquiredShutdownNegoError::IO { err: err }
                         })?;
 
-                        tokens.push(self.token.clone());
+                        tokens.push(self.token);
 
                         Ok(self
                             .datagram
@@ -1187,7 +1181,6 @@ where
             session: Rc::new(RefCell::new(None)),
             auth: auth,
             proxy: proxy,
-            nretries: 0,
             datagram: datagram,
             token: token
         })
@@ -1293,7 +1286,7 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             SOCKS5CreateError::Proxy { proxy } => proxy.fmt(f),
-            SOCKS5CreateError::Datagram { datagram } => datagram.fmt(f),
+            SOCKS5CreateError::Datagram { datagram } => datagram.fmt(f)
         }
     }
 }

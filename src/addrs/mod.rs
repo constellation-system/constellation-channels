@@ -131,8 +131,8 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
-use constellation_common::retry::RetryResult;
 use constellation_common::retry::RetryIndefResult;
+use constellation_common::retry::RetryResult;
 use constellation_common::sched::EpochChange;
 use constellation_common::sched::History;
 use constellation_common::sched::Policy;
@@ -305,9 +305,9 @@ where
         let policy = SocketAddrPolicy::create(&addr_policy);
         let sched = Scheduler::new((), retry, policy, epochs)
             .map_err(AddrsCreateError::Refresh)?;
-        let resolver = MixedResolver::create(ctx, resolver,
-                                             endpoints.into_iter())
-            .map_err(AddrsCreateError::Resolver)?;
+        let resolver =
+            MixedResolver::create(ctx, resolver, endpoints.into_iter())
+                .map_err(AddrsCreateError::Resolver)?;
 
         Ok(AddrMultiplexer {
             sched: sched,
@@ -396,12 +396,13 @@ where
         refresh: Option<EpochChange<Epochs::Item, SocketAddr, IPEndpointAddr>>
     ) -> Result<RetryResult<AddrSelectResult<Epochs::Item>>, AddrsError> {
         match self.sched.select().map_err(AddrsError::Select)? {
-            RetryIndefResult::Success((addr, endpoint, _)) =>
+            RetryIndefResult::Success((addr, endpoint, _)) => {
                 Ok(RetryResult::Success(AddrSelectResult {
                     addr: addr,
                     endpoint: endpoint,
                     epoch: refresh
-                })),
+                }))
+            }
             RetryIndefResult::Retry(when) => Ok(RetryResult::Retry(when)),
             // Uninitialized static multiplexer.  This should
             // never happen.

@@ -222,6 +222,7 @@ pub enum CompoundFarIPChannel {
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::compound::CompoundFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "dtls:\n",
@@ -235,10 +236,10 @@ pub enum CompoundFarIPChannel {
 ///     "    port: 7002\n"
 /// );
 /// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
-/// let connector = CompoundFarChannel::create(&mut nscaches, &mut empty(),
-///                                            accept_config).unwrap();
+/// let connector = CompoundFarChannel::create(&mut ctx, accept_config)
+///     .unwrap();
 /// ```
 pub enum CompoundFarChannel {
     #[cfg(feature = "unix")]
@@ -1352,10 +1353,8 @@ impl FarChannelAcquiredResolve for CompoundFarChannelAcquired {
                 AcquiredResolver::Resolve { resolver } => {
                     Ok(AcquiredResolver::Resolve { resolver })
                 }
-                AcquiredResolver::StaticMulti { mut params } => {
-                    Ok(AcquiredResolver::StaticMulti {
-                        params: params.drain(..).collect()
-                    })
+                AcquiredResolver::StaticMulti { params } => {
+                    Ok(AcquiredResolver::StaticMulti { params: params })
                 }
                 AcquiredResolver::StaticSingle { param } => {
                     Ok(AcquiredResolver::StaticSingle { param: param })
@@ -2804,13 +2803,10 @@ impl FarChannelCreate for CompoundFarIPChannel {
                 })
             }
             CompoundFarIPChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 =
-                    SOCKS5FarChannel::create(caches, *socks5_udp)
-                        .map_err(|err| {
-                            CompoundFarChannelCreateError::SOCKS5 {
-                                socks5: Box::new(err)
-                            }
-                        })?;
+                let socks5 = SOCKS5FarChannel::create(caches, *socks5_udp)
+                    .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
+                        socks5: Box::new(err)
+                    })?;
 
                 Ok(CompoundFarIPChannel::SOCKS5 {
                     socks5: Box::new(socks5)
@@ -3125,11 +3121,10 @@ impl FarChannelCreate for CompoundFarChannel {
         Ctx: NSNameCachesCtx + TokensCtx {
         match config {
             CompoundFarChannelConfig::Unix { unix_datagram } => {
-                let unix =
-                    UnixFarChannel::create(caches, unix_datagram)
-                        .map_err(|err| CompoundFarChannelCreateError::IO {
-                            err: err
-                        })?;
+                let unix = UnixFarChannel::create(caches, unix_datagram)
+                    .map_err(|err| CompoundFarChannelCreateError::IO {
+                        err: err
+                    })?;
 
                 Ok(CompoundFarChannel::Unix { unix: unix })
             }
@@ -3148,13 +3143,10 @@ impl FarChannelCreate for CompoundFarChannel {
                 })
             }
             CompoundFarChannelConfig::SOCKS5 { socks5_udp } => {
-                let socks5 =
-                    SOCKS5FarChannel::create(caches, *socks5_udp)
-                        .map_err(|err| {
-                            CompoundFarChannelCreateError::SOCKS5 {
-                                socks5: Box::new(err)
-                            }
-                        })?;
+                let socks5 = SOCKS5FarChannel::create(caches, *socks5_udp)
+                    .map_err(|err| CompoundFarChannelCreateError::SOCKS5 {
+                        socks5: Box::new(err)
+                    })?;
 
                 Ok(CompoundFarChannel::IP {
                     ip: CompoundFarIPChannel::SOCKS5 {
@@ -4687,9 +4679,7 @@ where
     }
 
     #[inline]
-    fn inbound_nego_param(&self) -> () {
-        ()
-    }
+    fn inbound_nego_param(&self) {}
 
     fn outbound_negotiator(
         &self
@@ -4750,9 +4740,7 @@ where
     }
 
     #[inline]
-    fn shutdown_nego_param(&self) -> () {
-        ()
-    }
+    fn shutdown_nego_param(&self) {}
 }
 
 impl<Unix, UDP>
@@ -4783,9 +4771,7 @@ where
     }
 
     #[inline]
-    fn inbound_nego_param(&self) -> () {
-        ()
-    }
+    fn inbound_nego_param(&self) {}
 
     #[inline]
     fn outbound_negotiator(
@@ -4808,9 +4794,7 @@ where
     }
 
     #[inline]
-    fn shutdown_nego_param(&self) -> () {
-        ()
-    }
+    fn shutdown_nego_param(&self) {}
 }
 
 impl<Unix, UDP>
@@ -4865,9 +4849,7 @@ where
     }
 
     #[inline]
-    fn inbound_nego_param(&self) -> () {
-        ()
-    }
+    fn inbound_nego_param(&self) {}
 
     fn outbound_negotiator(
         &self
@@ -4933,9 +4915,7 @@ where
     }
 
     #[inline]
-    fn shutdown_nego_param(&self) -> () {
-        ()
-    }
+    fn shutdown_nego_param(&self) {}
 }
 
 impl<Unix, UDP>
@@ -4966,9 +4946,7 @@ where
     }
 
     #[inline]
-    fn inbound_nego_param(&self) -> () {
-        ()
-    }
+    fn inbound_nego_param(&self) {}
 
     #[inline]
     fn outbound_negotiator(
@@ -4991,9 +4969,7 @@ where
     }
 
     #[inline]
-    fn shutdown_nego_param(&self) -> () {
-        ()
-    }
+    fn shutdown_nego_param(&self) {}
 }
 
 impl<Unix, UDP> Session for CompoundFlow<Unix, UDP>

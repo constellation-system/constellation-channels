@@ -521,9 +521,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     fn cleanup(
         &mut self,
@@ -853,9 +851,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     fn cleanup(
         &mut self,
@@ -1104,9 +1100,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     fn cleanup(
         &mut self,

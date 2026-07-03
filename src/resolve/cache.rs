@@ -36,9 +36,10 @@ use std::time::Instant;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
-use constellation_common::retry::Retry;
 use constellation_common::retry::next_retry_definite;
+use constellation_common::retry::Retry;
 use constellation_common::shutdown::ShutdownFlag;
+use constellation_streams::threads::WithTokens;
 use log::debug;
 use log::error;
 use log::info;
@@ -458,10 +459,9 @@ fn run_refresh_thread(
                                     Some(prev) => {
                                         let when = prev + renewal;
 
-                                        earliest = Some(
-                                            next_retry_definite(&earliest,
-                                                                &when)
-                                        );
+                                        earliest = Some(next_retry_definite(
+                                            &earliest, &when
+                                        ));
                                     }
                                     // The entry is brand new, and
                                     // needs to be resolved for the
@@ -471,10 +471,10 @@ fn run_refresh_thread(
                                            "entry for {} not initialized",
                                            name);
 
-                                        earliest = Some(
-                                            next_retry_definite(&earliest,
-                                                                &Instant::now())
-                                        );
+                                        earliest = Some(next_retry_definite(
+                                            &earliest,
+                                            &Instant::now()
+                                        ));
                                     }
                                 }
                             }
@@ -494,9 +494,10 @@ fn run_refresh_thread(
                                "entry for {} is expired",
                                name);
 
-                        earliest = Some(
-                            next_retry_definite(&earliest, &Instant::now())
-                        );
+                        earliest = Some(next_retry_definite(
+                            &earliest,
+                            &Instant::now()
+                        ));
                     }
                 }
 
@@ -530,9 +531,9 @@ fn run_refresh_thread(
                                     let (_, _, when) = guard
                                         .check_refresh(name, renewal, &retry);
 
-                                    earliest = Some(
-                                        next_retry_definite(&earliest, &when)
-                                    );
+                                    earliest = Some(next_retry_definite(
+                                        &earliest, &when
+                                    ));
                                 }
                                 Err(_) => {
                                     error!(target: "ns-name-cache-refresh",
@@ -582,6 +583,18 @@ fn run_refresh_thread(
 
     info!(target: "ns-name-cache-refresh",
           "name caches have been dropped, refresher thread exiting")
+}
+
+impl<T> NSNameCachesCtx for WithTokens<T>
+where
+    T: NSNameCachesCtx
+{
+    type NameCaches = T::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut T::NameCaches {
+        self.inner_mut().name_caches()
+    }
 }
 
 impl NSNameCachesCtx for SharedNSNameCaches {

@@ -90,20 +90,19 @@ where
     Flow: Session + Read + Write {
     type AuthConfig: Clone;
     type Prin: Display;
-    type AuthNSession: AuthNed<Self::Prin, Flow> + Clone;
+    type AuthNSession: AuthNed<Self::Prin, Flow>;
     type AuthPending;
     type AuthCreateError: Debug + Display;
     type AuthStartError: Debug + Display + ScopedError;
     type AuthNegoError: Debug + Display + ScopedError;
     type AuthN: SessionAuthN<
-        Flow,
-        Param = (),
-        AuthNSession = Self::AuthNSession,
-        Pending = Self::AuthPending,
-        StartError = Self::AuthStartError,
-        NegotiateError = Self::AuthNegoError
-    > + Create<Config = Self::AuthConfig,
-               CreateError = Self::AuthCreateError>;
+            Flow,
+            Param = (),
+            AuthNSession = Self::AuthNSession,
+            Pending = Self::AuthPending,
+            StartError = Self::AuthStartError,
+            NegotiateError = Self::AuthNegoError
+        > + Create<Config = Self::AuthConfig, CreateError = Self::AuthCreateError>;
     type ShutdownParam: Clone + Default;
     type ShutdownPending;
     type ShutdownStartError: Debug + Display + ScopedError;
@@ -126,8 +125,11 @@ where
     type SockAddr: Clone
         + Display
         + TryFrom<Self::LocalAddr, Error = Self::ConvertError>;
-    type ChannelParam: Clone + Display + Eq + Hash +
-        ChannelParam<Self::PeerAddr>;
+    type ChannelParam: Clone
+        + Display
+        + Eq
+        + Hash
+        + ChannelParam<Self::PeerAddr>;
     type ConvertError: Debug + Display;
     type Sock: Source + Socket<Addr = Self::SockAddr> + Sender + Receiver;
     type Xfrm: DatagramXfrm<
@@ -212,14 +214,12 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
             InboundNegoError = Self::InboundNegoCreateError,
             OutboundNegoError = Self::OutboundNegoCreateError,
             ShutdownNegoError = Self::ShutdownNegoCreateError
-        > + FarChannelSocket<Socket = Self::Sock,
-                             SocketError = Self::SocketError
-        > + FarChannelXfrm<
+        > + FarChannelSocket<Socket = Self::Sock, SocketError = Self::SocketError>
+        + FarChannelXfrm<
             Self::Xfrm,
             Self::InnerXfrm,
             XfrmError = Self::XfrmCreateError
-        > + FarChannelCreate<Config = Self::Config,
-                             CreateError = Self::CreateError>;
+        > + FarChannelCreate<Config = Self::Config, CreateError = Self::CreateError>;
 }
 
 #[derive(Debug)]
@@ -291,7 +291,6 @@ impl<AuthN, Unix, UDP> FlowAuthNShutdownTypes<CompoundFlow<Unix, UDP>>
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
-    AuthN::AuthNSession: Clone,
     AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
@@ -301,10 +300,10 @@ where
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
 {
-    type AuthN = AuthN;
     type AuthConfig = AuthN::Config;
-    type AuthNSession = AuthN::AuthNSession;
     type AuthCreateError = AuthN::CreateError;
+    type AuthN = AuthN;
+    type AuthNSession = AuthN::AuthNSession;
     type AuthNegoError = AuthN::NegotiateError;
     type AuthPending = AuthN::Pending;
     type AuthStartError = AuthN::StartError;
@@ -320,7 +319,6 @@ impl<AuthN, Unix, UDP> FlowsEntryTypes<CompoundFlow<Unix, UDP>>
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
-    AuthN::AuthNSession: Clone,
     AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
@@ -330,6 +328,7 @@ where
     Unix::Error: ScopedError,
     UDP::Error: ScopedError
 {
+    type ChannelParam = CompoundFarChannelParam;
     type ConvertError = Infallible;
     type InNegoError = CompoundNegotiateError;
     type InParam = ();
@@ -345,7 +344,6 @@ where
     type PeerAddr = CompoundFarChannelXfrmPeerAddr;
     type Sock = CompoundFarChannelSocket;
     type SockAddr = CompoundFarChannelAddr;
-    type ChannelParam = CompoundFarChannelParam;
     type Xfrm = CompoundFarChannelXfrm<Unix, UDP>;
     type XfrmError = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
 }
@@ -354,7 +352,6 @@ impl<AuthN, Unix, UDP> FarChannelsTypes
     for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
-    AuthN::AuthNSession: Clone,
     AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>

@@ -20,6 +20,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::large_enum_variant)]
 #![allow(incomplete_features)]
 #![feature(peer_credentials_unix_socket)]
 #![feature(get_mut_unchecked)]

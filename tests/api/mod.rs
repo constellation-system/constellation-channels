@@ -25,13 +25,16 @@ mod far;
 mod near;
 
 pub(crate) struct ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx {
     inner: Ctx,
     tokens: Tokens
 }
 
 impl<Ctx> ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx
+{
     #[inline]
     fn new(ctx: Ctx) -> Self {
         ExampleCtx {
@@ -42,7 +45,9 @@ where Ctx: NSNameCachesCtx {
 }
 
 impl<Ctx> NSNameCachesCtx for ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx
+{
     type NameCaches = Ctx::NameCaches;
 
     #[inline]
@@ -52,7 +57,9 @@ where Ctx: NSNameCachesCtx {
 }
 
 impl<Ctx> TokensCtx for ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx
+{
     #[inline]
     fn token(&mut self) -> Token {
         self.tokens.token()

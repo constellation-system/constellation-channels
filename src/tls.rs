@@ -63,7 +63,9 @@ pub struct TLSShutdownNegotiator<Stream, Inner, Value> {
     timeout: Duration,
     /// Retry configuration for sending shutdown messages.
     retry: Retry,
-    inner: Inner
+    // This field is here for when we are able to properly shut down
+    // nested TLS sessions.
+    _inner: Inner
 }
 
 /// [Negotiator] state for shutting down sessions for [TLSNearChannel].
@@ -135,7 +137,7 @@ where
             value: PhantomData,
             timeout: timeout,
             retry: retry,
-            inner: inner
+            _inner: inner
         }
     }
 }

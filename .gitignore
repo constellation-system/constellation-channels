@@ -12,5 +12,5 @@ rust-toolchain.toml
 src/generated/*
 !src/generated/mod.rs
 
-test/data/certs/client
-test/data/certs/server
+tests/data/certs/client/
+tests/data/certs/server/

@@ -135,10 +135,7 @@ pub struct UnixNearAcceptor {
 
 /// The [NearSocketParams] instance used by [NearSocketConnector].
 #[doc(hidden)]
-pub struct UnixNearConnectorParams {
-    /// The endpoint to which this connector will try to connect.
-    path: UnixSocketPath
-}
+pub struct UnixNearConnectorParams;
 
 /// Client side of a Unix socket near-link channel.
 ///
@@ -323,9 +320,7 @@ impl NearChannel for UnixNearAcceptor {
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(
@@ -422,9 +417,7 @@ impl NearChannel for UnixNearConnector {
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(

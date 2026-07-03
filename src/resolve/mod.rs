@@ -211,8 +211,7 @@ where
     }
 }
 
-impl<Addr, Origin, Ctx> AddrsCreate<Ctx>
-    for MixedResolver<Addr, Origin>
+impl<Addr, Origin, Ctx> AddrsCreate<Ctx> for MixedResolver<Addr, Origin>
 where
     Ctx: NSNameCachesCtx,
     Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash,
@@ -230,8 +229,8 @@ where
         config: Self::Config,
         origins: I
     ) -> Result<Self, Self::CreateError>
-    where I: Iterator<Item = IPEndpoint>
-    {
+    where
+        I: Iterator<Item = IPEndpoint> {
         let (mut fixed, mut resolved) =
             if let (_, Some(hint)) = origins.size_hint() {
                 (Vec::with_capacity(hint), Vec::with_capacity(hint))
@@ -320,8 +319,7 @@ where
     fn addrs(
         &mut self
     ) -> Result<
-        RetryResult<(IntoIter<(Addr, IPEndpoint, Instant)>,
-                     Option<Instant>)>,
+        RetryResult<(IntoIter<(Addr, IPEndpoint, Instant)>, Option<Instant>)>,
         NSNameCacheError
     > {
         Ok(self.snapshot()?.map(|(snapshot, cached_when)| {
@@ -345,8 +343,7 @@ where
         origin: I
     ) -> Result<Self, Self::CreateError>
     where
-        I: Iterator<Item = (String, u16)>,
-    {
+        I: Iterator<Item = (String, u16)> {
         let (renewal, retry) = config.take();
         let caches = ctx.name_caches();
         let names = caches.ns_names(origin)?;

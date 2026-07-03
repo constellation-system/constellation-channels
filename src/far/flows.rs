@@ -1027,7 +1027,7 @@ where
                     .map_err(|_| {
                         Error::new(ErrorKind::Other, "socket get mut failed")
                     })?
-                    .send_to(&addr, &buf)
+                    .send_to(&addr, buf)
                     .or_else(|err| {
                         if err.kind() == ErrorKind::WouldBlock {
                             // Would block.  Buffer the message and succeed.

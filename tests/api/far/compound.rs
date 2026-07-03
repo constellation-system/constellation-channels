@@ -17,7 +17,6 @@
 // <https://www.gnu.org/licenses/>.
 
 use std::convert::TryFrom;
-use std::iter::empty;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -26,9 +25,6 @@ use std::thread::spawn;
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FlowsConfig;
-use constellation_channels::far::FarChannel;
-use constellation_channels::far::FarChannelCreate;
-use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::compound::CompoundFarChannel;
 use constellation_channels::far::compound::CompoundFarChannelAcquireState;
 use constellation_channels::far::compound::CompoundFarChannelParam;
@@ -44,6 +40,9 @@ use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPDatagramXfrm;
 use constellation_channels::far::unix::UnixDatagramXfrm;
+use constellation_channels::far::FarChannel;
+use constellation_channels::far::FarChannelCreate;
+use constellation_channels::far::FarChannelFlows;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpointAddr;
@@ -53,8 +52,8 @@ use mio::Interest;
 use mio::Poll;
 use mio::Token;
 
-use crate::init;
 use crate::api::ExampleCtx;
+use crate::init;
 
 #[test]
 fn test_compound_dtls_unix() {
@@ -120,11 +119,8 @@ fn test_compound_dtls_unix() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut ctx = ExampleCtx::new(server_nscaches);
-        let mut listener = CompoundFarChannel::create(
-            &mut ctx,
-            server_config
-        )
-        .expect("Expected success");
+        let mut listener = CompoundFarChannel::create(&mut ctx, server_config)
+            .expect("Expected success");
         let config = FlowsConfig::default();
         let acquire = match listener
             .acquire(&mut vec![], poll.registry())
@@ -204,11 +200,8 @@ fn test_compound_dtls_unix() {
             ))
         };
         let mut ctx = ExampleCtx::new(client_nscaches);
-        let mut conn = CompoundFarChannel::create(
-            &mut ctx,
-            client_config
-        )
-        .expect("expected success");
+        let mut conn = CompoundFarChannel::create(&mut ctx, client_config)
+            .expect("expected success");
         let config = FlowsConfig::default();
         let acquire = match conn
             .acquire(&mut vec![], poll.registry())
@@ -342,11 +335,8 @@ fn test_compound_dtls_udp() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut ctx = ExampleCtx::new(server_nscaches);
-        let mut listener = CompoundFarChannel::create(
-            &mut ctx,
-            server_config
-        )
-        .expect("Expected success");
+        let mut listener = CompoundFarChannel::create(&mut ctx, server_config)
+            .expect("Expected success");
         let config = FlowsConfig::default();
         let acquire = match listener
             .acquire(&mut vec![], poll.registry())
@@ -427,11 +417,8 @@ fn test_compound_dtls_udp() {
             ))
         };
         let mut ctx = ExampleCtx::new(client_nscaches);
-        let mut conn = CompoundFarChannel::create(
-            &mut ctx,
-            client_config
-        )
-        .expect("expected success");
+        let mut conn = CompoundFarChannel::create(&mut ctx, client_config)
+            .expect("expected success");
         let config = FlowsConfig::default();
         let acquire = match conn
             .acquire(&mut vec![], poll.registry())
@@ -597,11 +584,8 @@ fn test_compound_dtls_double() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut ctx = ExampleCtx::new(server_nscaches);
-        let mut listener = CompoundFarChannel::create(
-            &mut ctx,
-            server_config
-        )
-        .expect("Expected success");
+        let mut listener = CompoundFarChannel::create(&mut ctx, server_config)
+            .expect("Expected success");
         let config = FlowsConfig::default();
         let acquire = match listener
             .acquire(&mut vec![], poll.registry())
@@ -684,11 +668,8 @@ fn test_compound_dtls_double() {
             dtls: Box::new(DTLSOutboundParam::new(endpoint, negoparam))
         };
         let mut ctx = ExampleCtx::new(client_nscaches);
-        let mut conn = CompoundFarChannel::create(
-            &mut ctx,
-            client_config
-        )
-        .expect("expected success");
+        let mut conn = CompoundFarChannel::create(&mut ctx, client_config)
+            .expect("expected success");
         let config = FlowsConfig::default();
         let acquire = match conn
             .acquire(&mut vec![], poll.registry())

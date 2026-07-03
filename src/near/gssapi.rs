@@ -168,12 +168,14 @@ pub struct ClientGSSAPIParams {
 }
 
 pub struct GSSAPIClientNegotiation<Inner> {
-    params: ClientGSSAPIParams,
+    // XXX Figure out what to do with these
+    _params: ClientGSSAPIParams,
     inner: Inner
 }
 
 pub struct GSSAPIServerNegotiation<Inner> {
-    params: ServerGSSAPIConfig,
+    // XXX Figure out what to do with these
+    _params: ServerGSSAPIConfig,
     inner: Inner
 }
 
@@ -1076,7 +1078,7 @@ where
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         Ok(self.inner.start(registry, token)?.map(|inner| {
             GSSAPIServerNegotiation {
-                params: self.params.clone(),
+                _params: self.params.clone(),
                 inner: inner
             }
         }))
@@ -1317,7 +1319,7 @@ where
     ) -> Result<RetryResult<Self::State>, Self::StartError> {
         Ok(self.inner.start(registry, token)?.map(|inner| {
             GSSAPIClientNegotiation {
-                params: self.params.clone(),
+                _params: self.params.clone(),
                 inner: inner
             }
         }))

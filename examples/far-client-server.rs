@@ -52,7 +52,6 @@ use mio::Poll;
 use mio::Token;
 
 const CHANNEL_PATH: &'static str = "test_compound_dtls_double_server.sock";
-const CLIENT_PATH: &'static str = "test_compound_dtls_double_client.sock";
 
 const SERVER_CONFIG: &'static str = concat!(
     "dtls:\n",
@@ -123,13 +122,16 @@ const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
 struct ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx {
     inner: Ctx,
     tokens: Tokens
 }
 
 impl<Ctx> NSNameCachesCtx for ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx
+{
     type NameCaches = Ctx::NameCaches;
 
     #[inline]
@@ -139,7 +141,9 @@ where Ctx: NSNameCachesCtx {
 }
 
 impl<Ctx> TokensCtx for ExampleCtx<Ctx>
-where Ctx: NSNameCachesCtx {
+where
+    Ctx: NSNameCachesCtx
+{
     #[inline]
     fn token(&mut self) -> Token {
         self.tokens.token()

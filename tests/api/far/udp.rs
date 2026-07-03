@@ -23,14 +23,14 @@ use std::thread::spawn;
 
 use constellation_channels::config::FlowsConfig;
 use constellation_channels::config::UDPFarChannelConfig;
-use constellation_channels::far::FarChannel;
-use constellation_channels::far::FarChannelCreate;
-use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::flows::accept_one;
 use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPFarChannel;
+use constellation_channels::far::FarChannel;
+use constellation_channels::far::FarChannelCreate;
+use constellation_channels::far::FarChannelFlows;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::retry::RetryResult;
@@ -38,8 +38,8 @@ use mio::Interest;
 use mio::Poll;
 use mio::Token;
 
-use crate::init;
 use crate::api::ExampleCtx;
+use crate::init;
 
 #[test]
 fn test_send_recv() {
@@ -67,11 +67,8 @@ fn test_send_recv() {
     let listen = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut ctx = ExampleCtx::new(server_nscaches);
-        let mut listener = UDPFarChannel::create(
-            &mut ctx,
-            server_config
-        )
-        .expect("Expected success");
+        let mut listener = UDPFarChannel::create(&mut ctx, server_config)
+            .expect("Expected success");
         let config = FlowsConfig::default();
         let param = match listener
             .acquire(&mut vec![], poll.registry())
@@ -129,11 +126,8 @@ fn test_send_recv() {
     let send = spawn(move || {
         let mut poll = Poll::new().expect("Expected success");
         let mut ctx = ExampleCtx::new(client_nscaches);
-        let mut conn = UDPFarChannel::create(
-            &mut ctx,
-            client_config
-        )
-        .expect("expected success");
+        let mut conn = UDPFarChannel::create(&mut ctx, client_config)
+            .expect("expected success");
         let config = FlowsConfig::default();
         let param = match conn
             .acquire(&mut vec![], poll.registry())

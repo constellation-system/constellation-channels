@@ -788,6 +788,20 @@ pub enum CompoundNegotiatorStartError {
     Mismatch
 }
 
+impl From<CompoundNearConcreteAddr> for CompoundNearNameAddr {
+    #[inline]
+    fn from(val: CompoundNearConcreteAddr) -> CompoundNearNameAddr {
+        match val {
+            CompoundNearConcreteAddr::Unix { unix } => {
+                CompoundNearNameAddr::Unix { unix: unix }
+            }
+            CompoundNearConcreteAddr::TCP { tcp } => {
+                CompoundNearNameAddr::TCP { tcp: tcp }
+            }
+        }
+    }
+}
+
 impl<'a> TryFrom<CompoundNearNameAddrRef<'a>> for CompoundNearNameAddr {
     type Error = Error;
 
@@ -802,7 +816,7 @@ impl<'a> TryFrom<CompoundNearNameAddrRef<'a>> for CompoundNearNameAddr {
                 })
             }
             CompoundNearNameAddrRef::TCP { tcp } => {
-                Ok(CompoundNearNameAddr::TCP { tcp: tcp.clone() })
+                Ok(CompoundNearNameAddr::TCP { tcp: *tcp })
             }
             CompoundNearNameAddrRef::SOCKS5 { socks5 } => {
                 Ok(CompoundNearNameAddr::SOCKS5 {
@@ -2195,9 +2209,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     fn cleanup(
         &mut self,
@@ -2337,9 +2349,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(
@@ -2605,9 +2615,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     fn cleanup(
         &mut self,
@@ -2780,9 +2788,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(
@@ -3458,9 +3464,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     fn cleanup(
         &mut self,
@@ -3719,9 +3723,7 @@ where
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(

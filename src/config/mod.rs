@@ -65,8 +65,6 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
 use serde::de::MapAccess;
-use serde::de::SeqAccess;
-use serde::de::Unexpected;
 use serde::de::Visitor;
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
@@ -182,12 +180,11 @@ pub struct AddrsConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "channel-registry")]
 #[serde(rename_all = "kebab-case")]
-pub struct FarChannelsConfig<Channel, AuthN, Shutdown, Xfrm>
+pub struct FarChannelsConfig<Channel, AuthN, Xfrm>
 where
-    Shutdown: Default,
     Xfrm: Default {
     /// Configuration of all channels.
-    channels: Vec<FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>>,
+    channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm>>,
     /// Resolver configuration.
     #[serde(default)]
     default_resolve: AddrsConfig,
@@ -199,11 +196,9 @@ where
     /// Flows creation parameters.
     #[serde(default)]
     default_flows_params: FlowsConfig,
-    #[serde(default)]
-    default_shutdown_params: Shutdown,
     /// Retry configuration.
     #[serde(
-        default = "FarChannelsConfig::<Channel, AuthN, Shutdown, Xfrm>::default_retry_value"
+        default = "FarChannelsConfig::<Channel, AuthN, Xfrm>::default_retry_value"
     )]
     default_retry: Retry,
     #[serde(default)]
@@ -261,9 +256,8 @@ where
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "far-channel-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>
+pub struct FarChannelEntryConfig<Channel, AuthN, Xfrm>
 where
-    Shutdown: Default,
     Xfrm: Default {
     /// Unique name of the channel.
     id: String,
@@ -272,7 +266,7 @@ where
     channel: Channel,
     /// Authenticator configuration.
     #[serde(
-        default = "FarChannelEntryConfig::<Channel, AuthN, Shutdown, Xfrm>::default_authn"
+        default = "FarChannelEntryConfig::<Channel, AuthN, Xfrm>::default_authn"
     )]
     authn: Option<AuthN>,
     /// Resolver configuration.
@@ -284,8 +278,6 @@ where
     /// Flows creation parameters.
     #[serde(default)]
     flows_params: Option<FlowsConfig>,
-    #[serde(default)]
-    shutdown_params: Option<Shutdown>,
     /// Retry configuration.
     #[serde(default)]
     retry: Option<Retry>,
@@ -1374,7 +1366,7 @@ pub struct NearChannelOutboundEntryConfig<Out, AuthN> {
     retry: Option<Retry>,
     /// Size hint for number of sessions.
     #[serde(default)]
-    num_sessions: Option<usize>,
+    num_sessions: Option<usize>
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
@@ -1395,7 +1387,7 @@ pub struct NearChannelInboundEntryConfig<In, AuthN> {
     retry: Option<Retry>,
     /// Size hint for number of sessions.
     #[serde(default)]
-    num_sessions: Option<usize>,
+    num_sessions: Option<usize>
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
@@ -1423,7 +1415,7 @@ pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
     retry: Option<Retry>,
     /// Size hint for number of sessions.
     #[serde(default)]
-    num_sessions: Option<usize>,
+    num_sessions: Option<usize>
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
@@ -1458,7 +1450,7 @@ pub struct NearChannelsConfig<In, Out, InAuthN, OutAuthN> {
     )]
     default_retry: Retry,
     #[serde(default)]
-    default_num_sessions: Option<usize>,
+    default_num_sessions: Option<usize>
 }
 
 /// Name resolution configuration.
@@ -2111,19 +2103,6 @@ pub struct TCPResolvingNearConnectorPartialConfig {
     resolve: AddrsConfig
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct TCPNearConnectorConfig {
-    #[serde(rename = "unsafe")]
-    #[serde(default)]
-    unsafe_opts: TCPNearChannelConfigUnsafe,
-    #[serde(flatten)]
-    endpoint: IPEndpoint,
-    /// Retry spec.
-    #[serde(default)]
-    retry: Retry
-}
-
 #[derive(
     Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
 )]
@@ -2132,10 +2111,7 @@ pub struct TCPNearConnectorConfig {
 pub struct TCPNearConnectorPartialConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
-    unsafe_opts: TCPNearChannelConfigUnsafe,
-    /// Retry spec.
-    #[serde(default)]
-    retry: Retry
+    unsafe_opts: TCPNearChannelConfigUnsafe
 }
 
 /// TLS near-link channel configuration meta-type.
@@ -2430,65 +2406,6 @@ pub struct UnixNearChannelConfig {
     path: PathBuf
 }
 
-/// Unix socket near-link client-side configuration.
-///
-/// This holds configuration information for near-link clients
-/// communicating over Unix domain sockets.
-///
-/// # YAML Format
-///
-/// The YAML format has two fields, one of which is mandatory:
-///
-/// - A [UnixNearChannelConfig] flattened, so its fields will be directly
-///   incorporated.  These are:
-///
-///   - `path`: The path at which the Unix socket exists in the filesystem.
-///
-/// - `retry`: A [Retry] configuration, describing the retry delay policy when
-///   connection attempts fail.  The default values will be used if this field
-///   is not present.
-///
-/// ## Examples
-///
-/// The following are example YAML configurations.
-///
-/// ### Full Specification
-///
-/// The following is an example of the YAML format with all fields
-/// present:
-///
-/// ```yaml
-/// path: /var/run/test/test.sock
-/// retry:
-///   factor: 100
-///   exp-base: 2.0
-///   exp-factor: 1.0
-///   exp-rounds-cap: 20
-///   linear-factor: 1.0
-///   linear-rounds-cap: 50
-///   max-random: 100
-///   addend: 50
-/// ```
-///
-/// ### Minimal Specification
-///
-/// The following is a minimal YAML format:
-///
-/// ```yaml
-/// path: /var/run/test/test.sock
-/// ```
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename = "unix-connector")]
-#[serde(rename_all = "kebab-case")]
-pub struct UnixNearConnectorConfig {
-    /// Channel configuration.
-    #[serde(flatten)]
-    channel: UnixNearChannelConfig,
-    /// Retry configuration.
-    #[serde(default)]
-    retry: Retry
-}
-
 #[derive(
     Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
 )]
@@ -2496,9 +2413,8 @@ pub struct UnixNearConnectorConfig {
 #[serde(rename_all = "kebab-case")]
 #[serde(default)]
 pub struct UnixNearConnectorPartialConfig {
-    /// Retry configuration.
-    #[serde(default)]
-    retry: Retry
+    #[serde(skip)]
+    placeholder: ()
 }
 
 #[derive(Clone)]
@@ -2784,10 +2700,8 @@ impl AddrsConfig {
     }
 }
 
-impl<Channel, AuthN, Shutdown, Xfrm>
-    FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>
+impl<Channel, AuthN, Xfrm> FarChannelEntryConfig<Channel, AuthN, Xfrm>
 where
-    Shutdown: Default,
     Xfrm: Default
 {
     /// Create a new `ChannelRegistryEntryConfig` from its components.
@@ -2802,7 +2716,6 @@ where
         authn_config: Option<AuthN>,
         flows_params: Option<FlowsConfig>,
         xfrm_params: Option<Xfrm>,
-        shutdown_params: Option<Shutdown>,
         retry: Option<Retry>,
         flows_size_hint: Option<usize>
     ) -> Self {
@@ -2813,7 +2726,6 @@ where
             authn: authn_config,
             flows_params: flows_params,
             xfrm_params: xfrm_params,
-            shutdown_params: shutdown_params,
             retry: retry,
             flows_size_hint: flows_size_hint
         }
@@ -2865,12 +2777,6 @@ where
         self.xfrm_params.as_ref()
     }
 
-    /// Get the shutdown [Negotiator] creation parameters.
-    #[inline]
-    pub fn shutdown_params(&self) -> Option<&Shutdown> {
-        self.shutdown_params.as_ref()
-    }
-
     /// Decompose a `FarChannelEntryConfig` into its components.
     #[inline]
     pub fn take(
@@ -2882,7 +2788,6 @@ where
         Option<AuthN>,
         Option<FlowsConfig>,
         Option<Xfrm>,
-        Option<Shutdown>,
         Option<Retry>,
         Option<usize>
     ) {
@@ -2893,7 +2798,6 @@ where
             self.authn,
             self.flows_params,
             self.xfrm_params,
-            self.shutdown_params,
             self.retry,
             self.flows_size_hint
         )
@@ -2933,10 +2837,8 @@ where
     }
 }
 
-impl<Channel, AuthN, Shutdown, Xfrm>
-    FarChannelsConfig<Channel, AuthN, Shutdown, Xfrm>
+impl<Channel, AuthN, Xfrm> FarChannelsConfig<Channel, AuthN, Xfrm>
 where
-    Shutdown: Default,
     Xfrm: Default
 {
     /// Create a new `ChannelRegistryConfig` from its components.
@@ -2945,14 +2847,11 @@ where
     /// fields in the YAML format.  See documentation for details.
     #[inline]
     pub fn new(
-        channels: Vec<
-            FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>
-        >,
+        channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm>>,
         resolve: AddrsConfig,
         authn_config: AuthN,
         flows_params: FlowsConfig,
         xfrm_params: Xfrm,
-        shutdown_params: Shutdown,
         retry: Retry,
         flows_size_hint: Option<usize>
     ) -> Self {
@@ -2962,7 +2861,6 @@ where
             default_authn: authn_config,
             default_flows_params: flows_params,
             default_xfrm_params: xfrm_params,
-            default_shutdown_params: shutdown_params,
             default_retry: retry,
             default_flows_size_hint: flows_size_hint
         }
@@ -2970,9 +2868,7 @@ where
 
     /// Get the channel configurations.
     #[inline]
-    pub fn channels(
-        &self
-    ) -> &[FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>] {
+    pub fn channels(&self) -> &[FarChannelEntryConfig<Channel, AuthN, Xfrm>] {
         &self.channels
     }
 
@@ -2994,12 +2890,6 @@ where
         &self.default_xfrm_params
     }
 
-    /// Get the shutdown creation parameters.
-    #[inline]
-    pub fn shutdown_params(&self) -> &Shutdown {
-        &self.default_shutdown_params
-    }
-
     /// Get the retry configuration.
     #[inline]
     pub fn retry(&self) -> &Retry {
@@ -3016,12 +2906,11 @@ where
     pub fn take(
         self
     ) -> (
-        Vec<FarChannelEntryConfig<Channel, AuthN, Shutdown, Xfrm>>,
+        Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm>>,
         AddrsConfig,
         AuthN,
         FlowsConfig,
         Xfrm,
-        Shutdown,
         Retry,
         Option<usize>
     ) {
@@ -3031,7 +2920,6 @@ where
             self.default_authn,
             self.default_flows_params,
             self.default_xfrm_params,
-            self.default_shutdown_params,
             self.default_retry,
             self.default_flows_size_hint
         )
@@ -3132,22 +3020,22 @@ impl FlowsConfig {
     }
 
     #[inline]
-    fn msgsize(&self) -> usize {
+    pub fn msgsize(&self) -> usize {
         self.msg_size
     }
 
     #[inline]
-    fn bufsize(&self) -> Option<usize> {
+    pub fn bufsize(&self) -> Option<usize> {
         self.buf_size
     }
 
     #[inline]
-    fn nflows(&self) -> Option<usize> {
+    pub fn nflows(&self) -> Option<usize> {
         self.num_flows
     }
 
     #[inline]
-    fn nnegos(&self) -> Option<usize> {
+    pub fn nnegos(&self) -> Option<usize> {
         self.num_negotiations
     }
 
@@ -3163,7 +3051,8 @@ impl FlowsConfig {
 }
 
 impl<In, Out, InAuthN, OutAuthN>
-    NearChannelEntryConfig<In, Out, InAuthN, OutAuthN> {
+    NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>
+{
     pub fn name(&self) -> &str {
         match self {
             NearChannelEntryConfig::Outbound { outbound } => outbound.id(),
@@ -3174,21 +3063,22 @@ impl<In, Out, InAuthN, OutAuthN>
 }
 
 impl<In, Out, InAuthN, OutAuthN>
-    NearChannelsConfig<In, Out, InAuthN, OutAuthN> {
+    NearChannelsConfig<In, Out, InAuthN, OutAuthN>
+{
     #[inline]
     pub fn new(
         channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
         default_inbound_authn: InAuthN,
         default_outbound_authn: OutAuthN,
         default_retry: Retry,
-        default_num_sessions: Option<usize>,
+        default_num_sessions: Option<usize>
     ) -> Self {
         NearChannelsConfig {
-        channels: channels,
-        default_inbound_authn: default_inbound_authn,
-        default_outbound_authn: default_outbound_authn,
-        default_retry: default_retry,
-        default_num_sessions: default_num_sessions,
+            channels: channels,
+            default_inbound_authn: default_inbound_authn,
+            default_outbound_authn: default_outbound_authn,
+            default_retry: default_retry,
+            default_num_sessions: default_num_sessions
         }
     }
 
@@ -3220,15 +3110,22 @@ impl<In, Out, InAuthN, OutAuthN>
     }
 
     #[inline]
-    pub fn take(self) ->
-        (Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
-         InAuthN,
-         OutAuthN,
-         Retry,
-         Option<usize>) {
-        (self.channels, self.default_inbound_authn,
-         self.default_outbound_authn, self.default_retry,
-         self.default_num_sessions)
+    pub fn take(
+        self
+    ) -> (
+        Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+        InAuthN,
+        OutAuthN,
+        Retry,
+        Option<usize>
+    ) {
+        (
+            self.channels,
+            self.default_inbound_authn,
+            self.default_outbound_authn,
+            self.default_retry,
+            self.default_num_sessions
+        )
     }
 
     fn default_retry_value() -> Retry {
@@ -3237,7 +3134,8 @@ impl<In, Out, InAuthN, OutAuthN>
 }
 
 impl<In, Out, InAuthN, OutAuthN>
-    NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
+    NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN>
+{
     #[inline]
     pub fn new(
         id: String,
@@ -3246,7 +3144,7 @@ impl<In, Out, InAuthN, OutAuthN>
         inbound_authn: Option<InAuthN>,
         outbound_authn: Option<OutAuthN>,
         retry: Option<Retry>,
-        num_sessions: Option<usize>,
+        num_sessions: Option<usize>
     ) -> Self {
         NearChannelDuplexEntryConfig {
             id: id,
@@ -3297,8 +3195,15 @@ impl<In, Out, InAuthN, OutAuthN>
     #[inline]
     pub fn take(
         self
-    ) -> (String, In, Out, Option<InAuthN>, Option<OutAuthN>,
-          Option<Retry>, Option<usize>) {
+    ) -> (
+        String,
+        In,
+        Out,
+        Option<InAuthN>,
+        Option<OutAuthN>,
+        Option<Retry>,
+        Option<usize>
+    ) {
         (
             self.id,
             self.listen,
@@ -3306,7 +3211,7 @@ impl<In, Out, InAuthN, OutAuthN>
             self.inbound_authn,
             self.outbound_authn,
             self.retry,
-            self.num_sessions,
+            self.num_sessions
         )
     }
 
@@ -3326,7 +3231,7 @@ impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
         listen: In,
         authn: Option<AuthN>,
         retry: Option<Retry>,
-        num_sessions: Option<usize>,
+        num_sessions: Option<usize>
     ) -> Self {
         NearChannelInboundEntryConfig {
             id: id,
@@ -3371,7 +3276,7 @@ impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
             self.listen,
             self.authn,
             self.retry,
-            self.num_sessions,
+            self.num_sessions
         )
     }
 
@@ -3387,7 +3292,7 @@ impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
         connect: Out,
         authn: Option<AuthN>,
         retry: Option<Retry>,
-        num_sessions: Option<usize>,
+        num_sessions: Option<usize>
     ) -> Self {
         NearChannelOutboundEntryConfig {
             id: id,
@@ -3432,7 +3337,7 @@ impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
             self.connect,
             self.authn,
             self.retry,
-            self.num_sessions,
+            self.num_sessions
         )
     }
 
@@ -4453,170 +4358,21 @@ impl TCPResolvingNearConnectorPartialConfig {
     }
 }
 
-impl TCPNearConnectorConfig {
-    /// Create a new `TCPNearConnectorConfig` from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// The following example shows the equivalence between this
-    /// function and parsing a YAML configuration:
-    ///
-    /// ```
-    /// # use constellation_common::retry::Retry;
-    /// # use constellation_common::net::IPEndpointAddr;
-    /// # use constellation_common::net::IPEndpoint;
-    /// # use constellation_channels::config::AddrKind;
-    /// # use constellation_channels::config::AddrsConfig;
-    /// # use constellation_channels::config::ResolverConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
-    /// # use std::path::PathBuf;
-    /// # use std::time::Duration;
-    /// #
-    /// let yaml = concat!("addr: test.example.com\n",
-    ///                    "port: 5015\n",
-    ///                    "retry:\n",
-    ///                    "  factor: 100ms\n",
-    ///                    "  exp-base: 2.0\n",
-    ///                    "  exp-factor: 1.0\n",
-    ///                    "  exp-rounds-cap: 20\n",
-    ///                    "  linear-factor: 1.0\n",
-    ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100ms\n",
-    ///                    "  addend: 50ms\n");
-    /// let endpoint = IPEndpointAddr::name(String::from("test.example.com"));
-    /// let endpoint = IPEndpoint::new(endpoint, 5015);
-    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
-    ///                        20, 1.0, Some(50), Duration::from_millis(100),
-    ///                        Duration::from_millis(50));
-    ///
-    /// assert_eq!(
-    ///     TCPNearConnectorConfig::new(endpoint, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
-    /// );
-    /// ```
-    #[inline]
-    pub fn new(
-        endpoint: IPEndpoint,
-        retry: Retry
-    ) -> Self {
-        Self::new_with_unsafe(
-            endpoint,
-            retry,
-            TCPNearChannelConfigUnsafe::default()
-        )
-    }
-
-    #[inline]
-    pub fn new_with_unsafe(
-        endpoint: IPEndpoint,
-        retry: Retry,
-        unsafe_opts: TCPNearChannelConfigUnsafe
-    ) -> Self {
-        TCPNearConnectorConfig {
-            unsafe_opts: unsafe_opts,
-            endpoint: endpoint,
-            retry: retry
-        }
-    }
-
-    /// Get the [IPEndpoint] to which this `TCPConnectorConfig`
-    /// attempts to connect.
-    #[inline]
-    pub fn endpoint(&self) -> &IPEndpoint {
-        &self.endpoint
-    }
-
-    /// Get the [Retry] configuration for backoff delays for failed
-    /// connection attempt.
-    #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
-    }
-
-    /// Get the unsafe options.
-    #[inline]
-    pub fn unsafe_opts(&self) -> &TCPNearChannelConfigUnsafe {
-        &self.unsafe_opts
-    }
-
-    /// Decompose this `TCPNearConnectorConfig` into its components.
-    ///
-    /// The components in order are:
-    ///
-    /// - The [IPEndpoint] to which this attempts to connect
-    ///   ([endpoint](TCPNearConnectorConfig::endpoint))
-    /// - The retry configuration for failed connection attempts
-    ///   ([retry](TCPNearConnectorConfig::retry))
-    #[inline]
-    pub(crate) fn take(
-        self
-    ) -> (IPEndpoint, Retry, TCPNearChannelConfigUnsafe) {
-        (self.endpoint, self.retry, self.unsafe_opts)
-    }
-}
-
 impl TCPNearConnectorPartialConfig {
     /// Create a new `TCPNearConnectorPartialConfig` from its components.
     ///
     /// The arguments of this function correspond to similarly-named
     /// fields in the YAML format.  See documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// The following example shows the equivalence between this
-    /// function and parsing a YAML configuration:
-    ///
-    /// ```
-    /// # use constellation_common::retry::Retry;
-    /// # use constellation_channels::config::AddrKind;
-    /// # use constellation_channels::config::AddrsConfig;
-    /// # use constellation_channels::config::ResolverConfig;
-    /// # use constellation_channels::config::TCPNearConnectorPartialConfig;
-    /// # use std::path::PathBuf;
-    /// # use std::time::Duration;
-    /// #
-    /// let yaml = concat!("retry:\n",
-    ///                    "  factor: 100ms\n",
-    ///                    "  exp-base: 2.0\n",
-    ///                    "  exp-factor: 1.0\n",
-    ///                    "  exp-rounds-cap: 20\n",
-    ///                    "  linear-factor: 1.0\n",
-    ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100ms\n",
-    ///                    "  addend: 50ms\n");
-    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
-    ///                        20, 1.0, Some(50), Duration::from_millis(100),
-    ///                        Duration::from_millis(50));
-    ///
-    /// assert_eq!(
-    ///     TCPNearConnectorPartialConfig::new(retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
-    /// );
-    /// ```
     #[inline]
-    pub fn new(retry: Retry) -> Self {
-        Self::new_with_unsafe(retry, TCPNearChannelConfigUnsafe::default())
+    pub fn new() -> Self {
+        Self::new_with_unsafe(TCPNearChannelConfigUnsafe::default())
     }
 
     #[inline]
-    pub fn new_with_unsafe(
-        retry: Retry,
-        unsafe_opts: TCPNearChannelConfigUnsafe
-    ) -> Self {
+    pub fn new_with_unsafe(unsafe_opts: TCPNearChannelConfigUnsafe) -> Self {
         TCPNearConnectorPartialConfig {
-            unsafe_opts: unsafe_opts,
-            retry: retry
+            unsafe_opts: unsafe_opts
         }
-    }
-
-    /// Get the [Retry] configuration for backoff delays for failed
-    /// connection attempt.
-    #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
     }
 
     /// Get the unsafe options.
@@ -4634,8 +4390,8 @@ impl TCPNearConnectorPartialConfig {
     /// - The retry configuration for failed connection attempts
     ///   ([retry](TCPNearConnectorConfig::retry))
     #[inline]
-    pub(crate) fn take(self) -> (Retry, TCPNearChannelConfigUnsafe) {
-        (self.retry, self.unsafe_opts)
+    pub(crate) fn take(self) -> TCPNearChannelConfigUnsafe {
+        self.unsafe_opts
     }
 }
 
@@ -4884,139 +4640,6 @@ impl UnixNearChannelConfig {
     }
 }
 
-impl UnixNearConnectorConfig {
-    /// Create a new `UnixNearConnectorConfig` from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// The following example shows the equivalence between this
-    /// function and parsing a YAML configuration:
-    ///
-    /// ```
-    /// # use constellation_common::retry::Retry;
-    /// # use constellation_channels::config::UnixNearChannelConfig;
-    /// # use constellation_channels::config::UnixNearConnectorConfig;
-    /// # use std::path::PathBuf;
-    /// # use std::time::Duration;
-    /// #
-    /// let yaml = concat!("path: /var/run/test/test.sock\n",
-    ///                    "retry:\n",
-    ///                    "  factor: 100ms\n",
-    ///                    "  exp-base: 2.0\n",
-    ///                    "  exp-factor: 1.0\n",
-    ///                    "  exp-rounds-cap: 20\n",
-    ///                    "  linear-factor: 1.0\n",
-    ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100ms\n",
-    ///                    "  addend: 50ms\n");
-    /// let path = PathBuf::from("/var/run/test/test.sock");
-    /// let channel = UnixNearChannelConfig::new(path);
-    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0, 20,
-    ///                        1.0, Some(50), Duration::from_millis(100),
-    ///                        Duration::from_millis(50));
-    ///
-    /// assert_eq!(
-    ///     UnixNearConnectorConfig::new(channel, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
-    /// );
-    /// ```
-    #[inline]
-    pub fn new(
-        channel: UnixNearChannelConfig,
-        retry: Retry
-    ) -> Self {
-        UnixNearConnectorConfig {
-            channel: channel,
-            retry: retry
-        }
-    }
-
-    /// Get the underlying channel configuration.
-    #[inline]
-    pub fn channel(&self) -> &UnixNearChannelConfig {
-        &self.channel
-    }
-
-    /// Get the retry configuration
-    #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
-    }
-
-    /// Decompose this `UnixNearConnectorConfig` into its components.
-    ///
-    /// This will decompose into the following components, in order:
-    /// - The channel configuration ([config](UnixNearConnectorConfig::channel))
-    /// - The retry configuration ([retry](UnixNearConnectorConfig::retry))
-    #[inline]
-    pub(crate) fn take(self) -> (UnixNearChannelConfig, Retry) {
-        (self.channel, self.retry)
-    }
-}
-
-impl UnixNearConnectorPartialConfig {
-    /// Create a new `UnixNearConnectorConfig` from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// The following example shows the equivalence between this
-    /// function and parsing a YAML configuration:
-    ///
-    /// ```
-    /// # use constellation_common::retry::Retry;
-    /// # use constellation_channels::config::UnixNearChannelConfig;
-    /// # use constellation_channels::config::UnixNearConnectorConfig;
-    /// # use std::path::PathBuf;
-    /// # use std::time::Duration;
-    /// #
-    /// let yaml = concat!("path: /var/run/test/test.sock\n",
-    ///                    "retry:\n",
-    ///                    "  factor: 100ms\n",
-    ///                    "  exp-base: 2.0\n",
-    ///                    "  exp-factor: 1.0\n",
-    ///                    "  exp-rounds-cap: 20\n",
-    ///                    "  linear-factor: 1.0\n",
-    ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100ms\n",
-    ///                    "  addend: 50ms\n");
-    /// let path = PathBuf::from("/var/run/test/test.sock");
-    /// let channel = UnixNearChannelConfig::new(path);
-    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0, 20,
-    ///                        1.0, Some(50), Duration::from_millis(100),
-    ///                        Duration::from_millis(50));
-    ///
-    /// assert_eq!(
-    ///     UnixNearConnectorConfig::new(channel, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
-    /// );
-    /// ```
-    #[inline]
-    pub fn new(retry: Retry) -> Self {
-        UnixNearConnectorPartialConfig { retry: retry }
-    }
-
-    /// Get the retry configuration
-    #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
-    }
-
-    /// Decompose this `UnixNearConnectorConfig` into its components.
-    ///
-    /// This will decompose into the following components, in order:
-    /// - The retry configuration ([retry](UnixNearConnectorConfig::retry))
-    #[inline]
-    pub(crate) fn take(self) -> Retry {
-        self.retry
-    }
-}
-
 #[cfg(test)]
 use std::net::Ipv4Addr;
 
@@ -5028,20 +4651,6 @@ fn test_deserialize_unix_cfg() {
     let yaml = concat!("path: \"/var/run/test/socket.sock\"");
     let expected = UnixNearChannelConfig {
         path: PathBuf::from("/var/run/test/socket.sock")
-    };
-    let actual = serde_yaml::from_str(yaml).unwrap();
-
-    assert_eq!(expected, actual)
-}
-
-#[test]
-fn test_deserialize_unix_connector_cfg() {
-    let yaml = concat!("path: \"/var/run/test/socket.sock\"\n");
-    let expected = UnixNearConnectorConfig {
-        channel: UnixNearChannelConfig {
-            path: PathBuf::from("/var/run/test/socket.sock")
-        },
-        retry: Retry::default()
     };
     let actual = serde_yaml::from_str(yaml).unwrap();
 

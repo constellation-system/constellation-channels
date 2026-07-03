@@ -179,10 +179,7 @@ pub struct TCPResolvingNearConnector {
 
 pub struct TCPNearConnector {
     unsafe_allow_ip_addr_creds: bool,
-    endpoint: SocketAddr,
-    nretries: usize,
-    when: Instant,
-    retry: Retry
+    endpoint: SocketAddr
 }
 
 /// Errors that can occur when converting a [TCPResolvingNearConnectorConfig]
@@ -450,9 +447,7 @@ impl NearChannel for TCPNearAcceptor {
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(
@@ -598,7 +593,7 @@ impl NearChannel for TCPResolvingNearConnector {
             self.when = when;
         }
 
-        Ok(RetryResult::Retry(self.when.clone()))
+        Ok(RetryResult::Retry(self.when))
     }
 
     #[inline]
@@ -607,9 +602,7 @@ impl NearChannel for TCPResolvingNearConnector {
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(
@@ -779,9 +772,7 @@ impl NearChannel for TCPNearConnector {
     }
 
     #[inline]
-    fn shutdown_param(&self) -> () {
-        ()
-    }
+    fn shutdown_param(&self) {}
 
     #[inline]
     fn cleanup(
@@ -808,7 +799,7 @@ impl NearChannelCreateWithEndpoint for TCPNearConnector {
     ) -> Result<Self, Infallible>
     where
         Ctx: NSNameCachesCtx {
-        let (retry, unsafe_opts) = config.take();
+        let unsafe_opts = config.take();
 
         if unsafe_opts.allow_ip_addr_creds() {
             warn!(target: "udp-far-channel",
@@ -820,10 +811,7 @@ impl NearChannelCreateWithEndpoint for TCPNearConnector {
 
         Ok(TCPNearConnector {
             unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
-            endpoint: endpoint,
-            retry: retry,
-            nretries: 0,
-            when: Instant::now()
+            endpoint: endpoint
         })
     }
 }

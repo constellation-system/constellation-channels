@@ -67,8 +67,7 @@ pub trait NearSessionNegoTypes {
     type AuthNConfig: Clone + Default;
     type AuthNPending;
     type AuthNSession: AuthNed<Self::Prin, Self::Conn>;
-    type AuthN: Create<Config = Self::AuthNConfig,
-                       CreateError = Self::AuthCreateError>
+    type AuthN: Create<Config = Self::AuthNConfig, CreateError = Self::AuthCreateError>
         + SessionAuthN<
             Self::Conn,
             Param = (),
@@ -118,15 +117,16 @@ pub trait NearSessionNegoTypes {
 }
 
 pub trait NearDuplexNegoTypes {
-    type Endpoint: Clone + Debug + Display + Eq + Hash + Sized;
+    type InEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
     type InConfig;
     type InPrin: Clone + Debug + Display + Eq + Hash;
     type InAuthNConfig: Clone + Default;
     type InAuthNPending;
     type InAuthNSession: AuthNed<Self::InPrin, Self::InConn>;
-    type InAuthN: Create<Config = Self::InAuthNConfig,
-                         CreateError = Self::InAuthCreateError>
-        + SessionAuthN<
+    type InAuthN: Create<
+            Config = Self::InAuthNConfig,
+            CreateError = Self::InAuthCreateError
+        > + SessionAuthN<
             Self::InConn,
             Param = (),
             Pending = Self::InAuthNPending,
@@ -143,7 +143,7 @@ pub trait NearDuplexNegoTypes {
         + Debug
         + Sized
         + Source
-        + Session<PeerAddr = Self::Endpoint>;
+        + Session<PeerAddr = Self::InEndpoint>;
     type InConnState;
     type InConnPending;
     type InShutdownParam;
@@ -161,17 +161,17 @@ pub trait NearDuplexNegoTypes {
     >;
     type InChannel: NearChannel<
             Conn = Self::InConn,
-            Endpoint = Self::Endpoint,
+            Endpoint = Self::InEndpoint,
             State = Self::InConnState,
             Pending = Self::InConnPending,
             ShutdownValue = Self::InShutdownValue,
             ShutdownNego = Self::InShutdownNego,
             StartError = Self::InSessionStartError,
             NegotiateError = Self::InSessionNegoError
-        >
-        + NearChannelCreate<Config = Self::InConfig,
-                            CreateError = Self::InChannelCreateError>
-        + Source;
+        > + NearChannelCreate<
+            Config = Self::InConfig,
+            CreateError = Self::InChannelCreateError
+        > + Source;
     type InChannelCreateError: Debug + Display;
     type InSessionStartError: Debug + Display + ScopedError;
     type InSessionNegoError: Debug + Display + ScopedError;
@@ -182,7 +182,7 @@ pub trait NearDuplexNegoTypes {
         AuthN = Self::InAuthN,
         AuthStartError = Self::InAuthStartError,
         AuthNegoError = Self::InAuthNegoError,
-        Endpoint = Self::Endpoint,
+        Endpoint = Self::InEndpoint,
         Conn = Self::InConn,
         ConnState = Self::InConnState,
         ConnPending = Self::InConnPending,
@@ -196,13 +196,21 @@ pub trait NearDuplexNegoTypes {
         SessionStartError = Self::InSessionStartError,
         SessionNegoError = Self::InSessionNegoError
     >;
+    type OutEndpoint: Clone
+        + Debug
+        + Display
+        + Eq
+        + Hash
+        + Sized
+        + From<Self::InEndpoint>;
     type OutPrin: Clone + Debug + Display + Eq + Hash;
     type OutAuthNConfig: Clone + Default;
     type OutAuthNPending;
     type OutAuthNSession: AuthNed<Self::OutPrin, Self::OutConn>;
-    type OutAuthN: Create<Config = Self::OutAuthNConfig,
-                          CreateError = Self::OutAuthCreateError>
-        + SessionAuthN<
+    type OutAuthN: Create<
+            Config = Self::OutAuthNConfig,
+            CreateError = Self::OutAuthCreateError
+        > + SessionAuthN<
             Self::OutConn,
             Param = (),
             Pending = Self::OutAuthNPending,
@@ -220,7 +228,7 @@ pub trait NearDuplexNegoTypes {
         + Debug
         + Sized
         + Source
-        + Session<PeerAddr = Self::Endpoint>;
+        + Session<PeerAddr = Self::OutEndpoint>;
     type OutConnState;
     type OutConnPending;
     type OutShutdownParam;
@@ -236,16 +244,16 @@ pub trait NearDuplexNegoTypes {
         StartError = Self::OutShutdownStartError,
         NegotiateError = Self::OutShutdownNegoError
     >;
-    type OutParam: Clone + Debug + Display;
+    type OutParam: Clone;
     type OutChannel: NearConnector
         + NearChannelCreateWithEndpoint<
             Conn = Self::OutConn,
-            Endpoint = Self::Endpoint,
+            Endpoint = Self::OutEndpoint,
             State = Self::OutConnState,
             Pending = Self::OutConnPending,
             Config = Self::OutConfig,
             Param = Self::OutParam,
-            EndpointConfig = Self::Endpoint,
+            EndpointConfig = Self::OutEndpoint,
             CreateError = Self::OutCreateError,
             ShutdownValue = Self::OutShutdownValue,
             ShutdownNego = Self::OutShutdownNego,
@@ -262,7 +270,7 @@ pub trait NearDuplexNegoTypes {
         AuthN = Self::OutAuthN,
         AuthStartError = Self::OutAuthStartError,
         AuthNegoError = Self::OutAuthNegoError,
-        Endpoint = Self::Endpoint,
+        Endpoint = Self::OutEndpoint,
         Conn = Self::OutConn,
         ConnState = Self::OutConnState,
         ConnPending = Self::OutConnPending,
@@ -397,11 +405,11 @@ where
     AuthN::NegotiateError: ScopedError,
     TLS: Clone + Debug + TLSLoadServer
 {
+    type AuthCreateError = AuthN::CreateError;
     type AuthN = AuthN;
     type AuthNConfig = AuthN::Config;
     type AuthNPending = AuthN::Pending;
     type AuthNSession = AuthN::AuthNSession;
-    type AuthCreateError = AuthN::CreateError;
     type AuthNegoError = AuthN::NegotiateError;
     type AuthStartError = AuthN::StartError;
     type Channel = CompoundNearAcceptor<TLS>;
@@ -428,11 +436,11 @@ where
     AuthN::NegotiateError: ScopedError,
     TLS: Clone + Debug + TLSLoadClient
 {
+    type AuthCreateError = AuthN::CreateError;
     type AuthN = AuthN;
     type AuthNConfig = <AuthN as Create>::Config;
     type AuthNPending = AuthN::Pending;
     type AuthNSession = AuthN::AuthNSession;
-    type AuthCreateError = AuthN::CreateError;
     type AuthNegoError = AuthN::NegotiateError;
     type AuthStartError = AuthN::StartError;
     type Channel = CompoundNearConnector<TLS>;
@@ -455,27 +463,28 @@ where
 impl<In, Out> NearDuplexNegoTypes for SimpleNearDuplexNegoTypes<In, Out>
 where
     In: NearSessionNegoTypes,
-    Out: NearSessionNegoTypes<Endpoint = In::Endpoint>,
+    Out: NearSessionNegoTypes,
+    Out::Endpoint: From<In::Endpoint>,
     In::Channel: NearChannelCreate + Source,
     Out::Channel: NearConnector
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
     <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone,
-    <Out::Channel as NearChannelCreateWithEndpoint>::Param: Clone + Debug + Display
+    <Out::Channel as NearChannelCreateWithEndpoint>::Param: Clone + Debug
 {
-    type Endpoint = In::Endpoint;
-    type InConfig = <In::Channel as NearChannelCreate>::Config;
-    type InChannelCreateError = <In::Channel as NearChannelCreate>::CreateError;
+    type InAuthCreateError = In::AuthCreateError;
     type InAuthN = In::AuthN;
     type InAuthNConfig = In::AuthNConfig;
     type InAuthNPending = In::AuthNPending;
     type InAuthNSession = In::AuthNSession;
     type InAuthNegoError = In::AuthNegoError;
     type InAuthStartError = In::AuthStartError;
-    type InAuthCreateError = In::AuthCreateError;
     type InChannel = In::Channel;
+    type InChannelCreateError = <In::Channel as NearChannelCreate>::CreateError;
+    type InConfig = <In::Channel as NearChannelCreate>::Config;
     type InConn = In::Conn;
     type InConnPending = In::ConnPending;
     type InConnState = In::ConnState;
+    type InEndpoint = In::Endpoint;
     type InPrin = In::Prin;
     type InSessionNegoError = In::SessionNegoError;
     type InSessionStartError = In::SessionStartError;
@@ -486,11 +495,11 @@ where
     type InShutdownStartError = In::ShutdownStartError;
     type InShutdownValue = In::ShutdownValue;
     type Inbound = In;
+    type OutAuthCreateError = Out::AuthCreateError;
     type OutAuthN = Out::AuthN;
     type OutAuthNConfig = Out::AuthNConfig;
     type OutAuthNPending = Out::AuthNPending;
     type OutAuthNSession = Out::AuthNSession;
-    type OutAuthCreateError = Out::AuthCreateError;
     type OutAuthNegoError = Out::AuthNegoError;
     type OutAuthStartError = Out::AuthStartError;
     type OutChannel = Out::Channel;
@@ -500,6 +509,7 @@ where
     type OutConnState = Out::ConnState;
     type OutCreateError =
         <Out::Channel as NearChannelCreateWithEndpoint>::CreateError;
+    type OutEndpoint = Out::Endpoint;
     type OutParam = <Out::Channel as NearChannelCreateWithEndpoint>::Param;
     type OutPrin = Out::Prin;
     type OutSessionNegoError = Out::SessionNegoError;

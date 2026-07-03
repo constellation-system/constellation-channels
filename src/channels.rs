@@ -19,63 +19,9 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
-use std::io::Read;
-use std::io::Write;
-use std::time::Instant;
 
-use constellation_auth::authn::AuthNResult;
-use constellation_auth::authn::AuthNed;
-use constellation_auth::authn::SessionAuthN;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
-use constellation_common::net::NegotiatorResult;
-use constellation_common::net::NegotiatorStart;
-use constellation_common::net::Session;
-use constellation_common::retry::Retry;
-use log::debug;
-use log::error;
-use log::info;
-
-/// Current state of sessions.
-///
-/// This is used to store whether a session is in negotiations, or is
-/// active and has already been returned.
-pub(crate) enum SessionState<Stream, AuthN, ShutdownNego>
-where
-    Stream: Session + Read + Write,
-    AuthN: SessionAuthN<Stream>,
-    ShutdownNego: NegotiatorStart<(), Stream>,
-    ShutdownNego::NegotiateError: ScopedError {
-    /// Session negotiation is pending.
-    Pending {
-        /// The pending negotiation state.
-        pending: AuthN::Pending
-    },
-    /// A session has already been established.
-    Active,
-    /// Session shutdown is pending.
-    Shutdown {
-        /// The pending shutdown negotiation state.
-        pending: ShutdownNego::Pending
-    }
-}
-
-pub(crate) struct SessionNegoState<Stream, AuthN, ShutdownNego>
-where
-    Stream: Session + Read + Write,
-    AuthN: SessionAuthN<Stream>,
-    ShutdownNego: NegotiatorStart<(), Stream>,
-    ShutdownNego::NegotiateError: ScopedError {
-    state: Option<SessionState<Stream, AuthN, ShutdownNego>>,
-    /// Number of retries.
-    nretries: usize,
-    /// When to retry next.
-    when: Instant,
-    /// Number of retries.
-    shutdown_nretries: usize,
-    /// When to retry next.
-    shutdown_when: Instant
-}
 
 #[derive(Debug)]
 pub enum SessionNegoToAuthError<AuthN, Start> {
