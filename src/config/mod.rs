@@ -20,7 +20,7 @@
 //!
 //! This module contains definitions of types that supply
 //! configuration information.  Each of these types has a YAML format,
-//! which can be parsed using `serde_yaml`, thus allowing
+//! which can be parsed using `yaml_serde`, thus allowing
 //! configurations to be easily loaded from text files.
 //!
 //! # Near-Link Configurations
@@ -64,13 +64,13 @@ use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
-use serde::de::MapAccess;
-use serde::de::Visitor;
-use serde::ser::SerializeStruct;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use serde::de::MapAccess;
+use serde::de::Visitor;
+use serde::ser::SerializeStruct;
 
 use crate::config::tls::TLSClientConfig;
 use crate::config::tls::TLSLoadClient;
@@ -2667,7 +2667,7 @@ impl AddrsConfig {
     ///     AddrsConfig::new(vec![ AddrKind::IPv6 ],
     ///                      ResolverConfig::new(1000 * 60 * 60,
     ///                                          Retry::default())),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3366,7 +3366,7 @@ impl ResolverConfig {
     ///
     /// assert_eq!(
     ///     ResolverConfig::new(1000 * 60 * 60, Retry::default()),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3418,7 +3418,7 @@ impl ThreadedFlowsParams {
     ///
     /// assert_eq!(
     ///     ThreadedFlowsParams::new(Some(36), 1500),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3473,7 +3473,7 @@ impl ThreadedNSNameCachesConfig {
     /// assert_eq!(
     ///     ThreadedNSNameCachesConfig::new(Some(36), refresh,
     ///                                     Retry::default()),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     pub fn new(
@@ -3792,7 +3792,7 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     ///
     /// assert_eq!(
     ///     SOCKS5ConnectConfig::new(auth, target, proxy),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3883,7 +3883,7 @@ impl<Proxy> SOCKS5ConnectPartialConfig<Proxy> {
     ///
     /// assert_eq!(
     ///     SOCKS5ConnectPartialConfig::new(auth, proxy),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3972,7 +3972,7 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     ///
     /// assert_eq!(
     ///     SOCKS5AssocConfig::new(bind, auth, proxy),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4060,7 +4060,7 @@ impl TCPNearAcceptorConfig {
     ///
     /// assert_eq!(
     ///     TCPNearAcceptorConfig::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5014),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4167,7 +4167,7 @@ impl TCPResolvingNearConnectorConfig {
     ///
     /// assert_eq!(
     ///     TCPResolvingNearConnectorConfig::new(endpoint, resolve, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4295,7 +4295,7 @@ impl TCPResolvingNearConnectorPartialConfig {
     ///
     /// assert_eq!(
     ///     TCPResolvingNearConnectorPartialConfig::new(resolve, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4509,7 +4509,7 @@ impl UDPFarChannelConfig {
     ///
     /// assert_eq!(
     ///     UDPFarChannelConfig::new(addr.ip(), addr.port()),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4578,7 +4578,7 @@ impl UnixFarChannelConfig {
     ///
     /// assert_eq!(
     ///     UnixFarChannelConfig::new(path),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4619,7 +4619,7 @@ impl UnixNearChannelConfig {
     ///
     /// assert_eq!(
     ///     UnixNearChannelConfig::new(path),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -4652,7 +4652,7 @@ fn test_deserialize_unix_cfg() {
     let expected = UnixNearChannelConfig {
         path: PathBuf::from("/var/run/test/socket.sock")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4665,7 +4665,7 @@ fn test_deserialize_tcp_cfg() {
         addr: IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10)),
         port: 6000
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4694,7 +4694,7 @@ fn test_deserialize_tcp_connector_cfg() {
         },
         retry: Retry::default()
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4709,7 +4709,7 @@ fn test_deserialize_dns_resolve() {
             retry: Retry::default()
         }
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4718,7 +4718,7 @@ fn test_deserialize_dns_resolve() {
 fn test_deserialize_none() {
     let yaml = concat!("none\n");
     let expected = SOCKS5AuthNConfig::None;
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4730,7 +4730,7 @@ fn test_deserialize_password() {
         username: String::from("user"),
         password: String::from("password")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4742,7 +4742,7 @@ fn test_deserialize_client_gssapi_default() {
     let expected = SOCKS5AuthNConfig::GSSAPI {
         gssapi: ClientGSSAPIConfig::default()
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4759,7 +4759,7 @@ fn test_deserialize_client_gssapi_name() {
             GSSAPISecurity::default()
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4776,7 +4776,7 @@ fn test_deserialize_client_gssapi_service() {
             GSSAPISecurity::default()
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4793,7 +4793,7 @@ fn test_deserialize_client_gssapi_optional_seclvl() {
             GSSAPISecurity::optional(128)
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4810,7 +4810,7 @@ fn test_deserialize_client_gssapi_required_seclvl() {
             GSSAPISecurity::required(128)
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -4833,7 +4833,7 @@ fn test_deserialize_client_gssapi_full() {
             GSSAPISecurity::required(128)
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }

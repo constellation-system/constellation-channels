@@ -172,11 +172,11 @@ use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::retry::RetryResult;
 use log::trace;
-use mio::event::Source;
 use mio::Events;
 use mio::Poll;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::resolve::cache::NSNameCachesCtx;
 

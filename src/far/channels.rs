@@ -16,10 +16,10 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::collections::hash_map::Entry;
-use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::hash_map::Iter;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -44,11 +44,12 @@ use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
-use constellation_common::retry::next_retry;
-use constellation_common::retry::next_retry_definite;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
+use constellation_common::retry::RetryWhen;
 use constellation_common::retry::WithRetryWhen;
+use constellation_common::retry::next_retry;
+use constellation_common::retry::next_retry_definite;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
 use constellation_streams::channels::Channels;
@@ -61,10 +62,10 @@ use log::error;
 use log::info;
 use log::trace;
 use log::warn;
-use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::channels::ShutdownError;
@@ -73,13 +74,6 @@ use crate::config::AddrsConfig;
 use crate::config::FarChannelsConfig;
 use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
-use crate::far::flows::Flows;
-use crate::far::flows::FlowsFlowError;
-use crate::far::flows::FlowsListenError;
-use crate::far::flows::ListenResult;
-use crate::far::types::FarChannelsTypes;
-use crate::far::types::FlowAuthNShutdownTypes;
-use crate::far::types::FlowsEntryTypes;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
@@ -87,6 +81,13 @@ use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelFlowsError;
+use crate::far::flows::Flows;
+use crate::far::flows::FlowsFlowError;
+use crate::far::flows::FlowsListenError;
+use crate::far::flows::ListenResult;
+use crate::far::types::FarChannelsTypes;
+use crate::far::types::FlowAuthNShutdownTypes;
+use crate::far::types::FlowsEntryTypes;
 use crate::resolve::cache::NSNameCacheError;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -772,7 +773,7 @@ impl<AuthPending> SessionNegoState<AuthPending> {
         AuthN: SessionAuthN<Flow, Pending = AuthPending, Param = ()> {
         match self {
             // Resuming session negotiations.
-            SessionNegoState::Session { .. } => Err(AuthNegoStepError::Session),
+            SessionNegoState::Session => Err(AuthNegoStepError::Session),
             // Resuming authentication negotiations.
             SessionNegoState::AuthN { pending } => Ok(authn
                 .complete_negotiate(pending)
@@ -974,7 +975,7 @@ where
                 }
                 // Retry after a delay
                 scope => {
-                    if !matches![scope, ErrorScope::Session] {
+                    if !matches!(scope, ErrorScope::Session) {
                         error!(target: "flows-nego-state",
                                "shouldn't see error with scope {} here",
                                scope);
@@ -2727,7 +2728,10 @@ where
         session: Types::AuthNSession,
         peer: Types::PeerAddr
     ) -> Result<
-        RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
+        RetryResult<
+            (Option<Vec<Types::ChannelParam>>, Option<Instant>),
+            WithRetryWhen<Types::AuthNSession>
+        >,
         AcquiredEntryShutdownError<
             FarChannelFlowsError<
                 Types::SocketError,
@@ -2740,9 +2744,11 @@ where
     >
     where
         Ctx: RegistryCtx + TokensCtx {
-        self.refresh(ctx, channel, policy)
+        match self
+            .refresh(ctx, channel, policy)
             .map_err(|err| AcquiredEntryShutdownError::Refresh { err: err })?
-            .map_ok(move |(addrs, refresh_when)| {
+        {
+            RetryResult::Success((addrs, refresh_when)) => {
                 // The token might have gotten deleted in the refresh;
                 // don't throw a hard error here.
                 if let Some(token) = self.tokens.get(channel_param) {
@@ -2763,8 +2769,57 @@ where
                     }
                 }
 
-                Ok((addrs, refresh_when))
-            })
+                Ok(RetryResult::Success((addrs, refresh_when)))
+            }
+            RetryResult::Retry(retry) => {
+                Ok(RetryResult::Retry(WithRetryWhen::new(session, retry)))
+            }
+        }
+    }
+
+    fn retry_shutdown_flow<Ctx>(
+        &mut self,
+        ctx: &mut Ctx,
+        channel: &Types::Channel,
+        policy: &SocketAddrPolicy,
+        shutdown: &Types::ShutdownNego,
+        param: &Types::ShutdownParam,
+        channel_param: &Types::ChannelParam,
+        retry: WithRetryWhen<Types::AuthNSession>,
+        peer: Types::PeerAddr
+    ) -> Result<
+        RetryResult<
+            (Option<Vec<Types::ChannelParam>>, Option<Instant>),
+            WithRetryWhen<Types::AuthNSession>
+        >,
+        AcquiredEntryShutdownError<
+            FarChannelFlowsError<
+                Types::SocketError,
+                Types::XfrmCreateError,
+                Types::InboundNegoCreateError,
+                Types::OutboundNegoCreateError
+            >,
+            Types::WrapError
+        >
+    >
+    where
+        Ctx: RegistryCtx + TokensCtx {
+        if retry.when() <= Instant::now() {
+            let (session, _) = retry.take();
+
+            self.shutdown_flow(
+                ctx,
+                channel,
+                policy,
+                shutdown,
+                param,
+                channel_param,
+                session,
+                peer
+            )
+        } else {
+            Ok(RetryResult::Retry(retry))
+        }
     }
 
     /// Obtain a snapshot of the current set of addresses.
@@ -3444,7 +3499,10 @@ where
         channel_param: &Types::ChannelParam,
         session: Types::AuthNSession
     ) -> Result<
-        RetryResult<(Option<Vec<Types::ChannelParam>>, Option<Instant>)>,
+        RetryResult<
+            (Option<Vec<Types::ChannelParam>>, Option<Instant>),
+            WithRetryWhen<Types::AuthNSession>
+        >,
         ChannelEntryShutdownFlowError<
             AcquiredEntryShutdownError<
                 FarChannelFlowsError<
@@ -3494,7 +3552,76 @@ where
                 Err(ChannelEntryShutdownFlowError::Shutdown)
             }
             // If we are delayed, pass the delay along.
-            RetryResult::Retry(when) => Ok(RetryResult::Retry(*when))
+            RetryResult::Retry(when) => {
+                Ok(RetryResult::Retry(WithRetryWhen::new(session, *when)))
+            }
+        }
+    }
+
+    pub(crate) fn retry_shutdown_flow<Ctx>(
+        &mut self,
+        ctx: &mut Ctx,
+        channel_param: &Types::ChannelParam,
+        retry: WithRetryWhen<Types::AuthNSession>
+    ) -> Result<
+        RetryResult<
+            (Option<Vec<Types::ChannelParam>>, Option<Instant>),
+            WithRetryWhen<Types::AuthNSession>
+        >,
+        ChannelEntryShutdownFlowError<
+            AcquiredEntryShutdownError<
+                FarChannelFlowsError<
+                    Types::SocketError,
+                    Types::XfrmCreateError,
+                    Types::InboundNegoCreateError,
+                    Types::OutboundNegoCreateError
+                >,
+                Types::WrapError
+            >
+        >
+    >
+    where
+        Ctx: RegistryCtx + TokensCtx {
+        let addr =
+            retry.get().get().peer_addr().map_err(|err| {
+                ChannelEntryShutdownFlowError::IO { err: err }
+            })?;
+
+        match self
+            .acquired
+            .as_mut()
+            .ok_or(ChannelEntryShutdownFlowError::None)?
+        {
+            RetryResult::Success(AcquireState::Active { acquired, .. }) => {
+                acquired
+                    .retry_shutdown_flow(
+                        ctx,
+                        &self.channel,
+                        &self.addr_policy,
+                        &self.shutdown,
+                        &self.shutdown_param,
+                        channel_param,
+                        retry,
+                        addr
+                    )
+                    .map_err(|err| ChannelEntryShutdownFlowError::Flow {
+                        err: err
+                    })
+            }
+            // None of these should ever happen.
+            RetryResult::Success(AcquireState::Pending { .. }) |
+            RetryResult::Success(AcquireState::Acquired { .. }) => {
+                Err(ChannelEntryShutdownFlowError::Pending)
+            }
+            RetryResult::Success(AcquireState::Shutdown { .. }) => {
+                Err(ChannelEntryShutdownFlowError::Shutdown)
+            }
+            // If we are delayed, pass the delay along.
+            RetryResult::Retry(when) => {
+                let (session, _) = retry.take();
+
+                Ok(RetryResult::Retry(WithRetryWhen::new(session, *when)))
+            }
         }
     }
 
@@ -4353,6 +4480,7 @@ where
             Types::WrapError
         >
     >;
+    type ShutdownStreamRetry = WithRetryWhen<Types::AuthNSession>;
 
     #[inline]
     fn shutdown_stream(
@@ -4362,10 +4490,30 @@ where
         param: &Types::ChannelParam,
         session: Types::AuthNSession
     ) -> Result<
-        RetryResult<(Option<Vec<Self::Param>>, Option<Instant>)>,
+        RetryResult<
+            (Option<Vec<Self::Param>>, Option<Instant>),
+            Self::ShutdownStreamRetry
+        >,
         Self::ShutdownStreamError
     > {
         self.channels[channel.0].shutdown_flow(ctx, param, session)
+    }
+
+    #[inline]
+    fn retry_shutdown_stream(
+        &mut self,
+        ctx: &mut Ctx,
+        channel: &FarChannelID,
+        param: &Types::ChannelParam,
+        retry: Self::ShutdownStreamRetry
+    ) -> Result<
+        RetryResult<
+            (Option<Vec<Self::Param>>, Option<Instant>),
+            Self::ShutdownStreamRetry
+        >,
+        Self::ShutdownStreamError
+    > {
+        self.channels[channel.0].retry_shutdown_flow(ctx, param, retry)
     }
 
     fn shutdown_listen(
@@ -5692,7 +5840,7 @@ where
                 .expect("Expected success")
             {
                 RetryResult::Success((None, None, Some(params), when)) => {
-                    return (ent, params, when)
+                    return (ent, params, when);
                 }
                 RetryResult::Success((Some(_), _, _, _)) |
                 RetryResult::Success((_, Some(_), _, _)) => {
@@ -6480,9 +6628,9 @@ fn compound_entry_test(
 
     let mut nscaches = SharedNSNameCaches::new();
     let server_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(server_conf).unwrap();
+        yaml_serde::from_str(server_conf).unwrap();
     let client_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(client_conf).unwrap();
+        yaml_serde::from_str(client_conf).unwrap();
     let flows_config = FlowsConfig::default();
     let resolver_config = ResolverConfig::default();
     let server_authn = TrivialAuthN::default();

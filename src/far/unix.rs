@@ -82,19 +82,19 @@ use constellation_common::unix::UnixSocketPath;
 use constellation_streams::threads::TokensCtx;
 use log::info;
 use log::warn;
-use mio::event::Source;
-use mio::net::UnixDatagram;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
+use mio::net::UnixDatagram;
 
 use crate::config::UnixFarChannelConfig;
-use crate::far::flows::BufferedFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::flows::BufferedFlow;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Unix socket far-link channel.
@@ -134,7 +134,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// const CONFIG: &'static str = concat!(
 ///     "path: example.sock\n",
 /// );
-/// let unix_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let unix_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let mut channel = UnixFarChannel::create(&mut ctx, unix_config)

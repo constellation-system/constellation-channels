@@ -47,19 +47,19 @@ use constellation_common::net::TrivialNegotiator;
 use constellation_common::retry::RetryResult;
 use constellation_streams::threads::TokensCtx;
 use log::warn;
-use mio::event::Source;
-use mio::net::UdpSocket;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
+use mio::net::UdpSocket;
 
 use crate::config::UDPFarChannelConfig;
-use crate::far::flows::BufferedFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::flows::BufferedFlow;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// A UDP-based far-link channel.
@@ -96,7 +96,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 ///     "addr: ::1\n",
 ///     "port: 7006\n",
 /// );
-/// let udp_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let udp_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let mut channel = UDPFarChannel::create(&mut ctx, udp_config)

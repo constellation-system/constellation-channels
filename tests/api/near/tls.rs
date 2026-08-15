@@ -20,11 +20,13 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread::spawn;
 
-use constellation_channels::config::tls::TLSClientConfig;
-use constellation_channels::config::tls::TLSServerConfig;
 use constellation_channels::config::TLSNearAcceptorConfig;
 use constellation_channels::config::TLSNearConnectorConfig;
 use constellation_channels::config::UnixNearChannelConfig;
+use constellation_channels::config::tls::TLSClientConfig;
+use constellation_channels::config::tls::TLSServerConfig;
+use constellation_channels::near::NearChannel;
+use constellation_channels::near::NearChannelCreate;
 use constellation_channels::near::accept_one;
 use constellation_channels::near::negotiate_one;
 use constellation_channels::near::read_one;
@@ -33,8 +35,6 @@ use constellation_channels::near::tls::TLSNearConnector;
 use constellation_channels::near::unix::UnixNearAcceptor;
 use constellation_channels::near::unix::UnixNearConnector;
 use constellation_channels::near::write_one;
-use constellation_channels::near::NearChannel;
-use constellation_channels::near::NearChannelCreate;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::retry::RetryResult;
 use mio::Interest;
@@ -99,9 +99,9 @@ fn test_negotiate() {
     const PATH: &'static str = "test-tls-negotiate.sock";
 
     let client_conf: TLSNearConnectorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&client_conf(PATH)).unwrap();
+        yaml_serde::from_str(&client_conf(PATH)).unwrap();
     let server_conf: TLSNearAcceptorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&server_conf(PATH)).unwrap();
+        yaml_serde::from_str(&server_conf(PATH)).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
@@ -161,9 +161,9 @@ fn test_send() {
     const PATH: &'static str = "test-tls-send.sock";
 
     let client_conf: TLSNearConnectorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&client_conf(PATH)).unwrap();
+        yaml_serde::from_str(&client_conf(PATH)).unwrap();
     let server_conf: TLSNearAcceptorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&server_conf(PATH)).unwrap();
+        yaml_serde::from_str(&server_conf(PATH)).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
@@ -236,9 +236,9 @@ fn test_recv() {
     const PATH: &'static str = "test-tls-recv.sock";
 
     let client_conf: TLSNearConnectorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&client_conf(PATH)).unwrap();
+        yaml_serde::from_str(&client_conf(PATH)).unwrap();
     let server_conf: TLSNearAcceptorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&server_conf(PATH)).unwrap();
+        yaml_serde::from_str(&server_conf(PATH)).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
@@ -311,9 +311,9 @@ fn test_send_recv() {
     const PATH: &'static str = "test-tls-send-recv.sock";
 
     let client_conf: TLSNearConnectorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&client_conf(PATH)).unwrap();
+        yaml_serde::from_str(&client_conf(PATH)).unwrap();
     let server_conf: TLSNearAcceptorConfig<UnixNearChannelConfig> =
-        serde_yaml::from_str(&server_conf(PATH)).unwrap();
+        yaml_serde::from_str(&server_conf(PATH)).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 

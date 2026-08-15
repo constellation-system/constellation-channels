@@ -33,8 +33,8 @@ use std::fmt::Formatter;
 use std::io::Error;
 use std::io::Read;
 use std::io::Write;
-use std::iter::repeat;
 use std::iter::Repeat;
+use std::iter::repeat;
 use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -54,12 +54,12 @@ use constellation_common::retry::RetryResult;
 use log::debug;
 use log::info;
 use log::warn;
-use mio::event::Source;
-use mio::net::TcpListener;
-use mio::net::TcpStream;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
+use mio::net::TcpListener;
+use mio::net::TcpStream;
 
 use crate::addrs::AddrMultiplexer;
 use crate::addrs::AddrsCreateError;
@@ -103,7 +103,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// #
 /// const CONFIG: &'static str = concat!("addr: ::0\n",
 ///                                      "port: 8005\n");
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let mut acceptor = TCPNearAcceptor::create(&mut nscaches,
@@ -152,7 +152,7 @@ pub struct TCPNearAcceptor {
 /// #
 /// const CONFIG: &'static str = concat!("addr: en.wikipedia.org\n",
 ///                                      "port: 443\n");
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector = TCPResolvingNearConnector::create(&mut nscaches,

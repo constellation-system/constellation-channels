@@ -24,15 +24,15 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 use constellation_channels::config::UnixNearChannelConfig;
+use constellation_channels::near::NearChannel;
+use constellation_channels::near::NearChannelCreate;
+use constellation_channels::near::NearChannelCreateWithEndpoint;
 use constellation_channels::near::accept_one;
 use constellation_channels::near::negotiate_one;
 use constellation_channels::near::read_one;
 use constellation_channels::near::unix::UnixNearAcceptor;
 use constellation_channels::near::unix::UnixNearConnector;
 use constellation_channels::near::write_one;
-use constellation_channels::near::NearChannel;
-use constellation_channels::near::NearChannelCreate;
-use constellation_channels::near::NearChannelCreateWithEndpoint;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::retry::RetryResult;
 use constellation_common::unix::UnixSocketAddr;
@@ -52,9 +52,9 @@ fn test_send_recv() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONNECT_CONFIG).unwrap();
+    let connect_config = yaml_serde::from_str(CONNECT_CONFIG).unwrap();
     let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(ACCEPT_CONFIG).unwrap();
+        yaml_serde::from_str(ACCEPT_CONFIG).unwrap();
     let path = accept_config.path().to_path_buf();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
@@ -151,9 +151,9 @@ fn test_send_close() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
+    let connect_config = yaml_serde::from_str(CONFIG).unwrap();
     let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
+        yaml_serde::from_str(CONFIG).unwrap();
     let path = accept_config.path().to_path_buf();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
@@ -247,9 +247,9 @@ fn test_recv_close() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
+    let connect_config = yaml_serde::from_str(CONFIG).unwrap();
     let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
+        yaml_serde::from_str(CONFIG).unwrap();
     let path = accept_config.path().to_path_buf();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));

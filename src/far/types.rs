@@ -44,6 +44,14 @@ use mio::event::Source;
 
 use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
+use crate::far::AcquiredResolveStaticError;
+use crate::far::FarChannel;
+use crate::far::FarChannelAcquired;
+use crate::far::FarChannelAcquiredResolve;
+use crate::far::FarChannelCreate;
+use crate::far::FarChannelFlows;
+use crate::far::FarChannelSocket;
+use crate::far::FarChannelXfrm;
 use crate::far::compound::CompoundAcquiredShutdownNegotiatePending;
 use crate::far::compound::CompoundFarChannel;
 use crate::far::compound::CompoundFarChannelAcquireError;
@@ -76,14 +84,6 @@ use crate::far::compound::CompoundShutdownError;
 use crate::far::compound::CompoundShutdownNegotiator;
 use crate::far::compound::CompoundShutdownNegotiatorPending;
 use crate::far::flows::BufferedFlow;
-use crate::far::AcquiredResolveStaticError;
-use crate::far::FarChannel;
-use crate::far::FarChannelAcquired;
-use crate::far::FarChannelAcquiredResolve;
-use crate::far::FarChannelCreate;
-use crate::far::FarChannelFlows;
-use crate::far::FarChannelSocket;
-use crate::far::FarChannelXfrm;
 
 pub trait FlowAuthNShutdownTypes<Flow>
 where
@@ -108,13 +108,13 @@ where
     type ShutdownStartError: Debug + Display + ScopedError;
     type ShutdownNegoError: Debug + Display + ScopedError;
     type ShutdownNego: NegotiatorStart<
-        (),
-        Flow,
-        Param = Self::ShutdownParam,
-        Pending = Self::ShutdownPending,
-        StartError = Self::ShutdownStartError,
-        NegotiateError = Self::ShutdownNegoError
-    >;
+            (),
+            Flow,
+            Param = Self::ShutdownParam,
+            Pending = Self::ShutdownPending,
+            StartError = Self::ShutdownStartError,
+            NegotiateError = Self::ShutdownNegoError
+        >;
 }
 
 pub trait FlowsEntryTypes<Flow>: FlowAuthNShutdownTypes<Flow> + Sized
@@ -133,10 +133,10 @@ where
     type ConvertError: Debug + Display;
     type Sock: Source + Socket<Addr = Self::SockAddr> + Sender + Receiver;
     type Xfrm: DatagramXfrm<
-        LocalAddr = Self::LocalAddr,
-        PeerAddr = Self::PeerAddr,
-        Error = Self::XfrmError
-    >;
+            LocalAddr = Self::LocalAddr,
+            PeerAddr = Self::PeerAddr,
+            Error = Self::XfrmError
+        >;
     type XfrmError: Debug + Display + ScopedError;
     type OutParam;
     type OutPending;
@@ -169,10 +169,10 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
     type CreateError: Debug + Display + ScopedError;
     type InnerXfrmCreateParam: Clone + Default;
     type InnerXfrm: DatagramXfrmCreate<
-        Addr = Self::ChannelParam,
-        CreateParam = Self::InnerXfrmCreateParam,
-        Error = Self::InnerXfrmError
-    >;
+            Addr = Self::ChannelParam,
+            CreateParam = Self::InnerXfrmCreateParam,
+            Error = Self::InnerXfrmError
+        >;
     type InnerXfrmError: Debug + Display + ScopedError;
     type ResolverError: Debug + Display + ScopedError;
     type WrapError: Debug + Display + ScopedError;

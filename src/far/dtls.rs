@@ -67,17 +67,17 @@ use openssl::ssl::SslAcceptor;
 use openssl::ssl::SslConnector;
 use openssl::ssl::SslStream;
 
+use crate::config::DTLSFarChannelConfig;
 use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
 use crate::config::tls::TLSPeerConfig;
-use crate::config::DTLSFarChannelConfig;
-use crate::far::flows::BufferedFlow;
 use crate::far::FarChannel;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::flows::BufferedFlow;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::tls::DTLSShutdownNegotiator;
 use crate::tls::TLSStartError;
@@ -136,7 +136,7 @@ use crate::tls::TLSStartError;
 ///     "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
 ///     "key: tests/data/certs/server/private/test_server_key.pem\n",
 /// );
-/// let dtls_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let dtls_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let mut channel = DTLSFarChannel::<UDPFarChannel>

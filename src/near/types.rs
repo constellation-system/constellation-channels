@@ -36,6 +36,10 @@ use mio::event::Source;
 use crate::config::tls::TLSLoadClient;
 #[cfg(feature = "tls")]
 use crate::config::tls::TLSLoadServer;
+use crate::near::NearChannel;
+use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
+use crate::near::NearConnector;
 use crate::near::compound::CompoundNearAcceptor;
 use crate::near::compound::CompoundNearAcceptorNegotiateError;
 use crate::near::compound::CompoundNearAcceptorNegotiatePending;
@@ -57,10 +61,6 @@ use crate::near::compound::CompoundNearServerConn;
 use crate::near::compound::CompoundNearShutdownNegotiatorPending;
 use crate::near::compound::CompoundNegotiatorStartError;
 use crate::near::compound::CompoundShutdownError;
-use crate::near::NearChannel;
-use crate::near::NearChannelCreate;
-use crate::near::NearChannelCreateWithEndpoint;
-use crate::near::NearConnector;
 
 pub trait NearSessionNegoTypes {
     type Prin: Clone + Debug + Display + Eq + Hash;
@@ -95,23 +95,23 @@ pub trait NearSessionNegoTypes {
     type ShutdownNegoError: Debug + Display + ScopedError;
     type ShutdownStartError: Debug + Display + ScopedError;
     type ShutdownNego: NegotiatorStart<
-        Self::ShutdownValue,
-        Self::Conn,
-        Param = Self::ShutdownParam,
-        Pending = Self::ShutdownPending,
-        StartError = Self::ShutdownStartError,
-        NegotiateError = Self::ShutdownNegoError
-    >;
+            Self::ShutdownValue,
+            Self::Conn,
+            Param = Self::ShutdownParam,
+            Pending = Self::ShutdownPending,
+            StartError = Self::ShutdownStartError,
+            NegotiateError = Self::ShutdownNegoError
+        >;
     type Channel: NearChannel<
-        Conn = Self::Conn,
-        Endpoint = Self::Endpoint,
-        State = Self::ConnState,
-        Pending = Self::ConnPending,
-        ShutdownValue = Self::ShutdownValue,
-        ShutdownNego = Self::ShutdownNego,
-        StartError = Self::SessionStartError,
-        NegotiateError = Self::SessionNegoError
-    >;
+            Conn = Self::Conn,
+            Endpoint = Self::Endpoint,
+            State = Self::ConnState,
+            Pending = Self::ConnPending,
+            ShutdownValue = Self::ShutdownValue,
+            ShutdownNego = Self::ShutdownNego,
+            StartError = Self::SessionStartError,
+            NegotiateError = Self::SessionNegoError
+        >;
     type SessionStartError: Debug + Display + ScopedError;
     type SessionNegoError: Debug + Display + ScopedError;
 }
@@ -152,13 +152,13 @@ pub trait NearDuplexNegoTypes {
     type InShutdownNegoError: Debug + Display + ScopedError;
     type InShutdownStartError: Debug + Display + ScopedError;
     type InShutdownNego: NegotiatorStart<
-        Self::InShutdownValue,
-        Self::InConn,
-        Param = Self::InShutdownParam,
-        Pending = Self::InShutdownPending,
-        StartError = Self::InShutdownStartError,
-        NegotiateError = Self::InShutdownNegoError
-    >;
+            Self::InShutdownValue,
+            Self::InConn,
+            Param = Self::InShutdownParam,
+            Pending = Self::InShutdownPending,
+            StartError = Self::InShutdownStartError,
+            NegotiateError = Self::InShutdownNegoError
+        >;
     type InChannel: NearChannel<
             Conn = Self::InConn,
             Endpoint = Self::InEndpoint,
@@ -176,26 +176,26 @@ pub trait NearDuplexNegoTypes {
     type InSessionStartError: Debug + Display + ScopedError;
     type InSessionNegoError: Debug + Display + ScopedError;
     type Inbound: NearSessionNegoTypes<
-        Prin = Self::InPrin,
-        AuthNPending = Self::InAuthNPending,
-        AuthNSession = Self::InAuthNSession,
-        AuthN = Self::InAuthN,
-        AuthStartError = Self::InAuthStartError,
-        AuthNegoError = Self::InAuthNegoError,
-        Endpoint = Self::InEndpoint,
-        Conn = Self::InConn,
-        ConnState = Self::InConnState,
-        ConnPending = Self::InConnPending,
-        ShutdownParam = Self::InShutdownParam,
-        ShutdownPending = Self::InShutdownPending,
-        ShutdownValue = Self::InShutdownValue,
-        ShutdownNegoError = Self::InShutdownNegoError,
-        ShutdownStartError = Self::InShutdownStartError,
-        ShutdownNego = Self::InShutdownNego,
-        Channel = Self::InChannel,
-        SessionStartError = Self::InSessionStartError,
-        SessionNegoError = Self::InSessionNegoError
-    >;
+            Prin = Self::InPrin,
+            AuthNPending = Self::InAuthNPending,
+            AuthNSession = Self::InAuthNSession,
+            AuthN = Self::InAuthN,
+            AuthStartError = Self::InAuthStartError,
+            AuthNegoError = Self::InAuthNegoError,
+            Endpoint = Self::InEndpoint,
+            Conn = Self::InConn,
+            ConnState = Self::InConnState,
+            ConnPending = Self::InConnPending,
+            ShutdownParam = Self::InShutdownParam,
+            ShutdownPending = Self::InShutdownPending,
+            ShutdownValue = Self::InShutdownValue,
+            ShutdownNegoError = Self::InShutdownNegoError,
+            ShutdownStartError = Self::InShutdownStartError,
+            ShutdownNego = Self::InShutdownNego,
+            Channel = Self::InChannel,
+            SessionStartError = Self::InSessionStartError,
+            SessionNegoError = Self::InSessionNegoError
+        >;
     type OutEndpoint: Clone
         + Debug
         + Display
@@ -237,13 +237,13 @@ pub trait NearDuplexNegoTypes {
     type OutShutdownNegoError: Debug + Display + ScopedError;
     type OutShutdownStartError: Debug + Display + ScopedError;
     type OutShutdownNego: NegotiatorStart<
-        Self::OutShutdownValue,
-        Self::OutConn,
-        Param = Self::OutShutdownParam,
-        Pending = Self::OutShutdownPending,
-        StartError = Self::OutShutdownStartError,
-        NegotiateError = Self::OutShutdownNegoError
-    >;
+            Self::OutShutdownValue,
+            Self::OutConn,
+            Param = Self::OutShutdownParam,
+            Pending = Self::OutShutdownPending,
+            StartError = Self::OutShutdownStartError,
+            NegotiateError = Self::OutShutdownNegoError
+        >;
     type OutParam: Clone;
     type OutChannel: NearConnector
         + NearChannelCreateWithEndpoint<
@@ -264,26 +264,26 @@ pub trait NearDuplexNegoTypes {
     type OutSessionStartError: Debug + Display + ScopedError;
     type OutSessionNegoError: Debug + Display + ScopedError;
     type Outbound: NearSessionNegoTypes<
-        Prin = Self::OutPrin,
-        AuthNPending = Self::OutAuthNPending,
-        AuthNSession = Self::OutAuthNSession,
-        AuthN = Self::OutAuthN,
-        AuthStartError = Self::OutAuthStartError,
-        AuthNegoError = Self::OutAuthNegoError,
-        Endpoint = Self::OutEndpoint,
-        Conn = Self::OutConn,
-        ConnState = Self::OutConnState,
-        ConnPending = Self::OutConnPending,
-        ShutdownParam = Self::OutShutdownParam,
-        ShutdownPending = Self::OutShutdownPending,
-        ShutdownValue = Self::OutShutdownValue,
-        ShutdownNegoError = Self::OutShutdownNegoError,
-        ShutdownStartError = Self::OutShutdownStartError,
-        ShutdownNego = Self::OutShutdownNego,
-        Channel = Self::OutChannel,
-        SessionStartError = Self::OutSessionStartError,
-        SessionNegoError = Self::OutSessionNegoError
-    >;
+            Prin = Self::OutPrin,
+            AuthNPending = Self::OutAuthNPending,
+            AuthNSession = Self::OutAuthNSession,
+            AuthN = Self::OutAuthN,
+            AuthStartError = Self::OutAuthStartError,
+            AuthNegoError = Self::OutAuthNegoError,
+            Endpoint = Self::OutEndpoint,
+            Conn = Self::OutConn,
+            ConnState = Self::OutConnState,
+            ConnPending = Self::OutConnPending,
+            ShutdownParam = Self::OutShutdownParam,
+            ShutdownPending = Self::OutShutdownPending,
+            ShutdownValue = Self::OutShutdownValue,
+            ShutdownNegoError = Self::OutShutdownNegoError,
+            ShutdownStartError = Self::OutShutdownStartError,
+            ShutdownNego = Self::OutShutdownNego,
+            Channel = Self::OutChannel,
+            SessionStartError = Self::OutSessionStartError,
+            SessionNegoError = Self::OutSessionNegoError
+        >;
 }
 
 /// A standard [NearDuplexNegoTypes] object, created from two

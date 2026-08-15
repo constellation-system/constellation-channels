@@ -108,9 +108,9 @@
 //!   transactions to multiple endpoints, and for testing.
 
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -136,12 +136,12 @@ use constellation_common::net::Socket;
 use log::debug;
 use log::error;
 use log::trace;
-use mio::event::Source;
 use mio::Events;
 use mio::Interest;
 use mio::Poll;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::config::FlowsConfig;
 
@@ -322,7 +322,7 @@ where
     ) -> Result<(), Error> {
         self.socket
             .try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
+            .map_err(|_| Error::other("socket get mut failed"))?
             .register(registry, token, interests)
     }
 
@@ -335,7 +335,7 @@ where
     ) -> Result<(), Error> {
         self.socket
             .try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
+            .map_err(|_| Error::other("socket get mut failed"))?
             .reregister(registry, token, interests)
     }
 
@@ -346,7 +346,7 @@ where
     ) -> Result<(), Error> {
         self.socket
             .try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
+            .map_err(|_| Error::other("socket get mut failed"))?
             .deregister(registry)
     }
 }
@@ -420,7 +420,7 @@ where
     pub fn local_addr(&self) -> Result<Sock::Addr, Error> {
         self.socket
             .try_borrow()
-            .map_err(|_| Error::new(ErrorKind::Other, "socket get failed"))?
+            .map_err(|_| Error::other("socket get failed"))?
             .local_addr()
     }
 
@@ -430,7 +430,7 @@ where
         Ok(self
             .outbuf
             .try_borrow()
-            .map_err(|_| Error::new(ErrorKind::Other, "outbuf get failed"))?
+            .map_err(|_| Error::other("outbuf get failed"))?
             .is_empty())
     }
 
@@ -441,9 +441,10 @@ where
     /// sent due to [ErrorKind::WouldBlock] results.
     pub fn push(&mut self) -> Result<(), Error> {
         // Try to get the output buffer to push the message.
-        let mut outbuf = self.outbuf.try_borrow_mut().map_err(|_| {
-            Error::new(ErrorKind::Other, "outbuf get mut failed")
-        })?;
+        let mut outbuf = self
+            .outbuf
+            .try_borrow_mut()
+            .map_err(|_| Error::other("outbuf get mut failed"))?;
 
         while {
             if let Some((addr, msg)) = outbuf.front() {
@@ -454,9 +455,7 @@ where
                 if let Err(err) = self
                     .socket
                     .try_borrow_mut()
-                    .map_err(|_| {
-                        Error::new(ErrorKind::Other, "socket get mut failed")
-                    })?
+                    .map_err(|_| Error::other("socket get mut failed"))?
                     .send_to(addr, msg)
                 {
                     match err.kind() {
@@ -898,7 +897,7 @@ where
     fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
         self.socket
             .try_borrow()
-            .map_err(|_| Error::new(ErrorKind::Other, "socket get failed"))?
+            .map_err(|_| Error::other("socket get failed"))?
             .local_addr()
     }
 
@@ -925,7 +924,7 @@ where
         match self
             .inbuf
             .try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other, "get_mut failed"))?
+            .map_err(|_| Error::other("get_mut failed"))?
             .pop_back()
         {
             // There's a buffered message; deliver it.
@@ -966,7 +965,7 @@ where
         match self
             .xfrm
             .try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other, "get_mut failed"))?
+            .map_err(|_| Error::other("get_mut failed"))?
             .wrap(buf, self.addr.clone())
         {
             // Copied transformation.
@@ -975,15 +974,12 @@ where
                        "sending {} byte message to {}",
                        buf.len(), addr);
 
-                let addr = Sock::Addr::try_from(addr).map_err(|err| {
-                    Error::new(ErrorKind::Other, err.to_string())
-                })?;
+                let addr = Sock::Addr::try_from(addr)
+                    .map_err(|err| Error::other(err.to_string()))?;
 
                 self.socket
                     .try_borrow_mut()
-                    .map_err(|_| {
-                        Error::new(ErrorKind::Other, "socket get mut failed")
-                    })?
+                    .map_err(|_| Error::other("socket get mut failed"))?
                     .send_to(&addr, &buf)
                     .or_else(|err| {
                         if err.kind() == ErrorKind::WouldBlock {
@@ -996,10 +992,7 @@ where
                             self.outbuf
                                 .try_borrow_mut()
                                 .map_err(|_| {
-                                    Error::new(
-                                        ErrorKind::Other,
-                                        "outbuf get_mut failed"
-                                    )
+                                    Error::other("outbuf get_mut failed")
                                 })
                                 .map(|mut outbuf| {
                                     outbuf.push_back((addr, buf));
@@ -1018,15 +1011,12 @@ where
                        "sending {} byte message to {}",
                        buf.len(), addr);
 
-                let addr = Sock::Addr::try_from(addr).map_err(|err| {
-                    Error::new(ErrorKind::Other, err.to_string())
-                })?;
+                let addr = Sock::Addr::try_from(addr)
+                    .map_err(|err| Error::other(err.to_string()))?;
 
                 self.socket
                     .try_borrow_mut()
-                    .map_err(|_| {
-                        Error::new(ErrorKind::Other, "socket get mut failed")
-                    })?
+                    .map_err(|_| Error::other("socket get mut failed"))?
                     .send_to(&addr, buf)
                     .or_else(|err| {
                         if err.kind() == ErrorKind::WouldBlock {
@@ -1039,10 +1029,7 @@ where
                             self.outbuf
                                 .try_borrow_mut()
                                 .map_err(|_| {
-                                    Error::new(
-                                        ErrorKind::Other,
-                                        "outbuf get_mut failed"
-                                    )
+                                    Error::other("outbuf get_mut failed")
                                 })
                                 .map(|mut outbuf| {
                                     outbuf.push_back((addr, buf.to_vec()));
@@ -1056,7 +1043,7 @@ where
                     })
             }
             // Error occurred transforming.
-            Err(err) => Err(Error::new(ErrorKind::Other, err.to_string()))
+            Err(err) => Err(Error::other(err.to_string()))
         }
     }
 
@@ -1064,7 +1051,7 @@ where
     fn flush(&mut self) -> Result<(), Error> {
         self.socket
             .try_borrow_mut()
-            .map_err(|_| Error::new(ErrorKind::Other, "socket get mut failed"))?
+            .map_err(|_| Error::other("socket get mut failed"))?
             .flush()
     }
 }
@@ -1084,7 +1071,7 @@ where
         if self
             .socket
             .try_borrow_mut()
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?
+            .map_err(|err| Error::other(err.to_string()))?
             .allow_session_addr_creds()
         {
             Ok(Some(self.peer_addr()?))
@@ -1195,11 +1182,11 @@ where
     Xfrm::PeerAddr: Clone + Display + Eq + Hash {
     flows
         .flow(out_param, addr)
-        .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?
+        .map_err(|err| Error::other(err.to_string()))?
         .map(Ok)
         .unwrap_or_else(|| {
             let (flow, _) = accept_one(flows, poll, in_param, token)
-                .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+                .map_err(|err| Error::other(err.to_string()))?;
 
             Ok(flow)
         })
@@ -1225,7 +1212,7 @@ where
                "poll wait");
 
         poll.poll(&mut events, None)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| Error::other(err.to_string()))?;
 
         for event in events.iter() {
             trace!(target: "accept-one",
@@ -1246,25 +1233,19 @@ where
                                     ErrorKind::WouldBlock |
                                     ErrorKind::Interrupted => valid = false,
                                     _ => {
-                                        return Err(Error::new(
-                                            ErrorKind::Other,
+                                        return Err(Error::other(
                                             err.to_string()
-                                        ))
+                                        ));
                                     }
                                 }
                             } else {
-                                return Err(Error::new(
-                                    ErrorKind::Other,
-                                    err.to_string()
-                                ));
+                                return Err(Error::other(err.to_string()));
                             }
                         }
                     }
                 }
 
-                flows.push().map_err(|err| {
-                    Error::new(ErrorKind::Other, err.to_string())
-                })?
+                flows.push().map_err(|err| Error::other(err.to_string()))?
             }
         }
     }
@@ -1378,15 +1359,13 @@ where
                                             ErrorKind::WouldBlock |
                                             ErrorKind::Interrupted => {}
                                             _ => {
-                                                return Err(Error::new(
-                                                    ErrorKind::Other,
+                                                return Err(Error::other(
                                                     err.to_string()
-                                                ))
+                                                ));
                                             }
                                         }
                                     } else {
-                                        return Err(Error::new(
-                                            ErrorKind::Other,
+                                        return Err(Error::other(
                                             err.to_string()
                                         ));
                                     }

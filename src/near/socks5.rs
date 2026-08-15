@@ -89,9 +89,9 @@ use constellation_socks5::params::SOCKS5Params;
 use constellation_socks5::state::SOCKS5State;
 use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
-use mio::event::Source;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::config::SOCKS5AuthNConfig;
 use crate::config::SOCKS5ConnectConfig;
@@ -154,7 +154,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 ///     "  username: test\n",
 ///     "  password: abc123\n"
 /// );
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector: SOCKS5NearConnector<TCPResolvingNearConnector> =

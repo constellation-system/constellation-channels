@@ -148,12 +148,12 @@ use log::warn;
 
 use crate::config::AddrKind;
 use crate::config::AddrsConfig;
-use crate::resolve::cache::NSNameCacheError;
-use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::MixedResolver;
 use crate::resolve::MixedResolverCreateError;
 use crate::resolve::RefreshResult;
 use crate::resolve::Resolution;
+use crate::resolve::cache::NSNameCacheError;
+use crate::resolve::cache::NSNameCachesCtx;
 
 /// Dynamic address multiplexer.
 ///
@@ -514,11 +514,7 @@ impl History for AddrsHistory {
         let diff =
             (self.nsuccesses as f32 - self.nfailures as f32) - exp_retries;
 
-        if total != 0.0 {
-            diff / total
-        } else {
-            0.0
-        }
+        if total != 0.0 { diff / total } else { 0.0 }
     }
 }
 

@@ -21,14 +21,14 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread::spawn;
 
+use constellation_channels::near::NearChannel;
+use constellation_channels::near::NearChannelCreate;
 use constellation_channels::near::accept_one;
 use constellation_channels::near::negotiate_one;
 use constellation_channels::near::read_one;
 use constellation_channels::near::tcp::TCPNearAcceptor;
 use constellation_channels::near::tcp::TCPResolvingNearConnector;
 use constellation_channels::near::write_one;
-use constellation_channels::near::NearChannel;
-use constellation_channels::near::NearChannelCreate;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::retry::RetryResult;
 use mio::Interest;
@@ -48,8 +48,8 @@ fn test_send_recv() {
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let accept_config = serde_yaml::from_str(SERVER_CONFIG).unwrap();
-    let connect_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
+    let accept_config = yaml_serde::from_str(SERVER_CONFIG).unwrap();
+    let connect_config = yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 

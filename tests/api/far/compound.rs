@@ -25,6 +25,9 @@ use std::thread::spawn;
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FlowsConfig;
+use constellation_channels::far::FarChannel;
+use constellation_channels::far::FarChannelCreate;
+use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::compound::CompoundFarChannel;
 use constellation_channels::far::compound::CompoundFarChannelAcquireState;
 use constellation_channels::far::compound::CompoundFarChannelParam;
@@ -40,9 +43,6 @@ use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPDatagramXfrm;
 use constellation_channels::far::unix::UnixDatagramXfrm;
-use constellation_channels::far::FarChannel;
-use constellation_channels::far::FarChannelCreate;
-use constellation_channels::far::FarChannelFlows;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::IPEndpointAddr;
@@ -105,9 +105,9 @@ fn test_compound_dtls_unix() {
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
     let server_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(SERVER_CONFIG).unwrap();
+        yaml_serde::from_str(SERVER_CONFIG).unwrap();
     let client_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(CLIENT_CONFIG).unwrap();
+        yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
@@ -322,9 +322,9 @@ fn test_compound_dtls_udp() {
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
     let server_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(SERVER_CONFIG).unwrap();
+        yaml_serde::from_str(SERVER_CONFIG).unwrap();
     let client_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(CLIENT_CONFIG).unwrap();
+        yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 
@@ -570,9 +570,9 @@ fn test_compound_dtls_double() {
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
     let server_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(SERVER_CONFIG).unwrap();
+        yaml_serde::from_str(SERVER_CONFIG).unwrap();
     let client_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(CLIENT_CONFIG).unwrap();
+        yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 

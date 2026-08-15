@@ -164,15 +164,14 @@ use constellation_streams::state_machine::RawStateMachine;
 use constellation_streams::state_machine::RawStateMachineError;
 use constellation_streams::threads::TokensCtx;
 use log::info;
-use mio::event::Source;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::ResolverConfig;
 use crate::config::SOCKS5AssocConfig;
 use crate::config::SOCKS5AuthNConfig;
-use crate::far::flows::BufferedFlow;
 use crate::far::AcquiredResolver;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
@@ -181,11 +180,12 @@ use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::flows::BufferedFlow;
 use crate::near::NearChannelCreate;
 use crate::near::NearConnector;
+use crate::resolve::Resolver;
 use crate::resolve::cache::NSNameCacheError;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::resolve::Resolver;
 
 /// A far-link channel that communicates through a SOCKS5 proxy.
 ///
@@ -244,7 +244,7 @@ use crate::resolve::Resolver;
 ///     "  username: test\n",
 ///     "  password: abc123\n"
 /// );
-/// let socks5_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let socks5_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let channel: SOCKS5FarChannel<TCPResolvingNearConnector, SocketAddr,

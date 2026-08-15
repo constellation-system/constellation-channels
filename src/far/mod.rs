@@ -173,18 +173,18 @@ use constellation_common::net::Socket;
 use constellation_common::retry::RetryResult;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::threads::TokensCtx;
-use mio::event::Source;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::FlowsConfig;
 use crate::config::ResolverConfig;
 use crate::far::flows::BufferedFlow;
 use crate::far::flows::Flows;
+use crate::resolve::Resolver;
 #[cfg(feature = "socks5")]
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::resolve::Resolver;
 
 pub mod channels;
 pub mod compound;
@@ -528,14 +528,8 @@ where
         Display,
     InnerXfrm: DatagramXfrm {
     type Flow: Session + Credentials + Read + Write;
-    type InboundNego: NegotiatorStart<
-        Self::Flow,
-        BufferedFlow<Self::Socket, Xfrm>
-    >;
-    type OutboundNego: NegotiatorStart<
-        Self::Flow,
-        BufferedFlow<Self::Socket, Xfrm>
-    >;
+    type InboundNego: NegotiatorStart<Self::Flow, BufferedFlow<Self::Socket, Xfrm>>;
+    type OutboundNego: NegotiatorStart<Self::Flow, BufferedFlow<Self::Socket, Xfrm>>;
     type ShutdownNego: NegotiatorStart<(), Self::Flow>;
     type InboundNegoError: Display + ScopedError;
     type OutboundNegoError: Display + ScopedError;

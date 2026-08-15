@@ -51,10 +51,10 @@ use constellation_common::net::NegotiatorResult;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
-use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 use openssl::error::ErrorStack;
 use openssl::ssl::HandshakeError;
 use openssl::ssl::MidHandshakeSslStream;
@@ -62,11 +62,11 @@ use openssl::ssl::SslAcceptor;
 use openssl::ssl::SslConnector;
 use openssl::ssl::SslStream;
 
+use crate::config::TLSChannelConfig;
+use crate::config::TLSParam;
 use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
-use crate::config::TLSChannelConfig;
-use crate::config::TLSParam;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
@@ -155,7 +155,7 @@ pub enum TLSSessionCreateError<Session, Channel> {
 ///     "addr: ::0\n",
 ///     "port: 8008\n"
 /// );
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let acceptor: TLSNearAcceptor<TCPNearAcceptor, TLSServerConfig> =
@@ -231,7 +231,7 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
 ///     "addr: en.wikipedia.org\n",
 ///     "port: 443\n"
 /// );
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector: TLSNearConnector<TCPResolvingNearConnector,

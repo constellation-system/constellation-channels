@@ -22,6 +22,9 @@ use std::net::SocketAddr;
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FlowsConfig;
+use constellation_channels::far::FarChannel;
+use constellation_channels::far::FarChannelCreate;
+use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::compound::CompoundFarChannel;
 use constellation_channels::far::compound::CompoundFarChannelAcquireState;
 use constellation_channels::far::compound::CompoundFarChannelParam;
@@ -35,9 +38,6 @@ use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPDatagramXfrm;
 use constellation_channels::far::unix::UnixDatagramXfrm;
-use constellation_channels::far::FarChannel;
-use constellation_channels::far::FarChannelCreate;
-use constellation_channels::far::FarChannelFlows;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::DatagramXfrmCreate;
@@ -161,7 +161,7 @@ where
 fn server() {
     let mut poll = Poll::new().expect("Expected success");
     let server_config: CompoundFarChannelConfig =
-        serde_yaml::from_str(SERVER_CONFIG).unwrap();
+        yaml_serde::from_str(SERVER_CONFIG).unwrap();
     let mut ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
@@ -235,7 +235,7 @@ fn client() {
     let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
         UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
     );
-    let client_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
+    let client_config = yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let mut ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()

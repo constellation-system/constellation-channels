@@ -70,19 +70,29 @@ use constellation_socks5::comm::SOCKS5UDPXfrm;
 use constellation_socks5::error::SOCKS5UDPError;
 use constellation_streams::channels::ChannelParam;
 use constellation_streams::threads::TokensCtx;
-use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
-use crate::config::tls::TLSLoadConfigError;
-use crate::config::tls::TLSPeerConfig;
 use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundFarEndpoint;
 use crate::config::CompoundFarIPChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
 use crate::config::ResolverConfig;
+use crate::config::tls::TLSLoadConfigError;
+use crate::config::tls::TLSPeerConfig;
+use crate::far::AcquiredResolveStaticError;
+use crate::far::AcquiredResolver;
+use crate::far::EmptyResolverError;
+use crate::far::FarChannel;
+use crate::far::FarChannelAcquired;
+use crate::far::FarChannelAcquiredResolve;
+use crate::far::FarChannelCreate;
+use crate::far::FarChannelFlows;
+use crate::far::FarChannelSocket;
+use crate::far::FarChannelXfrm;
 use crate::far::dtls::DTLSFarChannel;
 use crate::far::dtls::DTLSFlow;
 use crate::far::dtls::DTLSInboundNegoError;
@@ -128,16 +138,6 @@ use crate::far::udp::UDPFarChannel;
 use crate::far::udp::UDPFarSocket;
 use crate::far::unix::UnixDatagramSocket;
 use crate::far::unix::UnixFarChannel;
-use crate::far::AcquiredResolveStaticError;
-use crate::far::AcquiredResolver;
-use crate::far::EmptyResolverError;
-use crate::far::FarChannel;
-use crate::far::FarChannelAcquired;
-use crate::far::FarChannelAcquiredResolve;
-use crate::far::FarChannelCreate;
-use crate::far::FarChannelFlows;
-use crate::far::FarChannelSocket;
-use crate::far::FarChannelXfrm;
 use crate::near::compound::CompoundNearClientConn;
 use crate::near::compound::CompoundNearConnectorCreateError;
 use crate::near::compound::CompoundNearConnectorNegotiateError;
@@ -147,8 +147,8 @@ use crate::near::compound::CompoundNearConnectorState;
 use crate::near::compound::CompoundNearShutdownNegotiatorPending;
 use crate::near::compound::CompoundNearShutdownNegotiatorState;
 use crate::near::compound::CompoundResolvingNearConnector;
-use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::Resolution;
+use crate::resolve::cache::NSNameCachesCtx;
 use crate::tls::DTLSShutdownNegotiator;
 use crate::tls::TLSShutdownError;
 use crate::tls::TLSShutdownNegoPending;
@@ -235,7 +235,7 @@ pub enum CompoundFarIPChannel {
 ///     "    addr: ::0\n",
 ///     "    port: 7002\n"
 /// );
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
 /// let connector = CompoundFarChannel::create(&mut ctx, accept_config)
@@ -2080,10 +2080,7 @@ impl Sender for CompoundFarChannelSocket {
                 CompoundFarChannelSocket::IP { ip },
                 CompoundFarChannelAddr::IP { ip: addr }
             ) => ip.send_to(addr, buf),
-            _ => Err(Error::new(
-                ErrorKind::Other,
-                "socket and address type mismatch"
-            ))
+            _ => Err(Error::other("socket and address type mismatch"))
         }
     }
 
@@ -2101,10 +2098,7 @@ impl Sender for CompoundFarChannelSocket {
                 CompoundFarChannelSocket::IP { ip },
                 CompoundFarChannelAddr::IP { ip: addr }
             ) => ip.send_to_vectored(addr, bufs),
-            _ => Err(Error::new(
-                ErrorKind::Other,
-                "socket and address type mismatch"
-            ))
+            _ => Err(Error::other("socket and address type mismatch"))
         }
     }
 
@@ -2691,10 +2685,7 @@ impl FarChannel for CompoundFarIPChannel {
                 CompoundFarIPChannel::SOCKS5 { socks5 },
                 CompoundFarIPChannelAcquired::SOCKS5 { socks5: val }
             ) => socks5.socks5_target(val),
-            _ => Err(Error::new(
-                ErrorKind::Other,
-                "socket and address type mismatch"
-            ))
+            _ => Err(Error::other("socket and address type mismatch"))
         }
     }
 }
@@ -3021,10 +3012,7 @@ impl FarChannel for CompoundFarChannel {
                 CompoundFarChannelAcquired::IP { ip: val }
             ) => ip.socks5_target(val),
             (CompoundFarChannel::DTLS { dtls }, val) => dtls.socks5_target(val),
-            _ => Err(Error::new(
-                ErrorKind::Other,
-                "socket and address type mismatch"
-            ))
+            _ => Err(Error::other("socket and address type mismatch"))
         }
     }
 }
@@ -5153,10 +5141,7 @@ where
             CompoundIPFlow::Basic { flow } => {
                 let addr = match flow.local_addr()? {
                     CompoundFarChannelAddr::IP { ip } => Ok(ip),
-                    _ => Err(Error::new(
-                        ErrorKind::Other,
-                        "address type mismatch"
-                    ))
+                    _ => Err(Error::other("address type mismatch"))
                 }?;
                 let addr = CompoundFarChannelAddr::IP { ip: addr };
 
@@ -5171,7 +5156,7 @@ where
         match self {
             CompoundIPFlow::Basic { flow } => match flow.peer_addr()? {
                 CompoundFarChannelXfrmPeerAddr::IP { ip } => Ok(ip),
-                _ => Err(Error::new(ErrorKind::Other, "address type mismatch"))
+                _ => Err(Error::other("address type mismatch"))
             },
             CompoundIPFlow::DTLS { flow } => flow.peer_addr()
         }
@@ -6056,8 +6041,7 @@ impl TryFrom<CompoundFarChannelXfrmPeerAddr>
     ) -> Result<CompoundFarIPChannelXfrmPeerAddr, Error> {
         match val {
             CompoundFarChannelXfrmPeerAddr::IP { ip } => Ok(ip),
-            _ => Err(Error::new(
-                ErrorKind::Other,
+            _ => Err(Error::other(
                 "cannot convert Unix socket address to IP address"
             ))
         }
@@ -6161,8 +6145,7 @@ impl TryFrom<CompoundFarChannelAddr> for SocketAddr {
     #[inline]
     fn try_from(val: CompoundFarChannelAddr) -> Result<SocketAddr, Error> {
         match val {
-            CompoundFarChannelAddr::Unix { .. } => Err(Error::new(
-                ErrorKind::Other,
+            CompoundFarChannelAddr::Unix { .. } => Err(Error::other(
                 "address type mismatch: expected IP, got Unix"
             )),
             CompoundFarChannelAddr::IP { ip } => Ok(ip)

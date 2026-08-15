@@ -69,12 +69,12 @@ use constellation_common::unix::UnixSocketPath;
 use log::debug;
 use log::info;
 use log::warn;
-use mio::event::Source;
-use mio::net::UnixListener;
-use mio::net::UnixStream;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
+use mio::net::UnixListener;
+use mio::net::UnixStream;
 
 use crate::config::UnixNearChannelConfig;
 use crate::config::UnixNearConnectorPartialConfig;
@@ -117,7 +117,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = "path: acceptor_example.sock";
-/// let config = serde_yaml::from_str(CONFIG).unwrap();
+/// let config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let acceptor = UnixNearAcceptor::create(&mut nscaches, config).unwrap();
@@ -169,7 +169,7 @@ pub struct UnixNearConnectorParams;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = "path: /var/run/test/test.sock\n";
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector = UnixNearConnector::create(&mut nscaches, accept_config)

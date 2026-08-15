@@ -24,6 +24,9 @@ use std::thread::spawn;
 use constellation_channels::config::DTLSFarChannelConfig;
 use constellation_channels::config::FlowsConfig;
 use constellation_channels::config::UDPFarChannelConfig;
+use constellation_channels::far::FarChannel;
+use constellation_channels::far::FarChannelCreate;
+use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::dtls::DTLSFarChannel;
 use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::flows::accept_one;
@@ -31,9 +34,6 @@ use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
 use constellation_channels::far::flows::write_one;
 use constellation_channels::far::udp::UDPFarChannel;
-use constellation_channels::far::FarChannel;
-use constellation_channels::far::FarChannelCreate;
-use constellation_channels::far::FarChannelFlows;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::net::PassthruDatagramXfrm;
@@ -92,9 +92,9 @@ fn test_send_recv() {
     const SECOND_BYTES: [u8; 8] =
         [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
     let server_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
-        serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
+        yaml_serde::from_str(CHANNEL_CONFIG).unwrap();
     let client_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
-        serde_yaml::from_str(CLIENT_CONFIG).unwrap();
+        yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let server_addr = SocketAddr::new(
         server_config.tls().underlying().addr().clone(),
         server_config.tls().underlying().port()

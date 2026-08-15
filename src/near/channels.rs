@@ -16,10 +16,10 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::collections::hash_map::Entry;
-use std::collections::hash_map::Iter;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::hash_map::Iter;
 use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Error;
@@ -57,19 +57,19 @@ use log::error;
 use log::info;
 use log::trace;
 use log::warn;
-use mio::event::Source;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::channels::ShutdownError;
 use crate::config::NearChannelEntryConfig;
 use crate::config::NearChannelsConfig;
-use crate::near::types::NearDuplexNegoTypes;
-use crate::near::types::NearSessionNegoTypes;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
+use crate::near::types::NearDuplexNegoTypes;
+use crate::near::types::NearSessionNegoTypes;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Newtype wrapper for IDs created to refer to specific channels.
@@ -587,7 +587,7 @@ where
                 }
                 // Retry after a delay
                 scope => {
-                    if !matches![scope, ErrorScope::Session] {
+                    if !matches!(scope, ErrorScope::Session) {
                         error!(target: "session-nego-entry",
                                "shouldn't see error with scope {} here",
                                scope);
@@ -904,7 +904,7 @@ where
                 },
                 // Retry after a delay
                 scope => {
-                    if !matches![scope, ErrorScope::Session] {
+                    if !matches!(scope, ErrorScope::Session) {
                         error!(target: "session-nego-entry",
                                "shouldn't see error with scope {} here",
                                scope);
@@ -1332,13 +1332,7 @@ where
 
                 // See if it's time to try to reconnect.
                 let now = Instant::now();
-                let when = self.when.take().and_then(|when| {
-                    if when < now {
-                        Some(when)
-                    } else {
-                        None
-                    }
-                });
+                let when = self.when.take().filter(|&when| when < now);
 
                 if let Some(when) = when {
                     Ok(RetryResult::Retry(when))
@@ -1531,7 +1525,7 @@ where
                 }
                 // Retry after a delay
                 scope => {
-                    if !matches![scope, ErrorScope::Session] {
+                    if !matches!(scope, ErrorScope::Session) {
                         error!(target: "connector-entry",
                                "shouldn't see error with scope {} here",
                                scope);
@@ -1690,7 +1684,7 @@ where
                 },
                 // Retry after a delay
                 scope => {
-                    if !matches![scope, ErrorScope::Session] {
+                    if !matches!(scope, ErrorScope::Session) {
                         error!(target: "connector-entry",
                                "shouldn't see error with scope {} here",
                                scope);
@@ -1762,7 +1756,7 @@ where
     ) -> Result<(), std::io::Error>,
     Types: NearDuplexNegoTypes,
     Ctx: RegistryCtx + TokensCtx {
-    if when.map_or(true, |when| when <= Instant::now()) {
+    if when.is_none_or(|when| when <= Instant::now()) {
         let mut incoming = Vec::new();
 
         *when = None;
@@ -2199,8 +2193,7 @@ where
                                 },
                                 // Record a deferral.
                                 Ok(RetryResult::Retry(when)) => {
-                                    if ent.when.map_or(true, |curr| curr < when)
-                                    {
+                                    if ent.when.is_none_or(|curr| curr < when) {
                                         ent.when = Some(when);
                                     }
                                 }
@@ -2633,17 +2626,17 @@ where
                    endpoint);
         }
 
-        if let Some(session_endpoint) = session_endpoint {
-            if &session_endpoint != endpoint {
-                if let Some(token) = conn_tokens.remove(&session_endpoint) {
-                    trace!(target: "duplex-channel-mode",
-                           "removing extra tokens entry for {} to token {:?}",
-                           endpoint, token);
-                } else {
-                    error!(target: "duplex-channel-mode",
-                           "address {} not present",
-                           endpoint);
-                }
+        if let Some(session_endpoint) = session_endpoint &&
+            &session_endpoint != endpoint
+        {
+            if let Some(token) = conn_tokens.remove(&session_endpoint) {
+                trace!(target: "duplex-channel-mode",
+                       "removing extra tokens entry for {} to token {:?}",
+                       endpoint, token);
+            } else {
+                error!(target: "duplex-channel-mode",
+                       "address {} not present",
+                       endpoint);
             }
         }
     }
@@ -3011,7 +3004,7 @@ where
                     },
                     // Record a deferral.
                     Ok(RetryResult::Retry(when)) => {
-                        if ent.when.map_or(true, |curr| curr < when) {
+                        if ent.when.is_none_or(|curr| curr < when) {
                             ent.when = Some(when);
                         }
                     }
@@ -3226,17 +3219,17 @@ where
                    endpoint);
         }
 
-        if let Some(session_endpoint) = session_endpoint {
-            if &session_endpoint != endpoint {
-                if let Some(token) = conn_tokens.remove(&session_endpoint) {
-                    trace!(target: "outbound-channel-mode",
-                           "removing extra tokens entry for {} to token {:?}",
-                           session_endpoint, token);
-                } else {
-                    error!(target: "outbound-channel-mode",
-                           "address {} not present",
-                           session_endpoint);
-                }
+        if let Some(session_endpoint) = session_endpoint &&
+            &session_endpoint != endpoint
+        {
+            if let Some(token) = conn_tokens.remove(&session_endpoint) {
+                trace!(target: "outbound-channel-mode",
+                       "removing extra tokens entry for {} to token {:?}",
+                       session_endpoint, token);
+            } else {
+                error!(target: "outbound-channel-mode",
+                       "address {} not present",
+                       session_endpoint);
             }
         }
     }
@@ -4560,6 +4553,7 @@ where
         >,
         Types::OutEndpoint
     >;
+    type ShutdownStreamRetry = Infallible;
 
     fn shutdown_stream(
         &mut self,
@@ -4568,7 +4562,10 @@ where
         _param: &Self::Param,
         stream: DuplexValue<Types::InAuthNSession, Types::OutAuthNSession>
     ) -> Result<
-        RetryResult<(Option<Vec<Self::Param>>, Option<Instant>)>,
+        RetryResult<
+            (Option<Vec<Self::Param>>, Option<Instant>),
+            Self::ShutdownStreamRetry
+        >,
         Self::ShutdownStreamError
     > {
         if let Some(token) =
@@ -4582,6 +4579,26 @@ where
 
             ctx.free_token(token);
         }
+
+        Ok(RetryResult::Success((None, None)))
+    }
+
+    #[inline]
+    fn retry_shutdown_stream(
+        &mut self,
+        _ctx: &mut Ctx,
+        _channel: &NearChannelID,
+        _param: &Self::Param,
+        _retry: Self::ShutdownStreamRetry
+    ) -> Result<
+        RetryResult<
+            (Option<Vec<Self::Param>>, Option<Instant>),
+            Self::ShutdownStreamRetry
+        >,
+        Self::ShutdownStreamError
+    > {
+        error!(target: "near-channels",
+               "should never call retry_shutdown_stream");
 
         Ok(RetryResult::Success((None, None)))
     }
@@ -5504,15 +5521,15 @@ use mio::Interest;
 use mio::Poll;
 
 #[cfg(test)]
-use crate::config::tls::TLSClientConfig;
-#[cfg(test)]
-use crate::config::tls::TLSServerConfig;
-#[cfg(test)]
 use crate::config::CompoundNearAcceptorConfig;
 #[cfg(test)]
 use crate::config::CompoundNearConnectorParam;
 #[cfg(test)]
 use crate::config::CompoundNearConnectorPartialConfig;
+#[cfg(test)]
+use crate::config::tls::TLSClientConfig;
+#[cfg(test)]
+use crate::config::tls::TLSServerConfig;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]
@@ -6181,11 +6198,11 @@ fn compound_entry_test(
 
     let mut nscaches = SharedNSNameCaches::new();
     let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
-        serde_yaml::from_str(server_conf).unwrap();
+        yaml_serde::from_str(server_conf).unwrap();
     let param: Option<CompoundNearConnectorParam> =
-        param_conf.map(|param_conf| serde_yaml::from_str(param_conf).unwrap());
+        param_conf.map(|param_conf| yaml_serde::from_str(param_conf).unwrap());
     let client_conf: CompoundNearConnectorPartialConfig<TLSClientConfig> =
-        serde_yaml::from_str(client_conf).unwrap();
+        yaml_serde::from_str(client_conf).unwrap();
     let acceptor = CompoundNearAcceptor::create(&mut nscaches, server_conf)
         .expect("Expected success");
     let listen = Token(0);

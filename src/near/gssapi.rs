@@ -39,7 +39,6 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
-use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::time::Duration;
@@ -71,17 +70,17 @@ use libgssapi::context::ServerCtx;
 use libgssapi::credential::Cred;
 use libgssapi::credential::CredUsage;
 use libgssapi::name::Name;
-use libgssapi::oid::OidSet;
 use libgssapi::oid::GSS_MECH_KRB5;
 use libgssapi::oid::GSS_NT_HOSTBASED_SERVICE;
+use libgssapi::oid::OidSet;
 use libgssapi::util::Buf;
 use log::debug;
 use log::trace;
 use log::warn;
-use mio::event::Source;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
 
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
@@ -345,14 +344,12 @@ where
         }
         // Server rejected the authentication attempt.
         (GSSAPI_VERSION, GSSAPI_CTX_NEGOTIATE_ERROR) => {
-            Err(Error::new(ErrorKind::Other, "authentication failed"))
+            Err(Error::other("authentication failed"))
         }
         // Bad reply type.
-        (GSSAPI_VERSION, _) => {
-            Err(Error::new(ErrorKind::Other, "bad GSSAPI reply type"))
-        }
+        (GSSAPI_VERSION, _) => Err(Error::other("bad GSSAPI reply type")),
         // Bad version.
-        _ => Err(Error::new(ErrorKind::Other, "bad protocol version code"))
+        _ => Err(Error::other("bad protocol version code"))
     }
 }
 
@@ -1614,7 +1611,7 @@ where
         buf: &mut [u8]
     ) -> Result<usize, Error> {
         let msg = parse_gssapi_payload(&mut self.stream, &mut self.ctx)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| Error::other(err.to_string()))?;
         let len = msg.len();
 
         buf.clone_from_slice(msg.as_ref());
@@ -1636,7 +1633,7 @@ where
         let len = buf.len();
 
         write_gssapi_payload(&mut self.stream, &mut self.ctx, buf)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+            .map_err(|err| Error::other(err.to_string()))?;
 
         Ok(len)
     }
@@ -1647,7 +1644,7 @@ where
         buf: &[u8]
     ) -> Result<(), Error> {
         write_gssapi_payload(&mut self.stream, &mut self.ctx, buf)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))
+            .map_err(|err| Error::other(err.to_string()))
     }
 
     #[inline]

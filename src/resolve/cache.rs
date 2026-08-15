@@ -17,8 +17,8 @@
 // <https://www.gnu.org/licenses/>.
 
 //! Caches for name resolution.
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
@@ -36,8 +36,8 @@ use std::time::Instant;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
-use constellation_common::retry::next_retry_definite;
 use constellation_common::retry::Retry;
+use constellation_common::retry::next_retry_definite;
 use constellation_common::shutdown::ShutdownFlag;
 use constellation_streams::threads::WithTokens;
 use log::debug;

@@ -32,7 +32,6 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
-use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
@@ -63,24 +62,28 @@ use constellation_common::unix::UnixSocketPath;
 use constellation_socks5::comm::SOCKS5Stream;
 #[cfg(feature = "socks5")]
 use constellation_streams::channels::ChannelParam;
-use mio::event::Source;
-use mio::net::UnixStream;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
+use mio::event::Source;
+use mio::net::UnixStream;
 
-#[cfg(feature = "tls")]
-use crate::config::tls::TLSLoadClient;
-#[cfg(feature = "tls")]
-use crate::config::tls::TLSLoadConfigError;
-#[cfg(feature = "tls")]
-use crate::config::tls::TLSLoadServer;
 use crate::config::CompoundNearAcceptorConfig;
 use crate::config::CompoundNearConnectorParam;
 use crate::config::CompoundNearConnectorPartialConfig;
 use crate::config::CompoundResolvingNearConnectorConfig;
 use crate::config::CompoundResolvingNearConnectorPartialConfig;
 use crate::config::TLSParam;
+#[cfg(feature = "tls")]
+use crate::config::tls::TLSLoadClient;
+#[cfg(feature = "tls")]
+use crate::config::tls::TLSLoadConfigError;
+#[cfg(feature = "tls")]
+use crate::config::tls::TLSLoadServer;
+use crate::near::NearChannel;
+use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
+use crate::near::NearConnector;
 #[cfg(feature = "socks5")]
 use crate::near::socks5::SOCKS5NearConnector;
 #[cfg(feature = "socks5")]
@@ -114,10 +117,6 @@ use crate::near::tls::TLSSessionCreateError;
 use crate::near::unix::UnixNearAcceptor;
 #[cfg(feature = "unix")]
 use crate::near::unix::UnixNearConnector;
-use crate::near::NearChannel;
-use crate::near::NearChannelCreate;
-use crate::near::NearChannelCreateWithEndpoint;
-use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::tls::SSLStream;
 use crate::tls::TLSShutdownError;
@@ -562,7 +561,7 @@ pub enum CompoundNearCredential {
 ///     "    addr: ::0\n",
 ///     "    port: 8001\n"
 /// );
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let acceptor: CompoundNearAcceptor<TLSServerConfig> =
@@ -628,7 +627,7 @@ pub enum CompoundNearAcceptor<TLS: Clone + Debug + TLSLoadServer> {
 ///     "    addr: en.wikipedia.org\n",
 ///     "    port: 443\n"
 /// );
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
 /// let connector: CompoundResolvingNearConnector<TLSClientConfig> =
@@ -2221,7 +2220,7 @@ where
                 CompoundNearAcceptor::TLS { tls },
                 CompoundNearAcceptorNegotiateError::TLS { tls: err }
             ) => tls.cleanup(registry, *err),
-            _ => Err(Error::new(ErrorKind::Other, "mismatch in cleanup"))
+            _ => Err(Error::other("mismatch in cleanup"))
         }
     }
 }
@@ -2627,7 +2626,7 @@ where
                 CompoundNearConnector::TLS { tls },
                 CompoundNearConnectorNegotiateError::TLS { tls: err }
             ) => tls.cleanup(registry, *err),
-            _ => Err(Error::new(ErrorKind::Other, "mismatch in cleanup"))
+            _ => Err(Error::other("mismatch in cleanup"))
         }
     }
 }
@@ -3476,7 +3475,7 @@ where
                 CompoundResolvingNearConnector::TLS { tls },
                 CompoundNearConnectorNegotiateError::TLS { tls: err }
             ) => tls.cleanup(registry, *err),
-            _ => Err(Error::new(ErrorKind::Other, "mismatch in cleanup"))
+            _ => Err(Error::other("mismatch in cleanup"))
         }
     }
 }
