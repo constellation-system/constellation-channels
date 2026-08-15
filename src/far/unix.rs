@@ -65,7 +65,6 @@ use std::io::IoSliceMut;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::os::unix::net::UCred;
 
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
@@ -541,7 +540,7 @@ impl Sender for UnixDatagramSocket {
 }
 
 impl Receiver for UnixDatagramSocket {
-    type MsgCred = UCred;
+    type MsgCred = ();
 
     #[inline]
     fn recv_from(

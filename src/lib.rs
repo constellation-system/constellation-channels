@@ -22,7 +22,6 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(clippy::large_enum_variant)]
 #![allow(incomplete_features)]
-#![feature(peer_credentials_unix_socket)]
 
 //! Low-level communications API for Constellation.
 //!

@@ -31,14 +31,11 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
-use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
-#[cfg(feature = "unix")]
-use std::os::unix::net::UCred;
 
 use constellation_auth::cred::Credentials;
 #[cfg(feature = "tls")]
@@ -1029,7 +1026,7 @@ pub enum CompoundFarChannelMsgCred {
     /// Credential harvested from a [UnixFarChannel].
     Unix {
         /// Unix socket message credentials.
-        unix: UCred
+        unix: ()
     },
     /// Credential harvested from a [CompoundFarIPChannel].
     IP {
