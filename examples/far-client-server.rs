@@ -51,7 +51,7 @@ use mio::Interest;
 use mio::Poll;
 use mio::Token;
 
-const CHANNEL_PATH: &'static str = "test_compound_dtls_double_server.sock";
+const SERVER_PATH: &'static str = "far-client-server-example-server.sock";
 
 const SERVER_CONFIG: &'static str = concat!(
     "dtls:\n",
@@ -83,7 +83,7 @@ const SERVER_CONFIG: &'static str = concat!(
     "    cert: test/data/certs/server/certs/test_server_cert.pem\n",
     "    key: test/data/certs/server/private/test_server_key.pem\n",
     "    unix-datagram:\n",
-    "      path: test_compound_dtls_double_server.sock\n",
+    "      path: far-client-server-example-server.sock\n",
 );
 
 const CLIENT_CONFIG: &'static str = concat!(
@@ -116,7 +116,7 @@ const CLIENT_CONFIG: &'static str = concat!(
     "    cert: test/data/certs/client/certs/test_client_cert.pem\n",
     "    key: test/data/certs/client/private/test_client_key.pem\n",
     "    unix-datagram:\n",
-    "      path: test_compound_dtls_double_client.sock\n",
+    "      path: far-client-server-example-client.sock\n",
 );
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
@@ -233,7 +233,7 @@ fn client() {
     };
     let mut poll = Poll::new().expect("Expected success");
     let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
-        UnixSocketPath::try_from(CHANNEL_PATH).unwrap()
+        UnixSocketPath::try_from(SERVER_PATH).unwrap()
     );
     let client_config = yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let mut ctx = ExampleCtx {

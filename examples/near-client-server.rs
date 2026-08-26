@@ -16,15 +16,17 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::net::Shutdown;
-
+use constellation_channels::config::CompoundNearAcceptorConfig;
+use constellation_channels::config::CompoundResolvingNearConnectorConfig;
+use constellation_channels::config::tls::TLSClientConfig;
+use constellation_channels::config::tls::TLSServerConfig;
 use constellation_channels::near::NearChannel;
 use constellation_channels::near::NearChannelCreate;
 use constellation_channels::near::accept_one;
+use constellation_channels::near::compound::CompoundNearAcceptor;
+use constellation_channels::near::compound::CompoundResolvingNearConnector;
 use constellation_channels::near::negotiate_one;
 use constellation_channels::near::read_one;
-use constellation_channels::near::tcp::TCPNearAcceptor;
-use constellation_channels::near::tcp::TCPResolvingNearConnector;
 use constellation_channels::near::write_one;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::retry::RetryResult;
@@ -34,14 +36,12 @@ use mio::Interest;
 use mio::Poll;
 use mio::Token;
 
-const SERVER_CONFIG: &'static str = concat!("addr: ::1\n", "port: 8006\n");
-const CLIENT_CONFIG: &'static str =
-    concat!("addr: localhost\n", "port: 8006\n");
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
 
-fn server() {
-    let accept_config = yaml_serde::from_str(SERVER_CONFIG).unwrap();
+fn server(conf: &str) {
+    let server_conf: CompoundNearAcceptorConfig<TLSServerConfig> =
+        yaml_serde::from_str(conf).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
     let listen = Token(0);
     let session = Token(1);
@@ -49,7 +49,7 @@ fn server() {
 
     info!("creating channel");
 
-    let mut acceptor = TCPNearAcceptor::create(&mut nscaches, accept_config)
+    let mut acceptor = CompoundNearAcceptor::create(&mut nscaches, server_conf)
         .expect("Expected success");
 
     poll.registry()
@@ -81,18 +81,17 @@ fn server() {
 
     info!("finished, shutting down");
 
-    stream.shutdown(Shutdown::Both).unwrap();
-
     assert_eq!(FIRST_BYTES, buf);
 }
 
-fn client() {
-    let connect_config = yaml_serde::from_str(CLIENT_CONFIG).unwrap();
+fn client(conf: &str) {
+    let client_conf: CompoundResolvingNearConnectorConfig<TLSClientConfig> =
+        yaml_serde::from_str(conf).unwrap();
     let mut nscaches = SharedNSNameCaches::new();
     let session = Token(0);
     let mut poll = Poll::new().expect("Expected success");
     let mut conn =
-        TCPResolvingNearConnector::create(&mut nscaches, connect_config)
+        CompoundResolvingNearConnector::create(&mut nscaches, client_conf)
             .expect("expected success");
 
     info!("created channel");
@@ -130,8 +129,8 @@ fn client() {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} [client | server]", args[0]);
+    if args.len() != 3 {
+        eprintln!("Usage: {} [client | server] <config>", args[0]);
         std::process::exit(1);
     }
 
@@ -140,9 +139,11 @@ fn main() {
         .filter_level(LevelFilter::Trace)
         .init();
 
+    let conf = std::fs::read_to_string(&args[2]).unwrap();
+
     match args[1].as_str() {
-        "client" => client(),
-        "server" => server(),
+        "client" => client(conf.as_str()),
+        "server" => server(conf.as_str()),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);

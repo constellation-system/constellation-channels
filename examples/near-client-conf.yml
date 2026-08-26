@@ -1,0 +1,44 @@
+tls:
+  cipher-suites:
+    - TLS_AES_256_GCM_SHA384
+    - TLS_CHACHA20_POLY1305_SHA256
+
+  key-exchange-groups:
+    - X25519
+    - P-256
+
+  trust-root:
+    root-certs:
+      - tests/data/certs/server/ca_cert.pem
+
+    crls: []
+
+  client-cert: tests/data/certs/client/certs/test_client_cert.pem
+
+  client-key: tests/data/certs/client/private/test_client_key.pem
+
+  verify-endpoint: test-server.nowhere.com
+
+  tls:
+    cipher-suites:
+      - TLS_AES_256_GCM_SHA384
+      - TLS_CHACHA20_POLY1305_SHA256
+
+    key-exchange-groups:
+      - X25519
+      - P-256
+
+    trust-root:
+      root-certs:
+        - tests/data/certs/server/ca_cert.pem
+
+      crls: []
+
+    client-cert: tests/data/certs/client/certs/test_client_cert.pem
+
+    client-key: tests/data/certs/client/private/test_client_key.pem
+
+    verify-endpoint: test-server.nowhere.com
+
+    unix-stream:
+      path: near-client-server-example-server.sock
