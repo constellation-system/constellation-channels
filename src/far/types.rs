@@ -40,18 +40,30 @@ use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::channels::ChannelParam;
+use constellation_streams::threads::types::DatagramDispatchPollTypes;
+use constellation_streams::threads::types::DatagramMulticastPollTypes;
+use constellation_streams::threads::types::DatagramSelectorPollTypes;
+use constellation_streams::threads::types::LargeObjDispatchPollTypes;
+use constellation_streams::threads::types::LargeObjMulticastPollTypes;
+use constellation_streams::threads::types::LargeObjSelectorPollTypes;
 use mio::event::Source;
 
 use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
+use crate::config::FarChannelsConfig;
 use crate::far::AcquiredResolveStaticError;
 use crate::far::FarChannel;
 use crate::far::FarChannelAcquired;
 use crate::far::FarChannelAcquiredResolve;
 use crate::far::FarChannelCreate;
 use crate::far::FarChannelFlows;
+use crate::far::FarChannelFlowsError;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
+use crate::far::channels::AcquiredEntryCreateError;
+use crate::far::channels::ChannelEntryCreateError;
+use crate::far::channels::FarChannels;
+use crate::far::channels::FarChannelsCreateError;
 use crate::far::compound::CompoundAcquiredShutdownNegotiatePending;
 use crate::far::compound::CompoundFarChannel;
 use crate::far::compound::CompoundFarChannelAcquireError;
@@ -237,6 +249,450 @@ where
     unix: PhantomData<Unix>,
     udp: PhantomData<UDP>
 }
+
+pub type FarChannelsDatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Types,
+    Ctx
+> =
+    DatagramSelectorPollTypes<
+        InMsg,
+        OutMsg,
+        Wrapper,
+        MsgAuth,
+        Epochs,
+        FarChannels<Types>,
+        FarChannelsConfig<
+            <Types as FarChannelsTypes>::Config,
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthConfig,
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+        >,
+        FarChannelsCreateError<
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthCreateError,
+            <Types as FarChannelsTypes>::CreateError,
+            ChannelEntryCreateError<
+                <Types as FarChannelsTypes>::AcquireError,
+                <Types as FarChannelsTypes>::ShutdownNegoCreateError,
+                <Types as FarChannelsTypes>::AcquireNegoError,
+                AcquiredEntryCreateError<
+                    <Types as FarChannelsTypes>::ResolverError,
+                    FarChannelFlowsError<
+                        <Types as FarChannelsTypes>::SocketError,
+                        <Types as FarChannelsTypes>::XfrmCreateError,
+                        <Types as FarChannelsTypes>::InboundNegoCreateError,
+                        <Types as FarChannelsTypes>::OutboundNegoCreateError
+                    >,
+                    <Types as FarChannelsTypes>::WrapError
+                >
+            >
+        >,
+        <Types as FarChannelsTypes>::Flow,
+        Resolve,
+        Msgs,
+        Recv,
+        Ctx
+    >;
+
+pub type CompoundFarChannelsDatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    SessAuthN,
+    MsgAuth,
+    Unix,
+    UDP,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+> = FarChannelsDatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    Ctx
+>;
+
+pub type FarChannelsLargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    Types,
+    LargeObjTypes,
+    Ctx
+> =
+    LargeObjSelectorPollTypes<
+        InMsg,
+        OutMsg,
+        Epochs,
+        FarChannels<Types>,
+        FarChannelsConfig<
+            <Types as FarChannelsTypes>::Config,
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthConfig,
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+        >,
+        FarChannelsCreateError<
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthCreateError,
+            <Types as FarChannelsTypes>::CreateError,
+            ChannelEntryCreateError<
+                <Types as FarChannelsTypes>::AcquireError,
+                <Types as FarChannelsTypes>::ShutdownNegoCreateError,
+                <Types as FarChannelsTypes>::AcquireNegoError,
+                AcquiredEntryCreateError<
+                    <Types as FarChannelsTypes>::ResolverError,
+                    FarChannelFlowsError<
+                        <Types as FarChannelsTypes>::SocketError,
+                        <Types as FarChannelsTypes>::XfrmCreateError,
+                        <Types as FarChannelsTypes>::InboundNegoCreateError,
+                        <Types as FarChannelsTypes>::OutboundNegoCreateError
+                    >,
+                    <Types as FarChannelsTypes>::WrapError
+                >
+            >
+        >,
+        <Types as FarChannelsTypes>::Flow,
+        Resolve,
+        LargeObjTypes,
+        Ctx
+    >;
+
+pub type CompoundFarChannelsLargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    SessAuthN,
+    Unix,
+    UDP,
+    Epochs,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+> = FarChannelsLargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    LargeObjTypes,
+    Ctx
+>;
+
+pub type FarChannelsDatagramDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Types,
+    Ctx
+> =
+    DatagramDispatchPollTypes<
+        InMsg,
+        OutMsg,
+        Wrapper,
+        MsgAuth,
+        Epochs,
+        FarChannels<Types>,
+        FarChannelsConfig<
+            <Types as FarChannelsTypes>::Config,
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthConfig,
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+        >,
+        FarChannelsCreateError<
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthCreateError,
+            <Types as FarChannelsTypes>::CreateError,
+            ChannelEntryCreateError<
+                <Types as FarChannelsTypes>::AcquireError,
+                <Types as FarChannelsTypes>::ShutdownNegoCreateError,
+                <Types as FarChannelsTypes>::AcquireNegoError,
+                AcquiredEntryCreateError<
+                    <Types as FarChannelsTypes>::ResolverError,
+                    FarChannelFlowsError<
+                        <Types as FarChannelsTypes>::SocketError,
+                        <Types as FarChannelsTypes>::XfrmCreateError,
+                        <Types as FarChannelsTypes>::InboundNegoCreateError,
+                        <Types as FarChannelsTypes>::OutboundNegoCreateError
+                    >,
+                    <Types as FarChannelsTypes>::WrapError
+                >
+            >
+        >,
+        <Types as FarChannelsTypes>::Flow,
+        Resolve,
+        Msgs,
+        Recv,
+        Ctx
+    >;
+
+pub type CompoundFarChannelsDatagramDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    SessAuthN,
+    MsgAuth,
+    Unix,
+    UDP,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+> = FarChannelsDatagramDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    Ctx
+>;
+
+pub type FarChannelsLargeObjDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    Types,
+    LargeObjTypes,
+    Ctx
+> =
+    LargeObjDispatchPollTypes<
+        InMsg,
+        OutMsg,
+        Epochs,
+        FarChannels<Types>,
+        FarChannelsConfig<
+            <Types as FarChannelsTypes>::Config,
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthConfig,
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+        >,
+        FarChannelsCreateError<
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthCreateError,
+            <Types as FarChannelsTypes>::CreateError,
+            ChannelEntryCreateError<
+                <Types as FarChannelsTypes>::AcquireError,
+                <Types as FarChannelsTypes>::ShutdownNegoCreateError,
+                <Types as FarChannelsTypes>::AcquireNegoError,
+                AcquiredEntryCreateError<
+                    <Types as FarChannelsTypes>::ResolverError,
+                    FarChannelFlowsError<
+                        <Types as FarChannelsTypes>::SocketError,
+                        <Types as FarChannelsTypes>::XfrmCreateError,
+                        <Types as FarChannelsTypes>::InboundNegoCreateError,
+                        <Types as FarChannelsTypes>::OutboundNegoCreateError
+                    >,
+                    <Types as FarChannelsTypes>::WrapError
+                >
+            >
+        >,
+        <Types as FarChannelsTypes>::Flow,
+        Resolve,
+        LargeObjTypes,
+        Ctx
+    >;
+
+pub type CompoundFarChannelsLargeObjDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    SessAuthN,
+    Unix,
+    UDP,
+    Epochs,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+> = FarChannelsLargeObjDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    LargeObjTypes,
+    Ctx
+>;
+
+pub type FarChannelsDatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Types,
+    Ctx
+> =
+    DatagramMulticastPollTypes<
+        InMsg,
+        OutMsg,
+        Wrapper,
+        MsgAuth,
+        Epochs,
+        FarChannels<Types>,
+        FarChannelsConfig<
+            <Types as FarChannelsTypes>::Config,
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthConfig,
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+        >,
+        FarChannelsCreateError<
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthCreateError,
+            <Types as FarChannelsTypes>::CreateError,
+            ChannelEntryCreateError<
+                <Types as FarChannelsTypes>::AcquireError,
+                <Types as FarChannelsTypes>::ShutdownNegoCreateError,
+                <Types as FarChannelsTypes>::AcquireNegoError,
+                AcquiredEntryCreateError<
+                    <Types as FarChannelsTypes>::ResolverError,
+                    FarChannelFlowsError<
+                        <Types as FarChannelsTypes>::SocketError,
+                        <Types as FarChannelsTypes>::XfrmCreateError,
+                        <Types as FarChannelsTypes>::InboundNegoCreateError,
+                        <Types as FarChannelsTypes>::OutboundNegoCreateError
+                    >,
+                    <Types as FarChannelsTypes>::WrapError
+                >
+            >
+        >,
+        <Types as FarChannelsTypes>::Flow,
+        Resolve,
+        Msgs,
+        Recv,
+        Ctx
+    >;
+
+pub type CompoundFarChannelsDatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    SessAuthN,
+    MsgAuth,
+    Unix,
+    UDP,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+> = FarChannelsDatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    Ctx
+>;
+
+pub type FarChannelsLargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    Types,
+    LargeObjTypes,
+    Ctx
+> =
+    LargeObjMulticastPollTypes<
+        InMsg,
+        OutMsg,
+        Epochs,
+        FarChannels<Types>,
+        FarChannelsConfig<
+            <Types as FarChannelsTypes>::Config,
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthConfig,
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+        >,
+        FarChannelsCreateError<
+            <Types as FlowAuthNShutdownTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::AuthCreateError,
+            <Types as FarChannelsTypes>::CreateError,
+            ChannelEntryCreateError<
+                <Types as FarChannelsTypes>::AcquireError,
+                <Types as FarChannelsTypes>::ShutdownNegoCreateError,
+                <Types as FarChannelsTypes>::AcquireNegoError,
+                AcquiredEntryCreateError<
+                    <Types as FarChannelsTypes>::ResolverError,
+                    FarChannelFlowsError<
+                        <Types as FarChannelsTypes>::SocketError,
+                        <Types as FarChannelsTypes>::XfrmCreateError,
+                        <Types as FarChannelsTypes>::InboundNegoCreateError,
+                        <Types as FarChannelsTypes>::OutboundNegoCreateError
+                    >,
+                    <Types as FarChannelsTypes>::WrapError
+                >
+            >
+        >,
+        <Types as FarChannelsTypes>::Flow,
+        Resolve,
+        LargeObjTypes,
+        Ctx
+    >;
+
+pub type CompoundFarChannelsLargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    SessAuthN,
+    Unix,
+    UDP,
+    Epochs,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+> = FarChannelsLargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    LargeObjTypes,
+    Ctx
+>;
 
 impl<AuthN, Unix, UDP> Clone for CompoundFarChannelsTypes<AuthN, Unix, UDP>
 where
