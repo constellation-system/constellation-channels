@@ -22,13 +22,13 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 use constellation_channels::config::DTLSFarChannelConfig;
+use constellation_channels::config::DTLSOutboundParam;
 use constellation_channels::config::FlowsConfig;
 use constellation_channels::config::UDPFarChannelConfig;
 use constellation_channels::far::FarChannel;
 use constellation_channels::far::FarChannelCreate;
 use constellation_channels::far::FarChannelFlows;
 use constellation_channels::far::dtls::DTLSFarChannel;
-use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::flows::accept_one;
 use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;

@@ -77,6 +77,9 @@ use crate::config::CompoundFarChannelConfig;
 use crate::config::CompoundFarEndpoint;
 use crate::config::CompoundFarIPChannelConfig;
 use crate::config::CompoundXfrmCreateParam;
+use crate::config::CompoundFarChannelXfrmPeerAddr;
+use crate::config::CompoundFarIPChannelXfrmPeerAddr;
+use crate::config::CompoundOutboundNegotiatorParam;
 use crate::config::ResolverConfig;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSPeerConfig;
@@ -101,7 +104,6 @@ use crate::far::dtls::DTLSOutboundNegoError;
 use crate::far::dtls::DTLSOutboundNegoPending;
 use crate::far::dtls::DTLSOutboundNegotiator;
 use crate::far::dtls::DTLSOutboundNegotiatorState;
-use crate::far::dtls::DTLSOutboundParam;
 use crate::far::flows::BufferedFlow;
 #[cfg(feature = "socks5")]
 use crate::far::socks5::SOCKS5AcquireError;
@@ -338,13 +340,6 @@ pub enum CompoundFarChannelParam {
     }
 }
 
-pub enum CompoundOutboundNegotiatorParam {
-    Basic,
-    DTLS {
-        dtls: Box<DTLSOutboundParam<CompoundOutboundNegotiatorParam>>
-    }
-}
-
 /// [DatagramXfrm] instance for [CompoundFarChannel]s.
 pub enum CompoundFarChannelXfrm<Unix, UDP>
 where
@@ -539,28 +534,6 @@ pub enum CompoundFarChannelAddr {
     },
     IP {
         ip: SocketAddr
-    }
-}
-
-/// Peer addresses that can occur in [CompoundFarIPChannel]s.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd)]
-pub enum CompoundFarIPChannelXfrmPeerAddr {
-    UDP {
-        udp: SocketAddr
-    },
-    #[cfg(feature = "socks5")]
-    SOCKS5 {
-        socks5: IPEndpoint
-    }
-}
-
-/// Peer addresses that can occur in [CompoundFarChannel]s.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd)]
-pub enum CompoundFarChannelXfrmPeerAddr {
-    #[cfg(feature = "unix")]
-    Unix { unix: UnixSocketPath },
-    IP {
-        ip: CompoundFarIPChannelXfrmPeerAddr
     }
 }
 
@@ -5401,36 +5374,6 @@ impl Display for CompoundFarChannelAddr {
                 write!(f, "unix://{}", unix)
             }
             CompoundFarChannelAddr::IP { ip } => write!(f, "{}", ip)
-        }
-    }
-}
-
-impl Display for CompoundFarIPChannelXfrmPeerAddr {
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundFarIPChannelXfrmPeerAddr::UDP { udp } => {
-                write!(f, "udp://{}", udp)
-            }
-            CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 } => {
-                write!(f, "socks5://{}", socks5)
-            }
-        }
-    }
-}
-
-impl Display for CompoundFarChannelXfrmPeerAddr {
-    fn fmt(
-        &self,
-        f: &mut Formatter
-    ) -> Result<(), std::fmt::Error> {
-        match self {
-            CompoundFarChannelXfrmPeerAddr::Unix { unix } => {
-                write!(f, "unix://{}", unix)
-            }
-            CompoundFarChannelXfrmPeerAddr::IP { ip } => write!(f, "{}", ip)
         }
     }
 }

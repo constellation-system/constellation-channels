@@ -5607,17 +5607,17 @@ use crate::config::AddrKind;
 #[cfg(test)]
 use crate::config::CompoundFarChannelConfig;
 #[cfg(test)]
+use crate::config::CompoundFarChannelXfrmPeerAddr;
+#[cfg(test)]
+use crate::config::CompoundOutboundNegotiatorParam;
+#[cfg(test)]
 use crate::config::CompoundXfrmCreateParam;
+#[cfg(test)]
+use crate::config::DTLSOutboundParam;
 #[cfg(test)]
 use crate::far::compound::CompoundFarChannelSessionCred;
 #[cfg(test)]
-use crate::far::compound::CompoundFarChannelXfrmPeerAddr;
-#[cfg(test)]
 use crate::far::compound::CompoundFlow;
-#[cfg(test)]
-use crate::far::compound::CompoundOutboundNegotiatorParam;
-#[cfg(test)]
-use crate::far::dtls::DTLSOutboundParam;
 #[cfg(test)]
 use crate::far::types::CompoundFarChannelsTypes;
 #[cfg(test)]

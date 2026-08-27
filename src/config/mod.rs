@@ -64,6 +64,7 @@ use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
+use constellation_common::unix::UnixSocketPath;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -362,6 +363,47 @@ pub enum CompoundFarEndpoint {
     }
 }
 
+/// Peer addresses that can occur in [CompoundFarIPChannel]s.
+#[derive(
+    Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(untagged)]
+pub enum CompoundFarIPChannelXfrmPeerAddr {
+    UDP {
+        udp: SocketAddr
+    },
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: IPEndpoint
+    }
+}
+
+/// Peer addresses that can occur in [CompoundFarChannel]s.
+#[derive(
+    Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(untagged)]
+pub enum CompoundFarChannelXfrmPeerAddr {
+    #[cfg(feature = "unix")]
+    Unix {
+        #[serde(rename = "unix-datagram")]
+        unix: UnixSocketPath
+    },
+    IP {
+        #[serde(flatten)]
+        ip: CompoundFarIPChannelXfrmPeerAddr
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CompoundOutboundNegotiatorParam {
+    Basic,
+    DTLS {
+        dtls: Box<DTLSOutboundParam<CompoundOutboundNegotiatorParam>>
+    }
+}
+
 /// Compound IP-only far-link channel configuration.
 ///
 /// This is a subset of [CompoundFarChannelConfig] that contains only
@@ -619,6 +661,24 @@ pub enum CompoundFarChannelConfig {
                 CompoundFarIPChannelConfig
             >
         >
+    }
+}
+
+#[derive(
+    Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(untagged)]
+pub enum CompoundNearEndpoint {
+    /// Unix socket address.
+    #[serde(rename_all = "kebab-case")]
+    Unix {
+        /// Path to the Unix socket.
+        unix_stream: PathBuf
+    },
+    /// TCP endpoint.
+    TCP {
+        /// IP address and port
+        tcp: IPEndpoint
     }
 }
 
@@ -1333,6 +1393,15 @@ pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
 pub struct DTLSFarChannelConfig<Inner> {
     #[serde(flatten)]
     tls: TLSChannelConfig<TLSPeerConfig, Inner>
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "dtls-param")]
+#[serde(rename_all = "kebab-case")]
+pub struct DTLSOutboundParam<Inner> {
+    verify_endpoint: IPEndpointAddr,
+    #[serde(default)]
+    inner: Inner
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
@@ -2464,6 +2533,13 @@ where
     }
 }
 
+impl Default for CompoundOutboundNegotiatorParam {
+    #[inline]
+    fn default() -> Self {
+        CompoundOutboundNegotiatorParam::Basic
+    }
+}
+
 impl<'de> Visitor<'de> for CompoundNearChannelVariantVisitor {
     type Value = CompoundNearChannelVariant;
 
@@ -2988,6 +3064,34 @@ impl From<IPEndpoint> for CompoundFarEndpoint {
     #[inline]
     fn from(val: IPEndpoint) -> Self {
         CompoundFarEndpoint::UDP { udp: val }
+    }
+}
+
+impl<Inner> DTLSOutboundParam<Inner> {
+    #[inline]
+    pub fn new(
+        verify_endpoint: IPEndpointAddr,
+        inner: Inner
+    ) -> Self {
+        DTLSOutboundParam {
+            verify_endpoint: verify_endpoint,
+            inner: inner
+        }
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &Inner {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn verify_endpoint(&self) -> &IPEndpointAddr {
+        &self.verify_endpoint
+    }
+
+    #[inline]
+    pub fn take(self) -> (IPEndpointAddr, Inner) {
+        (self.verify_endpoint, self.inner)
     }
 }
 
@@ -4637,6 +4741,37 @@ impl UnixNearChannelConfig {
     #[inline]
     pub(crate) fn take(self) -> PathBuf {
         self.path
+    }
+}
+
+
+impl Display for CompoundFarIPChannelXfrmPeerAddr {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarIPChannelXfrmPeerAddr::UDP { udp } => {
+                write!(f, "udp://{}", udp)
+            }
+            CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 } => {
+                write!(f, "socks5://{}", socks5)
+            }
+        }
+    }
+}
+
+impl Display for CompoundFarChannelXfrmPeerAddr {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarChannelXfrmPeerAddr::Unix { unix } => {
+                write!(f, "unix://{}", unix)
+            }
+            CompoundFarChannelXfrmPeerAddr::IP { ip } => write!(f, "{}", ip)
+        }
     }
 }
 

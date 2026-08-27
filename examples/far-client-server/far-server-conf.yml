@@ -1,0 +1,42 @@
+dtls:
+  cipher-suites:
+    - TLS_AES_256_GCM_SHA384
+    - TLS_CHACHA20_POLY1305_SHA256
+
+  key-exchange-groups:
+    - P-384
+    - X25519
+    - P-256
+
+  trust-root:
+    root-certs:
+      - tests/data/certs/client/ca_cert.pem
+
+    crls: []
+
+  cert: tests/data/certs/server/certs/test_server_cert.pem
+
+  key: tests/data/certs/server/private/test_server_key.pem
+
+  dtls:
+    cipher-suites:
+      - TLS_AES_256_GCM_SHA384
+      - TLS_CHACHA20_POLY1305_SHA256
+
+    key-exchange-groups:
+      - P-384
+      - X25519
+      - P-256
+
+    trust-root:
+      root-certs:
+        - tests/data/certs/client/ca_cert.pem
+
+      crls: []
+
+    cert: tests/data/certs/server/certs/test_server_cert.pem
+
+    key: tests/data/certs/server/private/test_server_key.pem
+
+    unix-datagram:
+      path: far-client-server-example-server.sock

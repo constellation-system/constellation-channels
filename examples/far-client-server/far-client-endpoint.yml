@@ -1,0 +1,9 @@
+param:
+  dtls:
+    verify-endpoint: test-server.nowhere.com
+    inner:
+      dtls:
+        verify-endpoint: test-server.nowhere.com
+
+endpoint:
+  unix-datagram: far-client-server-example-server.sock

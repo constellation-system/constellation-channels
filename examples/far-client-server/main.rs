@@ -16,10 +16,11 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::convert::TryFrom;
 use std::net::SocketAddr;
 
 use constellation_channels::config::CompoundFarChannelConfig;
+use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
+use constellation_channels::config::CompoundOutboundNegotiatorParam;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FlowsConfig;
 use constellation_channels::far::FarChannel;
@@ -29,9 +30,6 @@ use constellation_channels::far::compound::CompoundFarChannel;
 use constellation_channels::far::compound::CompoundFarChannelAcquireState;
 use constellation_channels::far::compound::CompoundFarChannelParam;
 use constellation_channels::far::compound::CompoundFarChannelXfrm;
-use constellation_channels::far::compound::CompoundFarChannelXfrmPeerAddr;
-use constellation_channels::far::compound::CompoundOutboundNegotiatorParam;
-use constellation_channels::far::dtls::DTLSOutboundParam;
 use constellation_channels::far::flows::accept_one;
 use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
@@ -41,7 +39,6 @@ use constellation_channels::far::unix::UnixDatagramXfrm;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::net::DatagramXfrmCreate;
-use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::RetryResult;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::threads::Tokens;
@@ -50,76 +47,18 @@ use log::LevelFilter;
 use mio::Interest;
 use mio::Poll;
 use mio::Token;
+use serde::Deserialize;
+use serde::Serialize;
 
-const SERVER_PATH: &'static str = "far-client-server-example-server.sock";
-
-const SERVER_CONFIG: &'static str = concat!(
-    "dtls:\n",
-    "  cipher-suites:\n",
-    "    - TLS_AES_256_GCM_SHA384\n",
-    "    - TLS_CHACHA20_POLY1305_SHA256\n",
-    "  key-exchange-groups:\n",
-    "    - P-384\n",
-    "    - X25519\n",
-    "    - P-256\n",
-    "  trust-root:\n",
-    "    root-certs:\n",
-    "      - test/data/certs/client/ca_cert.pem\n",
-    "    crls: []\n",
-    "  cert: test/data/certs/server/certs/test_server_cert.pem\n",
-    "  key: test/data/certs/server/private/test_server_key.pem\n",
-    "  dtls:\n",
-    "    cipher-suites:\n",
-    "      - TLS_AES_256_GCM_SHA384\n",
-    "      - TLS_CHACHA20_POLY1305_SHA256\n",
-    "    key-exchange-groups:\n",
-    "      - P-384\n",
-    "      - X25519\n",
-    "      - P-256\n",
-    "    trust-root:\n",
-    "      root-certs:\n",
-    "        - test/data/certs/client/ca_cert.pem\n",
-    "      crls: []\n",
-    "    cert: test/data/certs/server/certs/test_server_cert.pem\n",
-    "    key: test/data/certs/server/private/test_server_key.pem\n",
-    "    unix-datagram:\n",
-    "      path: far-client-server-example-server.sock\n",
-);
-
-const CLIENT_CONFIG: &'static str = concat!(
-    "dtls:\n",
-    "  cipher-suites:\n",
-    "    - TLS_AES_256_GCM_SHA384\n",
-    "    - TLS_CHACHA20_POLY1305_SHA256\n",
-    "  key-exchange-groups:\n",
-    "    - P-384\n",
-    "    - X25519\n",
-    "    - P-256\n",
-    "  trust-root:\n",
-    "    root-certs:\n",
-    "      - test/data/certs/server/ca_cert.pem\n",
-    "    crls: []\n",
-    "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
-    "  key: test/data/certs/client/private/test_client_key.pem\n",
-    "  dtls:\n",
-    "    cipher-suites:\n",
-    "      - TLS_AES_256_GCM_SHA384\n",
-    "      - TLS_CHACHA20_POLY1305_SHA256\n",
-    "    key-exchange-groups:\n",
-    "      - P-384\n",
-    "      - X25519\n",
-    "      - P-256\n",
-    "    trust-root:\n",
-    "      root-certs:\n",
-    "        - test/data/certs/server/ca_cert.pem\n",
-    "      crls: []\n",
-    "    cert: test/data/certs/client/certs/test_client_cert.pem\n",
-    "    key: test/data/certs/client/private/test_client_key.pem\n",
-    "    unix-datagram:\n",
-    "      path: far-client-server-example-client.sock\n",
-);
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
+
+#[derive(Deserialize, Serialize)]
+struct ClientEndpoint {
+    endpoint: CompoundFarChannelXfrmPeerAddr,
+    #[serde(default)]
+    param: CompoundOutboundNegotiatorParam
+}
 
 struct ExampleCtx<Ctx>
 where
@@ -158,10 +97,10 @@ where
     }
 }
 
-fn server() {
+fn server(conf: &str) {
     let mut poll = Poll::new().expect("Expected success");
     let server_config: CompoundFarChannelConfig =
-        yaml_serde::from_str(SERVER_CONFIG).unwrap();
+        yaml_serde::from_str(conf).unwrap();
     let mut ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
@@ -219,23 +158,15 @@ fn server() {
     assert_eq!(FIRST_BYTES, buf);
 }
 
-fn client() {
-    let servername = "test-server.nowhere.com";
-    let endpoint = IPEndpointAddr::name(String::from(servername));
-    let negoparam = CompoundOutboundNegotiatorParam::DTLS {
-        dtls: Box::new(DTLSOutboundParam::new(
-            endpoint.clone(),
-            CompoundOutboundNegotiatorParam::Basic
-        ))
-    };
-    let negoparam = CompoundOutboundNegotiatorParam::DTLS {
-        dtls: Box::new(DTLSOutboundParam::new(endpoint, negoparam))
-    };
+fn client(
+    conf: &str,
+    endpoint: &str
+) {
+    let endpoint: ClientEndpoint = yaml_serde::from_str(endpoint).unwrap();
+    let ClientEndpoint { endpoint: server_addr, param: negoparam } = endpoint;
+    let client_config: CompoundFarChannelConfig =
+        yaml_serde::from_str(conf).unwrap();
     let mut poll = Poll::new().expect("Expected success");
-    let server_addr = CompoundFarChannelXfrmPeerAddr::unix(
-        UnixSocketPath::try_from(SERVER_PATH).unwrap()
-    );
-    let client_config = yaml_serde::from_str(CLIENT_CONFIG).unwrap();
     let mut ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
@@ -302,8 +233,9 @@ fn client() {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} [client | server]", args[0]);
+    if args.len() < 3 {
+        eprintln!("Usage: {} [client <config> <endpoint>| server <config>]",
+                  args[0]);
         std::process::exit(1);
     }
 
@@ -312,9 +244,16 @@ fn main() {
         .filter_level(LevelFilter::Trace)
         .init();
 
+    let conf = std::fs::read_to_string(&args[2]).unwrap();
+
     match args[1].as_str() {
-        "client" => client(),
-        "server" => server(),
+        "client" => if args.len() != 4 {
+        } else {
+            let endpoint = std::fs::read_to_string(&args[3]).unwrap();
+
+            client(&conf, &endpoint)
+        },
+        "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);

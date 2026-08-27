@@ -68,6 +68,7 @@ use openssl::ssl::SslConnector;
 use openssl::ssl::SslStream;
 
 use crate::config::DTLSFarChannelConfig;
+use crate::config::DTLSOutboundParam;
 use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSLoadServer;
@@ -161,11 +162,6 @@ pub struct DTLSFarChannel<Channel> {
 pub struct DTLSFlow<Flow: Session + Read + Write> {
     /// The underlying SSL stream.
     ssl: SslStream<Flow>
-}
-
-pub struct DTLSOutboundParam<Inner> {
-    verify_endpoint: IPEndpointAddr,
-    inner: Inner
 }
 
 /// [Negotiator] for inbound sessions for [DTLSFarChannel].
@@ -271,19 +267,6 @@ pub enum DTLSOutboundNegoError<Inner> {
     },
     /// No server name could be established.
     NoName
-}
-
-impl<Inner> DTLSOutboundParam<Inner> {
-    #[inline]
-    pub fn new(
-        verify_endpoint: IPEndpointAddr,
-        inner: Inner
-    ) -> Self {
-        DTLSOutboundParam {
-            verify_endpoint: verify_endpoint,
-            inner: inner
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1000,13 +983,13 @@ where
     ) -> Result<Self::State, Self::StartError> {
         let inner = self
             .inner
-            .start(&param.inner, stream)
+            .start(param.inner(), stream)
             .map_err(|err| TLSStartError::Inner { err: err })?;
         let connector = self
             .tls
-            .load_client(None, &param.verify_endpoint, true)
+            .load_client(None, param.verify_endpoint(), true)
             .map_err(|err| TLSStartError::TLS { err: err })?;
-        let domain = match &param.verify_endpoint {
+        let domain = match param.verify_endpoint() {
             IPEndpointAddr::Name(name) => match name.find('.') {
                 Some(idx) => {
                     let (_, domain) = name.split_at(idx);
