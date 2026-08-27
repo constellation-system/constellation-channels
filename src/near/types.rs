@@ -30,16 +30,26 @@ use constellation_common::config::Create;
 use constellation_common::error::ScopedError;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
+use constellation_streams::threads::types::DatagramDispatchPollTypes;
+use constellation_streams::threads::types::DatagramMulticastPollTypes;
+use constellation_streams::threads::types::DatagramSelectorPollTypes;
+use constellation_streams::threads::types::LargeObjDispatchPollTypes;
+use constellation_streams::threads::types::LargeObjMulticastPollTypes;
+use constellation_streams::threads::types::LargeObjSelectorPollTypes;
 use mio::event::Source;
 
 #[cfg(feature = "tls")]
 use crate::config::tls::TLSLoadClient;
 #[cfg(feature = "tls")]
+use crate::config::NearChannelsConfig;
 use crate::config::tls::TLSLoadServer;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
 use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
+use crate::near::channels::DuplexValue;
+use crate::near::channels::NearChannels;
+use crate::near::channels::NearChannelsCreateError;
 use crate::near::compound::CompoundNearAcceptor;
 use crate::near::compound::CompoundNearAcceptorNegotiateError;
 use crate::near::compound::CompoundNearAcceptorNegotiatePending;
@@ -335,6 +345,378 @@ where
     tls: PhantomData<TLS>,
     authn: PhantomData<AuthN>
 }
+
+pub type CompoundNearDuplexNegoTypes<InAuthN, OutAuthN, InTLS, OutTLS> =
+    SimpleNearDuplexNegoTypes<
+        CompoundAcceptorNegoTypes<InAuthN, InTLS>,
+        CompoundConnectorNegoTypes<OutAuthN, OutTLS>
+    >;
+
+pub type NearChannelsDatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Types,
+    Ctx
+> =
+    DatagramSelectorPollTypes<
+        InMsg,
+        OutMsg,
+        Wrapper,
+        MsgAuth,
+        Epochs,
+        NearChannels<Types>,
+        NearChannelsConfig<
+            <Types as NearDuplexNegoTypes>::InConfig,
+            <Types as NearDuplexNegoTypes>::OutConfig,
+            <Types as NearDuplexNegoTypes>::InAuthNConfig,
+            <Types as NearDuplexNegoTypes>::OutAuthNConfig
+        >,
+        NearChannelsCreateError<
+            <Types as NearDuplexNegoTypes>::InAuthCreateError,
+            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+            <Types as NearDuplexNegoTypes>::InChannelCreateError
+        >,
+        DuplexValue<
+            <Types as NearDuplexNegoTypes>::InAuthNSession,
+            <Types as NearDuplexNegoTypes>::OutAuthNSession
+        >,
+        Resolve,
+        Msgs,
+        Recv,
+        Ctx
+    >;
+
+pub type CompoundNearChannelsDatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    InSessAuthN,
+    InTLS,
+    OutSessAuthN,
+    OutTLS,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+> = NearChannelsDatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, InTLS, OutTLS>,
+    Ctx
+>;
+
+pub type NearChannelsLargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    Types,
+    LargeObjTypes,
+    Ctx
+> =
+    LargeObjSelectorPollTypes<
+        InMsg,
+        OutMsg,
+        Epochs,
+        NearChannels<Types>,
+        NearChannelsConfig<
+            <Types as NearDuplexNegoTypes>::InConfig,
+            <Types as NearDuplexNegoTypes>::OutConfig,
+            <Types as NearDuplexNegoTypes>::InAuthNConfig,
+            <Types as NearDuplexNegoTypes>::OutAuthNConfig
+        >,
+        NearChannelsCreateError<
+            <Types as NearDuplexNegoTypes>::InAuthCreateError,
+            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+            <Types as NearDuplexNegoTypes>::InChannelCreateError
+        >,
+        DuplexValue<
+            <Types as NearDuplexNegoTypes>::InAuthNSession,
+            <Types as NearDuplexNegoTypes>::OutAuthNSession
+        >,
+        Resolve,
+        LargeObjTypes,
+        Ctx
+    >;
+
+pub type CompoundNearChannelsLargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    InSessAuthN,
+    InTLS,
+    OutSessAuthN,
+    OutTLS,
+    Epochs,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+> = NearChannelsLargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, InTLS, OutTLS>,
+    LargeObjTypes,
+    Ctx
+>;
+
+pub type NearChannelsDatagramDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Types,
+    Ctx
+> =
+    DatagramDispatchPollTypes<
+        InMsg,
+        OutMsg,
+        Wrapper,
+        MsgAuth,
+        Epochs,
+        NearChannels<Types>,
+        NearChannelsConfig<
+            <Types as NearDuplexNegoTypes>::InConfig,
+            <Types as NearDuplexNegoTypes>::OutConfig,
+            <Types as NearDuplexNegoTypes>::InAuthNConfig,
+            <Types as NearDuplexNegoTypes>::OutAuthNConfig
+        >,
+        NearChannelsCreateError<
+            <Types as NearDuplexNegoTypes>::InAuthCreateError,
+            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+            <Types as NearDuplexNegoTypes>::InChannelCreateError
+        >,
+        DuplexValue<
+            <Types as NearDuplexNegoTypes>::InAuthNSession,
+            <Types as NearDuplexNegoTypes>::OutAuthNSession
+        >,
+        Resolve,
+        Msgs,
+        Recv,
+        Ctx
+    >;
+
+pub type CompoundNearChannelsDatagramDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    InSessAuthN,
+    InTLS,
+    OutSessAuthN,
+    OutTLS,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+> = NearChannelsDatagramDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, InTLS, OutTLS>,
+    Ctx
+>;
+
+pub type NearChannelsLargeObjDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    Types,
+    LargeObjTypes,
+    Ctx
+> =
+    LargeObjDispatchPollTypes<
+        InMsg,
+        OutMsg,
+        Epochs,
+        NearChannels<Types>,
+        NearChannelsConfig<
+            <Types as NearDuplexNegoTypes>::InConfig,
+            <Types as NearDuplexNegoTypes>::OutConfig,
+            <Types as NearDuplexNegoTypes>::InAuthNConfig,
+            <Types as NearDuplexNegoTypes>::OutAuthNConfig
+        >,
+        NearChannelsCreateError<
+            <Types as NearDuplexNegoTypes>::InAuthCreateError,
+            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+            <Types as NearDuplexNegoTypes>::InChannelCreateError
+        >,
+        DuplexValue<
+            <Types as NearDuplexNegoTypes>::InAuthNSession,
+            <Types as NearDuplexNegoTypes>::OutAuthNSession
+        >,
+        Resolve,
+        LargeObjTypes,
+        Ctx
+    >;
+
+pub type CompoundNearChannelsLargeObjDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    InSessAuthN,
+    InTLS,
+    OutSessAuthN,
+    OutTLS,
+    Epochs,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+> = NearChannelsLargeObjDispatchPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, InTLS, OutTLS>,
+    LargeObjTypes,
+    Ctx
+>;
+
+pub type NearChannelsDatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Types,
+    Ctx
+> =
+    DatagramMulticastPollTypes<
+        InMsg,
+        OutMsg,
+        Wrapper,
+        MsgAuth,
+        Epochs,
+        NearChannels<Types>,
+        NearChannelsConfig<
+            <Types as NearDuplexNegoTypes>::InConfig,
+            <Types as NearDuplexNegoTypes>::OutConfig,
+            <Types as NearDuplexNegoTypes>::InAuthNConfig,
+            <Types as NearDuplexNegoTypes>::OutAuthNConfig
+        >,
+        NearChannelsCreateError<
+            <Types as NearDuplexNegoTypes>::InAuthCreateError,
+            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+            <Types as NearDuplexNegoTypes>::InChannelCreateError
+        >,
+        DuplexValue<
+            <Types as NearDuplexNegoTypes>::InAuthNSession,
+            <Types as NearDuplexNegoTypes>::OutAuthNSession
+        >,
+        Resolve,
+        Msgs,
+        Recv,
+        Ctx
+    >;
+
+pub type CompoundNearChannelsDatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    InSessAuthN,
+    InTLS,
+    OutSessAuthN,
+    OutTLS,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+> = NearChannelsDatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    Resolve,
+    Msgs,
+    Recv,
+    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, InTLS, OutTLS>,
+    Ctx
+>;
+
+pub type NearChannelsLargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    Types,
+    LargeObjTypes,
+    Ctx
+> =
+    LargeObjMulticastPollTypes<
+        InMsg,
+        OutMsg,
+        Epochs,
+        NearChannels<Types>,
+        NearChannelsConfig<
+            <Types as NearDuplexNegoTypes>::InConfig,
+            <Types as NearDuplexNegoTypes>::OutConfig,
+            <Types as NearDuplexNegoTypes>::InAuthNConfig,
+            <Types as NearDuplexNegoTypes>::OutAuthNConfig
+        >,
+        NearChannelsCreateError<
+            <Types as NearDuplexNegoTypes>::InAuthCreateError,
+            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+            <Types as NearDuplexNegoTypes>::InChannelCreateError
+        >,
+        DuplexValue<
+            <Types as NearDuplexNegoTypes>::InAuthNSession,
+            <Types as NearDuplexNegoTypes>::OutAuthNSession
+        >,
+        Resolve,
+        LargeObjTypes,
+        Ctx
+    >;
+
+pub type CompoundNearChannelsLargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    InSessAuthN,
+    InTLS,
+    OutSessAuthN,
+    OutTLS,
+    Epochs,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+> = NearChannelsLargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    Resolve,
+    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, InTLS, OutTLS>,
+    LargeObjTypes,
+    Ctx
+>;
 
 impl<AuthN, TLS> Clone for CompoundAcceptorNegoTypes<AuthN, TLS>
 where

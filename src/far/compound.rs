@@ -38,6 +38,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 
 use constellation_auth::cred::Credentials;
+use constellation_auth::cred::NullCred;
 #[cfg(feature = "tls")]
 use constellation_auth::cred::SSLCred;
 use constellation_common::error::ErrorScope;
@@ -2212,6 +2213,13 @@ impl Receiver for CompoundFarIPChannelSocket {
                 Ok((nbytes, addr, cred))
             }
         }
+    }
+}
+
+impl From<CompoundFarChannelSessionCred> for NullCred {
+    #[inline]
+    fn from(_val: CompoundFarChannelSessionCred) -> NullCred {
+        NullCred::default()
     }
 }
 
