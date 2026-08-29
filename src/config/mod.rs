@@ -3069,6 +3069,14 @@ impl From<IPEndpoint> for CompoundFarEndpoint {
     }
 }
 
+
+impl From<IPEndpoint> for CompoundNearEndpoint {
+    #[inline]
+    fn from(val: IPEndpoint) -> Self {
+        CompoundNearEndpoint::TCP { tcp: val }
+    }
+}
+
 impl<Inner> DTLSOutboundParam<Inner> {
     #[inline]
     pub fn new(

@@ -1,9 +1,9 @@
 param:
 
-#addr:
-#  udp: "[::1]:7117"
-
 addr:
-  unix-datagram: far-channels-example-server.sock
+  udp: "[::1]:7117"
 
-channel: example-client-unix
+#addr:
+#  unix-datagram: far-channels-example-server.sock
+
+channel: example-client-udp

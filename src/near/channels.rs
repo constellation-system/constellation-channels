@@ -58,6 +58,7 @@ use log::error;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::Interest;
 use mio::Registry;
 use mio::Token;
 use mio::event::Source;
@@ -478,7 +479,8 @@ pub enum NearChannelsCreateError<InAuth, OutAuth, Inbound> {
     OutAuth { err: OutAuth },
     InAuth { err: InAuth },
     Inbound { err: Inbound },
-    Collision { name: String }
+    Collision { name: String },
+    IO { err: std::io::Error }
 }
 
 impl<Addr> ChannelParam<Addr> for NearChannelParam {
@@ -4820,11 +4822,18 @@ where
                         Types::InAuthN::create(authn).map_err(|err| {
                             NearChannelsCreateError::InAuth { err: err }
                         })?;
-                    let acceptor = Types::InChannel::create(ctx, listen)
+                    let mut acceptor = Types::InChannel::create(ctx, listen)
                         .map_err(|err| NearChannelsCreateError::Inbound {
                             err: err
                         })?;
                     let token = ctx.token();
+
+                    ctx.registry()
+                        .register(&mut acceptor, token, Interest::READABLE)
+                        .map_err(|err| NearChannelsCreateError::IO {
+                            err: err
+                        })?;
+
                     let channel = match nsessions {
                         Some(nsessions) => ChannelEntry::inbound_with_capacity(
                             acceptor, authn, retry, token, nsessions
@@ -4879,11 +4888,18 @@ where
                         Types::InAuthN::create(in_authn).map_err(|err| {
                             NearChannelsCreateError::InAuth { err: err }
                         })?;
-                    let acceptor = Types::InChannel::create(ctx, listen)
+                    let mut acceptor = Types::InChannel::create(ctx, listen)
                         .map_err(|err| NearChannelsCreateError::Inbound {
                             err: err
                         })?;
                     let token = ctx.token();
+
+                    ctx.registry()
+                        .register(&mut acceptor, token, Interest::READABLE)
+                        .map_err(|err| NearChannelsCreateError::IO {
+                            err: err
+                        })?;
+
                     let channel = match nsessions {
                         Some(nsessions) => ChannelEntry::duplex_with_capacity(
                             connect, out_authn, acceptor, in_authn, retry,
@@ -5498,6 +5514,8 @@ where
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
+            NearChannelsCreateError::IO { err } =>
+                write!(f, "{}", err),
             NearChannelsCreateError::OutAuth { err } => err.fmt(f),
             NearChannelsCreateError::InAuth { err } => err.fmt(f),
             NearChannelsCreateError::Inbound { err } => err.fmt(f),
@@ -5523,8 +5541,6 @@ use constellation_auth::authn::TrivialAuthN;
 use constellation_common::unix::UnixSocketAddr;
 #[cfg(test)]
 use mio::Events;
-#[cfg(test)]
-use mio::Interest;
 #[cfg(test)]
 use mio::Poll;
 

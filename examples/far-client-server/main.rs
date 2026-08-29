@@ -44,6 +44,7 @@ use constellation_common::unix::UnixSocketPath;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use log::LevelFilter;
+use log::info;
 use mio::Interest;
 use mio::Poll;
 use mio::Token;
@@ -151,6 +152,12 @@ fn server(conf: &str) {
     )
     .expect("Expected success");
 
+    info!(target: "server",
+          "received {:?}", buf);
+
+    info!(target: "server",
+          "sending message {:?}", &SECOND_BYTES);
+
     write_one(&mut flows, &mut poll, &mut flow, &SECOND_BYTES, token)
         .expect("Expected success");
 
@@ -210,6 +217,9 @@ fn client(
     )
     .expect("Expected success");
 
+    info!(target: "client",
+          "sending message {:?}", FIRST_BYTES);
+
     write_one(&mut flows, &mut poll, &mut flow, &FIRST_BYTES, token)
         .expect("Expected success");
 
@@ -225,6 +235,9 @@ fn client(
         token
     )
     .expect("Expected success");
+
+    info!(target: "server",
+          "received {:?}", buf);
 
     assert_eq!(SECOND_BYTES.len(), nbytes);
     assert_eq!(SECOND_BYTES, buf);

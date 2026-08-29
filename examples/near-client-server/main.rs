@@ -74,7 +74,11 @@ fn server(conf: &str) {
     read_one(&mut stream, &mut poll, session, &mut buf)
         .expect("Expected success");
 
-    info!("got message {:?}, sending {:?}", buf, SECOND_BYTES);
+    info!(target: "server",
+          "received {:?}", buf);
+
+    info!(target: "server",
+          "sending message {:?}", &SECOND_BYTES);
 
     write_one(&mut stream, &mut poll, session, &SECOND_BYTES)
         .expect("Expected success");
@@ -109,7 +113,8 @@ fn client(conf: &str) {
     let (mut stream, _) = negotiate_one(&mut conn, &mut poll, start, session)
         .expect("Expected success");
 
-    info!("negotiated, sending {:?}", FIRST_BYTES);
+    info!(target: "client",
+          "sending message {:?}", FIRST_BYTES);
 
     write_one(&mut stream, &mut poll, session, &FIRST_BYTES)
         .expect("Expected success");
@@ -121,7 +126,8 @@ fn client(conf: &str) {
     read_one(&mut stream, &mut poll, session, &mut buf)
         .expect("Expected success");
 
-    info!("got message {:?}, shutting down", buf);
+    info!(target: "server",
+          "received {:?}", buf);
 
     assert_eq!(SECOND_BYTES, buf);
 }

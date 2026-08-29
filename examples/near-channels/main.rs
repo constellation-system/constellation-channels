@@ -32,6 +32,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use constellation_auth::authn::AuthNed;
+use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::TrivialAuthN;
 use constellation_auth::cred::NullCred;
 use constellation_channels::config::CompoundNearAcceptorConfig;
@@ -41,6 +42,8 @@ use constellation_channels::config::CompoundNearConnectorPartialConfig;
 use constellation_channels::config::NearChannelsConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
+use constellation_channels::near::channels::NearChannelID;
+use constellation_channels::near::channels::NearChannelParam;
 use constellation_channels::near::channels::DuplexValue;
 use constellation_channels::near::channels::NearChannels;
 use constellation_channels::near::compound::CompoundNearClientConn;
@@ -120,6 +123,89 @@ where
     }
 }
 
+fn read<R>(
+    ctx: &mut ExampleCtx<SharedNSNameCaches>,
+    events: &mut Events,
+    channels: &mut NearChannels<
+        CompoundNearDuplexNegoTypes<
+            TrivialAuthN<NullCred, CompoundNearServerConn>,
+            TrivialAuthN<NullCred, CompoundNearClientConn>,
+            TLSServerConfig,
+            TLSClientConfig
+        >
+    >,
+    stream: &mut BasicAuthNed<NullCred, R>,
+    buf: &mut [u8],
+    addr: CompoundNearNameAddr,
+    channel_id: NearChannelID,
+    channel_param: NearChannelParam
+) -> usize
+where R: Read
+{
+    let mut nbytes = 0;
+
+    while {
+        trace!(target: "read",
+               "attempting to read");
+
+        match stream.get_mut().read(buf) {
+            Ok(n) => {
+                nbytes = n;
+
+                false
+            }
+            Err(err) => if err.scope() != ErrorScope::WouldBlock {
+                panic!("{}", err)
+            } else {
+                // Obtain the incoming session
+                while {
+                    let mut ready = false;
+
+                    trace!(target: "read",
+                           "poll wait");
+
+                    ctx.poll.poll(events, None).unwrap();
+
+                    let live: HashSet<Token> =
+                        events.iter().map(|event| event.token()).collect();
+
+                    match channels.listen(ctx, &live).unwrap() {
+                        RetryResult::Success((streams, endpoints, _, _)) => {
+                            for _ in streams {
+                                panic!("Should not see incoming sessions")
+                            }
+
+                            for (in_addr, in_chan_id, in_param) in endpoints {
+                                if addr == in_addr &&
+                                    channel_param == in_param &&
+                                    channel_id == in_chan_id {
+                                    ready = true;
+                                } else {
+                                    panic!("Unexpected messages")
+                                }
+                            }
+                        }
+                        RetryResult::Retry(retry) => {
+                            let when = retry.when();
+                            let now = Instant::now();
+
+                            if now < when {
+                                std::thread::sleep(when - now)
+                            }
+                        }
+                    }
+
+                    !ready
+                } {}
+
+                true
+            }
+        }
+    } {}
+
+    nbytes
+}
+
 fn server(conf: &str) {
     let server_config: NearChannelsConfig<
         CompoundNearAcceptorConfig<TLSServerConfig>,
@@ -143,9 +229,12 @@ fn server(conf: &str) {
     > = NearChannels::create(server_config, &mut ctx).unwrap();
     let mut session = None;
 
+    info!(target: "server",
+          "listening");
+
     // Obtain the incoming session
     while session.is_none() {
-        trace!(target: "far-channels-server",
+        trace!(target: "server",
                "poll wait");
 
         ctx.poll.poll(&mut events, None).unwrap();
@@ -172,15 +261,25 @@ fn server(conf: &str) {
         }
     }
 
-    let (_, _, _, stream) = session.unwrap();
+    info!(target: "server",
+          "reading message");
+
+    let (addr, channel_id, channel_param, stream) = session.unwrap();
     let mut buf = [0; FIRST_BYTES.len()];
     let mut stream = if let DuplexValue::Accept(stream) = stream {
         stream
     } else {
         panic!("Expected server stream");
     };
-    let nbytes = stream.get_mut().read(&mut buf)
-        .expect("Expected success");
+
+    let nbytes = read(&mut ctx, &mut events, &mut channels, &mut stream,
+                      &mut buf, addr, channel_id, channel_param);
+
+    info!(target: "server",
+          "received {:?}", buf);
+
+    info!(target: "server",
+          "sending message {:?}", &SECOND_BYTES);
 
     stream.get_mut().write(&SECOND_BYTES)
         .expect("Expected success");
@@ -241,7 +340,7 @@ fn client(
     let channel_param = channel_param.unwrap();
 
     info!(target: "client",
-          "Requesting stream");
+          "requesting stream");
 
     while session.is_none() {
         match channels.req_stream(&mut ctx, &channel_id, &channel_param,
@@ -267,71 +366,22 @@ fn client(
         panic!("Expected client stream");
     };
 
+    info!(target: "client",
+          "sending message {:?}", FIRST_BYTES);
+
     stream.get_mut().write(&FIRST_BYTES)
         .expect("Expected success");
 
-        // Obtain the incoming session
-    while {
-        let mut ready = false;
-
-        trace!(target: "far-channels-server",
-               "poll wait");
-
-        ctx.poll.poll(&mut events, None).unwrap();
-
-        let live: HashSet<Token> =
-            events.iter().map(|event| event.token()).collect();
-
-        match channels.listen(&mut ctx, &live).unwrap() {
-            RetryResult::Success((streams, endpoints, _, _)) => {
-                for _ in streams {
-                    panic!("Should not see incoming sessions")
-                }
-
-                for (in_addr, in_channel_id, in_param) in endpoints {
-                    if addr == in_addr && channel_param == in_param &&
-                        channel_id == in_channel_id {
-                        ready = true;
-                    } else {
-                        panic!("Unexpected messages")
-                    }
-                }
-            }
-            RetryResult::Retry(retry) => {
-                let when = retry.when();
-                let now = Instant::now();
-
-                if now < when {
-                    std::thread::sleep(when - now)
-                }
-            }
-        }
-
-        ready
-    } {}
+    info!(target: "client",
+          "reading message");
 
     let mut buf = [0; SECOND_BYTES.len()];
-    let mut nbytes = 0;
 
-    while {
-        match stream.get_mut().read(&mut buf) {
-            Ok(n) => {
-                nbytes = n;
+    let nbytes = read(&mut ctx, &mut events, &mut channels, &mut stream,
+                      &mut buf, addr, channel_id, channel_param);
 
-                false
-            }
-            Err(err) => if err.scope() != ErrorScope::WouldBlock {
-                panic!("{}", err)
-            } else {
-                trace!(target: "far-channels-server",
-                       "poll wait");
-
-                ctx.poll.poll(&mut events, None).unwrap();
-
-                true
-            }
-        }
-    } {}
+    info!(target: "server",
+          "received {:?}", buf);
 
     assert_eq!(SECOND_BYTES.len(), nbytes);
     assert_eq!(SECOND_BYTES, buf);
