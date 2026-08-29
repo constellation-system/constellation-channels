@@ -556,6 +556,10 @@ where
             let newbuf = match self.msgbufs.entry(addr.clone()) {
                 Entry::Occupied(mut ent) => match ent.get().upgrade() {
                     Some(buf) => {
+                        trace!(target: "flows",
+                               "delivering to flow from {} on {}",
+                               addr, local_addr);
+
                         // Weak reference is still good; deliver the message.
                         buf.try_borrow_mut()
                             .map_err(|_| FlowsListenError::GetMut)?

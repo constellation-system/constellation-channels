@@ -1,0 +1,11 @@
+channels:
+  - id: example-server-udp
+    udp:
+      addr: "::0"
+      port: 7117
+
+  - id: example-server-unix
+    unix-datagram:
+      path: far-channels-example-server.sock
+
+default-authn:

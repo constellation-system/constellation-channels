@@ -41,12 +41,14 @@ use std::net::SocketAddr;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 #[cfg(feature = "tls")]
+use constellation_auth::cred::NullCred;
 use constellation_auth::cred::SSLCred;
 use constellation_auth::cred::UnixSocketCred;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::IPEndpointAddrToIPAddrErr;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
@@ -71,6 +73,7 @@ use mio::net::UnixStream;
 use crate::config::CompoundNearAcceptorConfig;
 use crate::config::CompoundNearConnectorParam;
 use crate::config::CompoundNearConnectorPartialConfig;
+use crate::config::CompoundNearEndpoint;
 use crate::config::CompoundResolvingNearConnectorConfig;
 use crate::config::CompoundResolvingNearConnectorPartialConfig;
 use crate::config::TLSParam;
@@ -787,6 +790,51 @@ pub enum CompoundNegotiatorStartError {
     Mismatch
 }
 
+#[derive(Debug)]
+pub enum CompoundNearEndpointConvertError {
+    Unix { err: Error },
+    TCP { err: IPEndpointAddrToIPAddrErr }
+}
+
+impl TryFrom<CompoundNearEndpoint> for CompoundNearConcreteAddr {
+    type Error = CompoundNearEndpointConvertError;
+
+    fn try_from(
+        val: CompoundNearEndpoint
+    ) -> Result<CompoundNearConcreteAddr, Self::Error> {
+        match val {
+            CompoundNearEndpoint::Unix { unix_stream } => {
+                let unix = unix_stream.try_into()
+                    .map_err(|err| CompoundNearEndpointConvertError::Unix {
+                        err: err
+                    })?;
+
+                Ok(CompoundNearConcreteAddr::Unix { unix: unix })
+            },
+            CompoundNearEndpoint::TCP { tcp } => {
+                let tcp = tcp.try_into()
+                    .map_err(|err| CompoundNearEndpointConvertError::TCP {
+                        err: err
+                    })?;
+
+                Ok(CompoundNearConcreteAddr::TCP { tcp: tcp })
+            }
+        }
+    }
+}
+
+impl TryFrom<CompoundNearEndpoint> for CompoundNearNameAddr {
+    type Error = CompoundNearEndpointConvertError;
+
+    fn try_from(
+        val: CompoundNearEndpoint
+    ) -> Result<CompoundNearNameAddr, Self::Error> {
+        let concrete = CompoundNearConcreteAddr::try_from(val)?;
+
+        Ok(CompoundNearNameAddr::from(concrete))
+    }
+}
+
 impl From<CompoundNearConcreteAddr> for CompoundNearNameAddr {
     #[inline]
     fn from(val: CompoundNearConcreteAddr) -> CompoundNearNameAddr {
@@ -989,6 +1037,20 @@ impl ScopedError for Box<CompoundNegotiatorStartError> {
     #[inline]
     fn scope(&self) -> ErrorScope {
         self.as_ref().scope()
+    }
+}
+
+impl Display for CompoundNearEndpointConvertError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundNearEndpointConvertError::Unix { err } =>
+                write!(f, "{}", err),
+            CompoundNearEndpointConvertError::TCP { err } =>
+                write!(f, "{}", err)
+        }
     }
 }
 
@@ -1373,6 +1435,13 @@ impl Session for CompoundNearServerConn {
             #[cfg(feature = "tls")]
             CompoundNearServerConn::TLS { tls } => tls.peer_addr()
         }
+    }
+}
+
+impl From<CompoundNearCredential> for NullCred {
+    #[inline]
+    fn from(_val: CompoundNearCredential) -> NullCred {
+        NullCred::default()
     }
 }
 

@@ -1,0 +1,6 @@
+param:
+
+addr:
+  udp: "[::1]:7117"
+
+channel: example-client-udp

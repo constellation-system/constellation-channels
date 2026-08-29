@@ -22,44 +22,41 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use log::LevelFilter;
-use log::trace;
-use log::info;
-use mio::Events;
-use mio::Poll;
-use mio::Registry;
-use mio::Token;
-use serde::Deserialize;
-use serde::Serialize;
-
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::TrivialAuthN;
 use constellation_auth::cred::NullCred;
-use constellation_channels::config::AddrKind;
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
-use constellation_channels::config::CompoundFarIPChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundOutboundNegotiatorParam;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FarChannelsConfig;
 use constellation_channels::far::types::CompoundFarChannelsTypes;
 use constellation_channels::far::channels::FarChannels;
-use constellation_channels::far::compound::CompoundFarIPChannelParam;
-use constellation_channels::far::compound::CompoundFarChannelParam;
 use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::config::CreateWithParam;
+use constellation_common::error::ErrorScope;
+use constellation_common::error::ScopedError;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::retry::RetryResult;
 use constellation_common::retry::RetryWhen;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::channels::Channels;
+use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
+use log::LevelFilter;
+use log::trace;
+use mio::Events;
+use mio::Poll;
+use mio::Registry;
+use mio::Token;
+use serde::Deserialize;
+use serde::Serialize;
 
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
@@ -91,29 +88,6 @@ type ExampleFarChannelsTypes = CompoundFarChannelsTypes<
     PassthruDatagramXfrm<UnixSocketPath>,
     PassthruDatagramXfrm<SocketAddr>
 >;
-
-fn get_ip_param(
-    addr: &CompoundFarIPChannelXfrmPeerAddr
-) -> CompoundFarIPChannelParam {
-    match addr {
-        CompoundFarIPChannelXfrmPeerAddr::UDP { udp } =>
-            CompoundFarIPChannelParam::UDP{ udp: udp.clone() },
-        CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { .. } =>
-            panic!("SOCKS5 not supported")
-    }
-}
-
-
-fn get_param(addr: &CompoundFarChannelXfrmPeerAddr) -> CompoundFarChannelParam {
-    match addr {
-        CompoundFarChannelXfrmPeerAddr::Unix { unix } =>
-            CompoundFarChannelParam::Unix { unix: unix.clone() },
-        CompoundFarChannelXfrmPeerAddr::IP { ip } =>
-            CompoundFarChannelParam::IP {
-                ip: get_ip_param(ip)
-            }
-    }
-}
 
 impl<Ctx> RegistryCtx for ExampleCtx<Ctx>
 where
@@ -184,11 +158,9 @@ fn server(conf: &str) {
         match channels.listen(&mut ctx, &live).unwrap() {
             RetryResult::Success((streams, _, _, _)) => {
                 for info in streams {
-                    if session.is_none() {
-                        session = Some(info);
-                    } else {
-                        panic!("Multiple incoming sessions")
-                    }
+                    assert!(session.is_none());
+
+                    session = Some(info);
                 }
             }
             RetryResult::Retry(retry) => {
@@ -220,7 +192,6 @@ fn client(
 ) {
     let endpoint: ClientEndpoint = yaml_serde::from_str(endpoint).unwrap();
     let ClientEndpoint { channel, addr, param: negoparam } = endpoint;
-    let channel_param = get_param(&addr);
     let client_config: FarChannelsConfig<
         CompoundFarChannelConfig, (),
         CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
@@ -234,8 +205,29 @@ fn client(
     let mut events = Events::with_capacity(2);
     let mut channels: FarChannels<ExampleFarChannelsTypes> =
         FarChannels::create(client_config, &mut ctx).unwrap();
-    let channel_id = <FarChannels<ExampleFarChannelsTypes> as Channels<ExampleCtx<SharedNSNameCaches>>>::channel_id(&channels, &channel).unwrap();
+    let channel_id = channels.channel_id(&channel).unwrap();
     let mut session = None;
+    let mut channel_param = None;
+
+    for (id, params) in channels
+        .params(&mut ctx, [channel_id.clone()].into_iter())
+        .unwrap() {
+        assert_eq!(id, channel_id);
+
+        let params = if let RetryResult::Success((params, _)) = params {
+            params
+        } else {
+            panic!("Expected success")
+        };
+
+        for param in params {
+            assert!(channel_param.is_none());
+
+            channel_param = Some(param)
+        }
+    }
+
+    let channel_param = channel_param.unwrap();
 
     while session.is_none() {
         match channels.req_stream(&mut ctx, &channel_id, &channel_param,
@@ -300,8 +292,27 @@ fn client(
     } {}
 
     let mut buf = [0; SECOND_BYTES.len()];
-    let nbytes = stream.get_mut().read(&mut buf)
-        .expect("Expected success");
+    let mut nbytes = 0;
+
+    while {
+        match stream.get_mut().read(&mut buf) {
+            Ok(n) => {
+                nbytes = n;
+
+                false
+            }
+            Err(err) => if err.scope() != ErrorScope::WouldBlock {
+                panic!("{}", err)
+            } else {
+                trace!(target: "far-channels-server",
+                       "poll wait");
+
+                ctx.poll.poll(&mut events, None).unwrap();
+
+                true
+            }
+        }
+    } {}
 
     assert_eq!(SECOND_BYTES.len(), nbytes);
     assert_eq!(SECOND_BYTES, buf);

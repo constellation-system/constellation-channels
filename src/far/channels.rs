@@ -53,6 +53,7 @@ use constellation_common::retry::next_retry_definite;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
 use constellation_streams::channels::Channels;
+use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
 use constellation_streams::threads::RegistryCtx;
@@ -4153,13 +4154,27 @@ where
     }
 }
 
+impl<Types> ChannelsID for FarChannels<Types>
+where
+    Types: FarChannelsTypes,
+{
+    type ChannelID = FarChannelID;
+
+    #[inline]
+    fn channel_id(
+        &self,
+        name: &str
+    ) -> Option<FarChannelID> {
+        self.ids.get(name).cloned()
+    }
+}
+
 impl<Ctx, Types> Channels<Ctx> for FarChannels<Types>
 where
     Types: FarChannelsTypes,
     Ctx: RegistryCtx + TokensCtx
 {
     type Addr = Types::PeerAddr;
-    type ChannelID = FarChannelID;
     type OutNegoParam = Types::OutParam;
     type Param = Types::ChannelParam;
     type ParamsError = FarChannelsAddrsError<
@@ -4201,14 +4216,6 @@ where
         >
     >;
     type Stream = Types::AuthNSession;
-
-    #[inline]
-    fn channel_id(
-        &self,
-        name: &str
-    ) -> Option<FarChannelID> {
-        self.ids.get(name).cloned()
-    }
 
     #[inline]
     fn req_stream(

@@ -48,6 +48,7 @@ use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
 use constellation_streams::channels::ChannelParam;
 use constellation_streams::channels::Channels;
+use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
 use constellation_streams::threads::RegistryCtx;
@@ -4338,13 +4339,28 @@ where
     }
 }
 
+
+impl<Types> ChannelsID for NearChannels<Types>
+where
+    Types: NearDuplexNegoTypes,
+{
+    type ChannelID = NearChannelID;
+
+    #[inline]
+    fn channel_id(
+        &self,
+        name: &str
+    ) -> Option<Self::ChannelID> {
+        self.ids.get(name).cloned()
+    }
+}
+
 impl<Ctx, Types> Channels<Ctx> for NearChannels<Types>
 where
     Types: NearDuplexNegoTypes,
     Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx
 {
     type Addr = Types::OutEndpoint;
-    type ChannelID = NearChannelID;
     type OutNegoParam = Types::OutParam;
     type Param = NearChannelParam;
     type ParamsError = Infallible;
@@ -4412,14 +4428,6 @@ where
 
                 (out, None, None)
             }))
-    }
-
-    #[inline]
-    fn channel_id(
-        &self,
-        name: &str
-    ) -> Option<Self::ChannelID> {
-        self.ids.get(name).cloned()
     }
 }
 

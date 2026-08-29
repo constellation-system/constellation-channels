@@ -16,7 +16,322 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
+use std::io::Read;
+use std::io::Write;
+use std::time::Instant;
+
 use log::LevelFilter;
+use log::trace;
+use mio::Events;
+use mio::Poll;
+use mio::Registry;
+use mio::Token;
+use serde::Deserialize;
+use serde::Serialize;
+
+use constellation_auth::authn::AuthNed;
+use constellation_auth::authn::TrivialAuthN;
+use constellation_auth::cred::NullCred;
+use constellation_channels::config::CompoundNearAcceptorConfig;
+use constellation_channels::config::CompoundNearConnectorParam;
+use constellation_channels::config::CompoundNearEndpoint;
+use constellation_channels::config::CompoundNearConnectorPartialConfig;
+use constellation_channels::config::NearChannelsConfig;
+use constellation_channels::config::tls::TLSClientConfig;
+use constellation_channels::config::tls::TLSServerConfig;
+use constellation_channels::near::channels::DuplexValue;
+use constellation_channels::near::channels::NearChannels;
+use constellation_channels::near::compound::CompoundNearClientConn;
+use constellation_channels::near::compound::CompoundNearNameAddr;
+use constellation_channels::near::compound::CompoundNearServerConn;
+use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
+use constellation_channels::resolve::cache::NSNameCachesCtx;
+use constellation_channels::resolve::cache::SharedNSNameCaches;
+use constellation_common::config::CreateWithParam;
+use constellation_common::error::ErrorScope;
+use constellation_common::error::ScopedError;
+use constellation_common::retry::RetryResult;
+use constellation_common::retry::RetryWhen;
+use constellation_streams::channels::Channels;
+use constellation_streams::channels::ChannelsID;
+use constellation_streams::channels::ChannelsListen;
+use constellation_streams::threads::RegistryCtx;
+use constellation_streams::threads::Tokens;
+use constellation_streams::threads::TokensCtx;
+
+const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
+
+#[derive(Deserialize, Serialize)]
+struct ClientEndpoint {
+    addr: CompoundNearEndpoint,
+    channel: String,
+    #[serde(default)]
+    param: Option<CompoundNearConnectorParam>
+}
+
+struct ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx {
+    inner: Ctx,
+    tokens: Tokens,
+    poll: Poll
+}
+
+impl<Ctx> RegistryCtx for ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx
+{
+    #[inline]
+    fn registry(&self) -> &Registry {
+        self.poll.registry()
+    }
+}
+
+impl<Ctx> NSNameCachesCtx for ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx
+{
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Self::NameCaches {
+        self.inner.name_caches()
+    }
+}
+
+impl<Ctx> TokensCtx for ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx
+{
+    #[inline]
+    fn token(&mut self) -> Token {
+        self.tokens.token()
+    }
+
+    #[inline]
+    fn free_token(
+        &mut self,
+        token: Token
+    ) {
+        self.tokens.free_token(token)
+    }
+}
+
+fn server(conf: &str) {
+    let server_config: NearChannelsConfig<
+        CompoundNearAcceptorConfig<TLSServerConfig>,
+        CompoundNearConnectorPartialConfig<TLSClientConfig>,
+        (),
+        ()
+    > = yaml_serde::from_str(conf).unwrap();
+    let mut ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new(),
+        poll: Poll::new().expect("Expected success")
+    };
+    let mut events = Events::with_capacity(2);
+    let mut channels: NearChannels<
+        CompoundNearDuplexNegoTypes<
+            TrivialAuthN<NullCred, CompoundNearServerConn>,
+            TrivialAuthN<NullCred, CompoundNearClientConn>,
+            TLSServerConfig,
+            TLSClientConfig
+        >
+    > = NearChannels::create(server_config, &mut ctx).unwrap();
+    let mut session = None;
+
+    // Obtain the incoming session
+    while session.is_none() {
+        trace!(target: "far-channels-server",
+               "poll wait");
+
+        ctx.poll.poll(&mut events, None).unwrap();
+
+        let live: HashSet<Token> =
+            events.iter().map(|event| event.token()).collect();
+
+        match channels.listen(&mut ctx, &live).unwrap() {
+            RetryResult::Success((streams, _, _, _)) => {
+                for info in streams {
+                    assert!(session.is_none());
+
+                    session = Some(info);
+                }
+            }
+            RetryResult::Retry(retry) => {
+                let when = retry.when();
+                let now = Instant::now();
+
+                if now < when {
+                    std::thread::sleep(when - now)
+                }
+            }
+        }
+    }
+
+    let (_, _, _, stream) = session.unwrap();
+    let mut buf = [0; FIRST_BYTES.len()];
+    let mut stream = if let DuplexValue::Accept(stream) = stream {
+        stream
+    } else {
+        panic!("Expected server stream");
+    };
+    let nbytes = stream.get_mut().read(&mut buf)
+        .expect("Expected success");
+
+    stream.get_mut().write(&SECOND_BYTES)
+        .expect("Expected success");
+
+    assert_eq!(FIRST_BYTES.len(), nbytes);
+    assert_eq!(FIRST_BYTES, buf);
+}
+
+fn client(
+    conf: &str,
+    endpoint: &str
+) {
+    let endpoint: ClientEndpoint = yaml_serde::from_str(endpoint).unwrap();
+    let ClientEndpoint { channel, addr, param: negoparam } = endpoint;
+    let addr = CompoundNearNameAddr::try_from(addr).unwrap();
+    let client_config: NearChannelsConfig<
+        CompoundNearAcceptorConfig<TLSServerConfig>,
+        CompoundNearConnectorPartialConfig<TLSClientConfig>,
+        (),
+        ()
+    > = yaml_serde::from_str(conf).unwrap();
+    let mut ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new(),
+        poll: Poll::new().expect("Expected success")
+    };
+    let mut events = Events::with_capacity(2);
+    let mut channels: NearChannels<
+        CompoundNearDuplexNegoTypes<
+            TrivialAuthN<NullCred, CompoundNearServerConn>,
+            TrivialAuthN<NullCred, CompoundNearClientConn>,
+            TLSServerConfig,
+            TLSClientConfig
+        >
+    > = NearChannels::create(client_config, &mut ctx).unwrap();
+    let channel_id = channels.channel_id(&channel).unwrap();
+    let mut session = None;
+    let mut channel_param = None;
+
+    for (id, params) in channels
+        .params(&mut ctx, [channel_id.clone()].into_iter())
+        .unwrap() {
+        assert_eq!(id, channel_id);
+
+        let params = if let RetryResult::Success((params, _)) = params {
+            params
+        } else {
+            panic!("Expected success")
+        };
+
+        for param in params {
+            assert!(channel_param.is_none());
+
+            channel_param = Some(param)
+        }
+    }
+
+    let channel_param = channel_param.unwrap();
+
+    while session.is_none() {
+        match channels.req_stream(&mut ctx, &channel_id, &channel_param,
+                                  &addr, &negoparam).unwrap() {
+            RetryResult::Success((newsession, _, _)) => {
+                session = newsession;
+            }
+            RetryResult::Retry(retry) => {
+                let when = retry.when();
+                let now = Instant::now();
+
+                if now < when {
+                    std::thread::sleep(when - now)
+                }
+            }
+        }
+    }
+
+    let stream = session.unwrap();
+    let mut stream = if let DuplexValue::Conn(stream) = stream {
+        stream
+    } else {
+        panic!("Expected client stream");
+    };
+
+    stream.get_mut().write(&FIRST_BYTES)
+        .expect("Expected success");
+
+        // Obtain the incoming session
+    while {
+        let mut ready = false;
+
+        trace!(target: "far-channels-server",
+               "poll wait");
+
+        ctx.poll.poll(&mut events, None).unwrap();
+
+        let live: HashSet<Token> =
+            events.iter().map(|event| event.token()).collect();
+
+        match channels.listen(&mut ctx, &live).unwrap() {
+            RetryResult::Success((streams, endpoints, _, _)) => {
+                for _ in streams {
+                    panic!("Should not see incoming sessions")
+                }
+
+                for (in_addr, in_channel_id, in_param) in endpoints {
+                    if addr == in_addr && channel_param == in_param &&
+                        channel_id == in_channel_id {
+                        ready = true;
+                    } else {
+                        panic!("Unexpected messages")
+                    }
+                }
+            }
+            RetryResult::Retry(retry) => {
+                let when = retry.when();
+                let now = Instant::now();
+
+                if now < when {
+                    std::thread::sleep(when - now)
+                }
+            }
+        }
+
+        ready
+    } {}
+
+    let mut buf = [0; SECOND_BYTES.len()];
+    let mut nbytes = 0;
+
+    while {
+        match stream.get_mut().read(&mut buf) {
+            Ok(n) => {
+                nbytes = n;
+
+                false
+            }
+            Err(err) => if err.scope() != ErrorScope::WouldBlock {
+                panic!("{}", err)
+            } else {
+                trace!(target: "far-channels-server",
+                       "poll wait");
+
+                ctx.poll.poll(&mut events, None).unwrap();
+
+                true
+            }
+        }
+    } {}
+
+    assert_eq!(SECOND_BYTES.len(), nbytes);
+    assert_eq!(SECOND_BYTES, buf);
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -40,9 +355,9 @@ fn main() {
         } else {
             let endpoint = std::fs::read_to_string(&args[3]).unwrap();
 
-//            client(&conf, &endpoint)
+            client(&conf, &endpoint)
         },
-//        "server" => server(&conf),
+        "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);
