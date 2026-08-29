@@ -1424,6 +1424,7 @@ pub struct NearChannelOutboundEntryConfig<Out, AuthN> {
     /// Channel ID.
     id: String,
     /// Outbound connector configuration.
+    #[serde(flatten)]
     connect: Out,
     /// Entry-specific authenticator configuration.
     #[serde(
@@ -1445,6 +1446,7 @@ pub struct NearChannelInboundEntryConfig<In, AuthN> {
     /// Channel ID.
     id: String,
     /// Inbound acceptor configuration.
+    #[serde(flatten)]
     listen: In,
     /// Entry-specific authenticator configuration.
     #[serde(

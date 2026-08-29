@@ -22,6 +22,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use log::LevelFilter;
+use log::info;
 use log::trace;
 use mio::Events;
 use mio::Poll;
@@ -238,6 +239,9 @@ fn client(
     }
 
     let channel_param = channel_param.unwrap();
+
+    info!(target: "client",
+          "Requesting stream");
 
     while session.is_none() {
         match channels.req_stream(&mut ctx, &channel_id, &channel_param,

@@ -50,6 +50,7 @@ use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use log::LevelFilter;
+use log::info;
 use log::trace;
 use mio::Events;
 use mio::Poll;
@@ -147,7 +148,7 @@ fn server(conf: &str) {
 
     // Obtain the incoming session
     while session.is_none() {
-        trace!(target: "far-channels-server",
+        trace!(target: "server",
                "poll wait");
 
         ctx.poll.poll(&mut events, None).unwrap();
@@ -229,6 +230,9 @@ fn client(
 
     let channel_param = channel_param.unwrap();
 
+    info!(target: "client",
+          "Requesting stream");
+
     while session.is_none() {
         match channels.req_stream(&mut ctx, &channel_id, &channel_param,
                                   &addr, &negoparam).unwrap() {
@@ -251,50 +255,16 @@ fn client(
     stream.get_mut().write(&FIRST_BYTES)
         .expect("Expected success");
 
-        // Obtain the incoming session
-    while {
-        let mut ready = false;
-
-        trace!(target: "far-channels-server",
-               "poll wait");
-
-        ctx.poll.poll(&mut events, None).unwrap();
-
-        let live: HashSet<Token> =
-            events.iter().map(|event| event.token()).collect();
-
-        match channels.listen(&mut ctx, &live).unwrap() {
-            RetryResult::Success((streams, endpoints, _, _)) => {
-                for _ in streams {
-                    panic!("Should not see incoming sessions")
-                }
-
-                for (in_addr, in_channel_id, in_param) in endpoints {
-                    if addr == in_addr && channel_param == in_param &&
-                        channel_id == in_channel_id {
-                        ready = true;
-                    } else {
-                        panic!("Unexpected messages")
-                    }
-                }
-            }
-            RetryResult::Retry(retry) => {
-                let when = retry.when();
-                let now = Instant::now();
-
-                if now < when {
-                    std::thread::sleep(when - now)
-                }
-            }
-        }
-
-        ready
-    } {}
+    info!(target: "client",
+          "Reading message");
 
     let mut buf = [0; SECOND_BYTES.len()];
     let mut nbytes = 0;
 
     while {
+        trace!(target: "client",
+               "attempting to read");
+
         match stream.get_mut().read(&mut buf) {
             Ok(n) => {
                 nbytes = n;
@@ -304,10 +274,46 @@ fn client(
             Err(err) => if err.scope() != ErrorScope::WouldBlock {
                 panic!("{}", err)
             } else {
-                trace!(target: "far-channels-server",
-                       "poll wait");
+                // Obtain the incoming session
+                while {
+                    let mut ready = false;
 
-                ctx.poll.poll(&mut events, None).unwrap();
+                    trace!(target: "client",
+                           "poll wait");
+
+                    ctx.poll.poll(&mut events, None).unwrap();
+
+                    let live: HashSet<Token> =
+                        events.iter().map(|event| event.token()).collect();
+
+                    match channels.listen(&mut ctx, &live).unwrap() {
+                        RetryResult::Success((streams, endpoints, _, _)) => {
+                            for _ in streams {
+                                panic!("Should not see incoming sessions")
+                            }
+
+                            for (in_addr, in_chan_id, in_param) in endpoints {
+                                if addr == in_addr &&
+                                    channel_param == in_param &&
+                                    channel_id == in_chan_id {
+                                    ready = true;
+                                } else {
+                                    panic!("Unexpected messages")
+                                }
+                            }
+                        }
+                        RetryResult::Retry(retry) => {
+                            let when = retry.when();
+                            let now = Instant::now();
+
+                            if now < when {
+                                std::thread::sleep(when - now)
+                            }
+                        }
+                    }
+
+                    !ready
+                } {}
 
                 true
             }

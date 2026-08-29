@@ -1,0 +1,7 @@
+#addr:
+#  tcp: "[::1]:8118"
+
+addr:
+  unix-stream: near-channels-example-server.sock
+
+channel: example-client-tcp
