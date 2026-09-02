@@ -52,10 +52,12 @@ use constellation_common::retry::next_retry;
 use constellation_common::retry::next_retry_definite;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
+use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
+use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::TokensCtx;
 use log::debug;
@@ -176,7 +178,7 @@ where
         Types::OutboundNego,
         Types::Xfrm
     >,
-    param: Types::ChannelParam
+    param: Types::ChannelParam,
 }
 
 /// Entry associated with an acquired value on a channel.
@@ -263,6 +265,8 @@ where
     in_param: Types::InParam,
     /// Parameter used to create the basic [DatagramXfrm].
     xfrm_param: Types::InnerXfrmCreateParam,
+    encoder_config: Types::EncoderConfig,
+    decoder_config: Types::DecoderConfig,
     /// Retry configuration.
     retry: Retry,
     /// Size hint for flows tables.
@@ -373,6 +377,19 @@ pub enum FlowStateGetFlowError<AuthN, Start, Flow, Shutdown> {
 }
 
 #[derive(Debug)]
+pub enum FlowsEntryReqFlowError<AuthN, Start, Flow, Shutdown, Enc, Dec> {
+    GetFlow {
+        err: FlowStateGetFlowError<AuthN, Start, Flow, Shutdown>
+    },
+    Encoder {
+        err: Enc
+    },
+    Decoder {
+        err: Dec
+    },
+}
+
+#[derive(Debug)]
 pub enum SessionStateBacklogError {
     Active
 }
@@ -392,7 +409,7 @@ pub enum SessionNegoStepError<AuthN, Shutdown> {
 }
 
 #[derive(Debug)]
-pub enum SessionListenError<Flows, Start, AuthN, Shutdown> {
+pub enum SessionListenError<Flows, Start, AuthN, Shutdown, Enc, Dec> {
     /// Error occurred listening for flows.
     Flows {
         /// Error that occurred listening for flows.
@@ -410,7 +427,13 @@ pub enum SessionListenError<Flows, Start, AuthN, Shutdown> {
     },
     IO {
         err: Error
-    }
+    },
+    Encoder {
+        err: Enc
+    },
+    Decoder {
+        err: Dec
+    },
 }
 
 #[derive(Debug)]
@@ -428,11 +451,11 @@ pub enum SessionShutdownStepError<Flows, Shutdown> {
 }
 
 #[derive(Debug)]
-pub enum SessionFlowsError<Flows, Listen, Start, AuthN, Shutdown> {
+pub enum SessionFlowsError<Flows, Listen, Start, AuthN, Shutdown, Enc, Dec> {
     /// Error orrucred listening for input after requesting.
     Listen {
         /// The error that occurred listening for input.
-        err: SessionListenError<Listen, Start, AuthN, Shutdown>
+        err: SessionListenError<Listen, Start, AuthN, Shutdown, Enc, Dec>
     },
     /// Error occurred requesting the flow.
     Flows {
@@ -484,7 +507,8 @@ pub enum AcquiredEntryCreateError<Resolve, Flows, Wrap> {
 }
 
 #[derive(Debug)]
-pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown> {
+pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN,
+                                  Shutdown, Enc, Dec> {
     /// Error occurred refreshing addresses.
     Refresh {
         /// Error that occurred while refreshing addresses.
@@ -493,7 +517,7 @@ pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown> {
     /// Error occurred listening for flows.
     Listen {
         /// Error that occurred listening for flows.
-        err: SessionListenError<Flows, Start, AuthN, Shutdown>
+        err: SessionListenError<Flows, Start, AuthN, Shutdown, Enc, Dec>
     }
 }
 
@@ -1100,7 +1124,7 @@ where
             Types::AuthNegoError,
             Types::AuthStartError,
             FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
         >
     >
     where
@@ -1228,7 +1252,7 @@ where
             Types::AuthNegoError,
             Types::AuthStartError,
             FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
         >
     >
     where
@@ -1655,7 +1679,7 @@ where
             Types::Xfrm
         >,
         token: Token,
-        param: Types::ChannelParam
+        param: Types::ChannelParam,
     ) -> Result<Self, Error> {
         registry.register(
             &mut flows,
@@ -1757,16 +1781,26 @@ where
         shutdown: &Types::ShutdownNego,
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
+        encoder_config: &Types::EncoderConfig,
+        decoder_config: &Types::DecoderConfig,
         retry: &Retry,
         out_param: &Types::OutParam,
         endpoint: &Types::PeerAddr
     ) -> Result<
-        RetryResult<Option<Types::AuthNSession>>,
-        FlowStateGetFlowError<
+        RetryResult<Option<DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::AuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        >>>,
+        FlowsEntryReqFlowError<
             Types::AuthNegoError,
             Types::AuthStartError,
             FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            Types::EncoderCreateError,
+            Types::DecoderCreateError
         >
     > {
         let now = Instant::now();
@@ -1776,7 +1810,7 @@ where
                 let ent = ent.get_mut();
 
                 if ent.retry.retry_when <= now {
-                    let out = ent.get_flow(
+                    ent.get_flow(
                         &mut self.flows,
                         shutdown,
                         shutdown_param,
@@ -1784,9 +1818,28 @@ where
                         retry,
                         out_param,
                         endpoint
-                    )?;
+                    ).map_err(|err| FlowsEntryReqFlowError::GetFlow {
+                        err: err
+                    })?
+                    .map_ok(|stream| {
+                        stream.map(|stream| {
+                            let encoder = Types::Encoder::create(
+                                encoder_config.clone()
+                            ).map_err(|err| FlowsEntryReqFlowError::Encoder {
+                                err: err
+                            })?;
+                            let decoder = Types::Decoder::create(
+                                decoder_config.clone()
+                            ).map_err(|err| FlowsEntryReqFlowError::Decoder {
+                                err: err
+                            })?;
+                            let out = DatagramCodecStream::create(encoder,
+                                                                  decoder,
+                                                                  stream);
 
-                    Ok(out)
+                            Ok(out)
+                        }).transpose()
+                    })
                 } else {
                     Ok(RetryResult::Retry(ent.retry.retry_when))
                 }
@@ -1798,7 +1851,7 @@ where
                     live: true
                 });
 
-                let out = ent.get_flow(
+                ent.get_flow(
                     &mut self.flows,
                     shutdown,
                     shutdown_param,
@@ -1806,9 +1859,28 @@ where
                     retry,
                     out_param,
                     endpoint
-                )?;
+                ).map_err(|err| FlowsEntryReqFlowError::GetFlow {
+                    err: err
+                })?
+                .map_ok(|stream| {
+                    stream.map(|stream| {
+                        let encoder = Types::Encoder::create(
+                            encoder_config.clone()
+                        ).map_err(|err| FlowsEntryReqFlowError::Encoder {
+                            err: err
+                        })?;
+                        let decoder = Types::Decoder::create(
+                            decoder_config.clone()
+                        ).map_err(|err| FlowsEntryReqFlowError::Decoder {
+                            err: err
+                        })?;
+                        let out = DatagramCodecStream::create(encoder,
+                                                              decoder,
+                                                              stream);
 
-                Ok(out)
+                        Ok(out)
+                    }).transpose()
+                })
             }
         }
     }
@@ -1894,6 +1966,8 @@ where
         shutdown: &Types::ShutdownNego,
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
+        encoder_config: &Types::EncoderConfig,
+        decoder_config: &Types::DecoderConfig,
         retry: &Retry,
         param: &Types::InParam,
         shutdown_only: bool
@@ -1908,11 +1982,22 @@ where
             >,
             Types::AuthStartError,
             Types::AuthNegoError,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            Types::EncoderCreateError,
+            Types::DecoderCreateError
         >
     >
     where
-        S: FnMut(Types::ChannelParam, Types::AuthNSession) -> Result<(), Error>,
+        S: FnMut(
+            Types::ChannelParam,
+            DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                Types::AuthNSession,
+                Types::Encoder,
+                Types::Decoder
+            >
+        ) -> Result<(), Error>,
         E: FnMut(Types::PeerAddr, Types::ChannelParam) {
         let mut endpoints = HashSet::new();
         let mut flows = Vec::new();
@@ -2020,6 +2105,20 @@ where
                                 debug!(target: "flows-nego-state",
                                        "reporting completed session");
 
+                                let encoder = Types::Encoder::create(
+                                    encoder_config.clone()
+                                ).map_err(|err| SessionListenError::Encoder {
+                                    err: err
+                                })?;
+                                let decoder = Types::Decoder::create(
+                                    decoder_config.clone()
+                                ).map_err(|err| SessionListenError::Decoder {
+                                    err: err
+                                })?;
+                                let session = DatagramCodecStream::create(
+                                    encoder, decoder, session
+                                );
+
                                 // Session negotiations complete; report it out.
                                 report_session(self.param.clone(), session)
                                     .map_err(|err| SessionListenError::IO {
@@ -2058,6 +2157,20 @@ where
                             if let Some(session) = session {
                                 debug!(target: "flows-nego-state",
                                        "reporting completed session");
+
+                                let encoder = Types::Encoder::create(
+                                    encoder_config.clone()
+                                ).map_err(|err| SessionListenError::Encoder {
+                                    err: err
+                                })?;
+                                let decoder = Types::Decoder::create(
+                                    decoder_config.clone()
+                                ).map_err(|err| SessionListenError::Decoder {
+                                    err: err
+                                })?;
+                                let session = DatagramCodecStream::create(
+                                    encoder, decoder, session
+                                );
 
                                 // Session negotiations complete; report it out.
                                 report_session(self.param.clone(), session)
@@ -2103,6 +2216,20 @@ where
                     {
                         debug!(target: "flows-nego-state",
                                "reporting completed session");
+
+                        let encoder = Types::Encoder::create(
+                            encoder_config.clone()
+                        ).map_err(|err| SessionListenError::Encoder {
+                            err: err
+                        })?;
+                        let decoder = Types::Decoder::create(
+                            decoder_config.clone()
+                        ).map_err(|err| SessionListenError::Decoder {
+                            err: err
+                        })?;
+                        let session = DatagramCodecStream::create(
+                            encoder, decoder, session
+                        );
 
                         // Session negotiations complete; report it out.
                         report_session(self.param.clone(), session).map_err(
@@ -2299,7 +2426,7 @@ where
                                     registry,
                                     session,
                                     token,
-                                    addr.clone()
+                                    addr.clone(),
                                 )
                                 .map_err(|err| AcquiredEntryCreateError::IO {
                                     err: err
@@ -2370,7 +2497,7 @@ where
                             registry,
                             session,
                             token,
-                            addr.clone()
+                            addr.clone(),
                         )
                         .map_err(|err| {
                             AcquiredEntryCreateError::IO { err: err }
@@ -2420,10 +2547,15 @@ where
                     )
                     .map_err(|err| AcquiredEntryCreateError::IO { err: err }),
                     None => {
-                        FlowsEntry::new(registry, session, token, param.clone())
-                            .map_err(|err| AcquiredEntryCreateError::IO {
-                                err: err
-                            })
+                        FlowsEntry::new(
+                            registry,
+                            session,
+                            token,
+                            param.clone(),
+                        )
+                        .map_err(|err| AcquiredEntryCreateError::IO {
+                            err: err
+                        })
                     }
                 }?;
 
@@ -2539,13 +2671,21 @@ where
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
         policy: &SocketAddrPolicy,
+        encoder_config: &Types::EncoderConfig,
+        decoder_config: &Types::DecoderConfig,
         retry: &Retry,
         channel_param: &Types::ChannelParam,
         nego_param: &Types::OutParam,
         endpoint: &Types::PeerAddr
     ) -> Result<
         RetryResult<(
-            Option<Types::AuthNSession>,
+            Option<DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                Types::AuthNSession,
+                Types::Encoder,
+                Types::Decoder
+            >>,
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
@@ -2557,14 +2697,16 @@ where
                 Types::OutboundNegoCreateError
             >,
             Types::WrapError,
-            FlowStateGetFlowError<
+            FlowsEntryReqFlowError<
                 Types::AuthNegoError,
                 Types::AuthStartError,
                 FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
                 ShutdownError<
                     Types::ShutdownStartError,
                     Types::ShutdownNegoError
-                >
+                >,
+                Types::EncoderCreateError,
+                Types::DecoderCreateError
             >
         >
     >
@@ -2578,6 +2720,8 @@ where
                         shutdown,
                         shutdown_param,
                         authn,
+                        encoder_config,
+                        decoder_config,
                         retry,
                         nego_param,
                         endpoint
@@ -2925,6 +3069,8 @@ where
         shutdown: &Types::ShutdownNego,
         shutdown_param: &Types::ShutdownParam,
         authn: &Types::AuthN,
+        encoder_config: &Types::EncoderConfig,
+        decoder_config: &Types::DecoderConfig,
         retry: &Retry,
         nego_param: &Types::InParam,
         tokens: &HashSet<Token>,
@@ -2949,11 +3095,22 @@ where
             >,
             Types::AuthStartError,
             Types::AuthNegoError,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            Types::EncoderCreateError,
+            Types::DecoderCreateError
         >
     >
     where
-        S: FnMut(Types::ChannelParam, Types::AuthNSession) -> Result<(), Error>,
+        S: FnMut(
+            Types::ChannelParam,
+            DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                Types::AuthNSession,
+                Types::Encoder,
+                Types::Decoder
+            >
+        ) -> Result<(), Error>,
         E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: RegistryCtx + TokensCtx {
         self.refresh(ctx, channel, policy)
@@ -2970,6 +3127,8 @@ where
                         shutdown,
                         shutdown_param,
                         authn,
+                        encoder_config,
+                        decoder_config,
                         retry,
                         nego_param,
                         shutdown_only
@@ -3221,6 +3380,8 @@ where
         flows_config: FlowsConfig,
         addrs_config: AddrsConfig,
         xfrm_param: Types::InnerXfrmCreateParam,
+        encoder_config: Types::EncoderConfig,
+        decoder_config: Types::DecoderConfig,
         retry: Retry,
         nflows_hint: Option<usize>
     ) -> Result<
@@ -3261,6 +3422,8 @@ where
             shutdown: shutdown,
             shutdown_param: shutdown_param,
             retry: retry,
+            encoder_config: encoder_config,
+            decoder_config: decoder_config,
             nflows_hint: nflows_hint,
             acquired: None
         };
@@ -3404,7 +3567,13 @@ where
         out_param: &Types::OutParam
     ) -> Result<
         RetryResult<(
-            Option<Types::AuthNSession>,
+            Option<DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                Types::AuthNSession,
+                Types::Encoder,
+                Types::Decoder
+            >>,
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
@@ -3417,14 +3586,16 @@ where
                     Types::OutboundNegoCreateError
                 >,
                 Types::WrapError,
-                FlowStateGetFlowError<
+                FlowsEntryReqFlowError<
                     Types::AuthNegoError,
                     Types::AuthStartError,
                     FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
                     ShutdownError<
                         Types::ShutdownStartError,
                         Types::ShutdownNegoError
-                    >
+                    >,
+                    Types::EncoderCreateError,
+                    Types::DecoderCreateError
                 >
             >
         >
@@ -3446,6 +3617,8 @@ where
                         &self.shutdown_param,
                         &self.authn,
                         &self.addr_policy,
+                        &self.encoder_config,
+                        &self.decoder_config,
                         &self.retry,
                         param,
                         out_param,
@@ -3736,7 +3909,9 @@ where
                 ShutdownError<
                     Types::ShutdownStartError,
                     Types::ShutdownNegoError
-                >
+                >,
+                Types::EncoderCreateError,
+                Types::DecoderCreateError
             >,
             AcquiredEntryCreateError<
                 Types::ResolverError,
@@ -3753,7 +3928,16 @@ where
         >
     >
     where
-        S: FnMut(Types::ChannelParam, Types::AuthNSession) -> Result<(), Error>,
+        S: FnMut(
+            Types::ChannelParam,
+            DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                Types::AuthNSession,
+                Types::Encoder,
+                Types::Decoder
+            >
+        ) -> Result<(), Error>,
         E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         match self.acquired.take().ok_or(ChannelEntryListenError::None)? {
@@ -3830,6 +4014,8 @@ where
                     &self.shutdown,
                     &self.shutdown_param,
                     &self.authn,
+                    &self.encoder_config,
+                    &self.decoder_config,
                     &self.retry,
                     &self.in_param,
                     tokens,
@@ -4204,18 +4390,26 @@ where
                 Types::OutboundNegoCreateError
             >,
             Types::WrapError,
-            FlowStateGetFlowError<
+            FlowsEntryReqFlowError<
                 Types::AuthNegoError,
                 Types::AuthStartError,
                 FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
                 ShutdownError<
                     Types::ShutdownStartError,
                     Types::ShutdownNegoError
-                >
+                >,
+                Types::EncoderCreateError,
+                Types::DecoderCreateError
             >
         >
     >;
-    type Stream = Types::AuthNSession;
+    type Stream = DatagramCodecStream<
+        Types::OutMsg,
+        Types::Wrapper,
+        Types::AuthNSession,
+        Types::Encoder,
+        Types::Decoder
+    >;
 
     #[inline]
     fn req_stream(
@@ -4227,7 +4421,13 @@ where
         nego_param: &Self::OutNegoParam
     ) -> Result<
         RetryResult<(
-            Option<Types::AuthNSession>,
+            Option<DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                Types::AuthNSession,
+                Types::Encoder,
+                Types::Decoder
+            >>,
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
@@ -4287,7 +4487,9 @@ where
             >,
             Types::AuthStartError,
             Types::AuthNegoError,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            Types::EncoderCreateError,
+            Types::DecoderCreateError
         >,
         AcquiredEntryCreateError<
             Types::ResolverError,
@@ -4461,7 +4663,9 @@ where
             >,
             Types::AuthStartError,
             Types::AuthNegoError,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            Types::EncoderCreateError,
+            Types::DecoderCreateError
         >,
         AcquiredEntryCreateError<
             Types::ResolverError,
@@ -4495,7 +4699,13 @@ where
         ctx: &mut Ctx,
         channel: &FarChannelID,
         param: &Types::ChannelParam,
-        session: Types::AuthNSession
+        session: DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::AuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        >
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
@@ -4503,6 +4713,8 @@ where
         >,
         Self::ShutdownStreamError
     > {
+        let session = session.into_inner();
+
         self.channels[channel.0].shutdown_flow(ctx, param, session)
     }
 
@@ -4560,6 +4772,7 @@ where
                         .listen(
                             ctx,
                             |param, stream| {
+                                let stream = stream.into_inner();
                                 let endpoint = stream.get().peer_addr()?;
 
                                 match &mut sessions {
@@ -4678,7 +4891,9 @@ where
     type Config = FarChannelsConfig<
         Types::Config,
         Types::AuthConfig,
-        Types::InnerXfrmCreateParam
+        Types::InnerXfrmCreateParam,
+        Types::EncoderConfig,
+        Types::DecoderConfig
     >;
     type CreateError = FarChannelsCreateError<
         Types::AuthCreateError,
@@ -4711,6 +4926,8 @@ where
             default_authn,
             default_flows_params,
             default_xfrm_params,
+            default_encoder_config,
+            default_decoder_config,
             default_retry,
             default_nflows
         ) = config.take();
@@ -4739,6 +4956,8 @@ where
                 authn_config,
                 flows_params,
                 xfrm_params,
+                encoder_config,
+                decoder_config,
                 retry,
                 nflows
             ) = config.take();
@@ -4748,6 +4967,10 @@ where
                 xfrm_params.unwrap_or(default_xfrm_params.clone());
             let flows_params =
                 flows_params.unwrap_or(default_flows_params.clone());
+            let encoder_config =
+                encoder_config.unwrap_or(default_encoder_config.clone());
+            let decoder_config =
+                decoder_config.unwrap_or(default_decoder_config.clone());
             let retry = retry.unwrap_or(default_retry.clone());
             let nflows = nflows.or(default_nflows);
 
@@ -4766,6 +4989,8 @@ where
                 flows_params,
                 resolve,
                 xfrm_params,
+                encoder_config,
+                decoder_config,
                 retry,
                 nflows
             )
@@ -4879,7 +5104,7 @@ where
     AuthN: ScopedError,
     Flow: ScopedError,
     Start: ScopedError,
-    Shutdown: ScopedError
+    Shutdown: ScopedError,
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -4888,6 +5113,25 @@ where
             FlowStateGetFlowError::Flow { err } => err.scope(),
             FlowStateGetFlowError::Impossible |
             FlowStateGetFlowError::Active => ErrorScope::Unrecoverable
+        }
+    }
+}
+
+impl<AuthN, Start, Flow, Shutdown, Enc, Dec> ScopedError
+    for FlowsEntryReqFlowError<AuthN, Start, Flow, Shutdown, Enc, Dec>
+where
+    AuthN: ScopedError,
+    Flow: ScopedError,
+    Start: ScopedError,
+    Shutdown: ScopedError,
+    Enc: ScopedError,
+    Dec: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            FlowsEntryReqFlowError::GetFlow { err } => err.scope(),
+            FlowsEntryReqFlowError::Encoder { err } => err.scope(),
+            FlowsEntryReqFlowError::Decoder { err } => err.scope(),
         }
     }
 }
@@ -5038,32 +5282,39 @@ where
     }
 }
 
-impl<Flows, Start, AuthN, Shutdown> ScopedError
-    for SessionListenError<Flows, Start, AuthN, Shutdown>
+impl<Flows, Start, AuthN, Shutdown, Enc, Dec> ScopedError
+    for SessionListenError<Flows, Start, AuthN, Shutdown, Enc, Dec>
 where
     Flows: ScopedError,
     Start: ScopedError,
     AuthN: ScopedError,
-    Shutdown: ScopedError
+    Shutdown: ScopedError,
+    Enc: ScopedError,
+    Dec: ScopedError,
 {
     fn scope(&self) -> ErrorScope {
         match self {
+            SessionListenError::Encoder { err } => err.scope(),
+            SessionListenError::Decoder { err } => err.scope(),
             SessionListenError::Flows { err } => err.scope(),
             SessionListenError::Start { err } => err.scope(),
             SessionListenError::Step { err } => err.scope(),
-            SessionListenError::IO { err } => err.scope()
+            SessionListenError::IO { err } => err.scope(),
         }
     }
 }
 
-impl<Refresh, Flows, Start, AuthN, Shutdown> ScopedError
-    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown>
+impl<Refresh, Flows, Start, AuthN, Shutdown, Enc, Dec> ScopedError
+    for AcquiredEntryListenError<Refresh, Flows, Start,
+                                 AuthN, Shutdown, Enc, Dec>
 where
     Refresh: ScopedError,
     Flows: ScopedError,
     Start: ScopedError,
     AuthN: ScopedError,
-    Shutdown: ScopedError
+    Shutdown: ScopedError,
+    Enc: ScopedError,
+    Dec: ScopedError,
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -5205,19 +5456,23 @@ where
     }
 }
 
-impl<Flows, Start, AuthN, Shutdown> Display
-    for SessionListenError<Flows, Start, AuthN, Shutdown>
+impl<Flows, Start, AuthN, Shutdown, Enc, Dec> Display
+    for SessionListenError<Flows, Start, AuthN, Shutdown, Enc, Dec>
 where
     Flows: Display,
     Start: Display,
     AuthN: Display,
-    Shutdown: Display
+    Shutdown: Display,
+    Enc: Display,
+    Dec: Display
 {
     fn fmt(
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), std::fmt::Error> {
         match self {
+            SessionListenError::Encoder { err } => err.fmt(f),
+            SessionListenError::Decoder { err } => err.fmt(f),
             SessionListenError::Flows { err } => err.fmt(f),
             SessionListenError::Start { err } => err.fmt(f),
             SessionListenError::Step { err } => err.fmt(f),
@@ -5290,6 +5545,28 @@ where
     }
 }
 
+impl<AuthN, Start, Flow, Shutdown, Enc, Dec> Display
+    for FlowsEntryReqFlowError<AuthN, Start, Flow, Shutdown, Enc, Dec>
+where
+    Shutdown: Display,
+    Start: Display,
+    Flow: Display,
+    AuthN: Display,
+    Enc: Display,
+    Dec: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            FlowsEntryReqFlowError::GetFlow { err } => err.fmt(f),
+            FlowsEntryReqFlowError::Encoder { err } => err.fmt(f),
+            FlowsEntryReqFlowError::Decoder { err } => err.fmt(f),
+        }
+    }
+}
+
 impl<Resolve, Flows, Wrap> Display
     for AcquiredEntryCreateError<Resolve, Flows, Wrap>
 where
@@ -5314,14 +5591,17 @@ where
     }
 }
 
-impl<Refresh, Flows, Start, AuthN, Shutdown> Display
-    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN, Shutdown>
+impl<Refresh, Flows, Start, AuthN, Shutdown, Enc, Dec> Display
+    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN,
+                                 Shutdown, Enc, Dec>
 where
     Refresh: Display,
     Flows: Display,
     Start: Display,
     AuthN: Display,
-    Shutdown: Display
+    Shutdown: Display,
+    Enc: Display,
+    Dec: Display
 {
     fn fmt(
         &self,

@@ -181,11 +181,11 @@ pub struct AddrsConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "channel-registry")]
 #[serde(rename_all = "kebab-case")]
-pub struct FarChannelsConfig<Channel, AuthN, Xfrm>
+pub struct FarChannelsConfig<Channel, AuthN, Xfrm, Enc, Dec>
 where
     Xfrm: Default {
     /// Configuration of all channels.
-    channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm>>,
+    channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>>,
     /// Resolver configuration.
     #[serde(default)]
     default_resolve: AddrsConfig,
@@ -197,9 +197,13 @@ where
     /// Flows creation parameters.
     #[serde(default)]
     default_flows_params: FlowsConfig,
+    #[serde(default)]
+    default_encoder: Enc,
+    #[serde(default)]
+    default_decoder: Dec,
     /// Retry configuration.
     #[serde(
-        default = "FarChannelsConfig::<Channel, AuthN, Xfrm>::default_retry_value"
+        default = "FarChannelsConfig::<Channel, AuthN, Xfrm, Enc, Dec>::default_retry_value"
     )]
     default_retry: Retry,
     #[serde(default)]
@@ -257,7 +261,7 @@ where
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "far-channel-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct FarChannelEntryConfig<Channel, AuthN, Xfrm>
+pub struct FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>
 where
     Xfrm: Default {
     /// Unique name of the channel.
@@ -267,7 +271,7 @@ where
     channel: Channel,
     /// Authenticator configuration.
     #[serde(
-        default = "FarChannelEntryConfig::<Channel, AuthN, Xfrm>::default_authn"
+        default = "FarChannelEntryConfig::<Channel, AuthN, Xfrm, Enc, Dec>::default_authn"
     )]
     authn: Option<AuthN>,
     /// Resolver configuration.
@@ -279,6 +283,10 @@ where
     /// Flows creation parameters.
     #[serde(default)]
     flows_params: Option<FlowsConfig>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
     /// Retry configuration.
     #[serde(default)]
     retry: Option<Retry>,
@@ -1420,7 +1428,10 @@ pub struct FlowsConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "near-channels-outbound-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct NearChannelOutboundEntryConfig<Out, AuthN> {
+pub struct NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     /// Channel ID.
     id: String,
     /// Outbound connector configuration.
@@ -1428,9 +1439,13 @@ pub struct NearChannelOutboundEntryConfig<Out, AuthN> {
     connect: Out,
     /// Entry-specific authenticator configuration.
     #[serde(
-        default = "NearChannelOutboundEntryConfig::<Out, AuthN>::default_authn"
+        default = "NearChannelOutboundEntryConfig::<Out, AuthN, Enc, Dec>::default_authn"
     )]
     authn: Option<AuthN>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
     /// Retry configuration for connections.
     #[serde(default)]
     retry: Option<Retry>,
@@ -1442,7 +1457,10 @@ pub struct NearChannelOutboundEntryConfig<Out, AuthN> {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "near-channels-inbound-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct NearChannelInboundEntryConfig<In, AuthN> {
+pub struct NearChannelInboundEntryConfig<In, AuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     /// Channel ID.
     id: String,
     /// Inbound acceptor configuration.
@@ -1450,9 +1468,13 @@ pub struct NearChannelInboundEntryConfig<In, AuthN> {
     listen: In,
     /// Entry-specific authenticator configuration.
     #[serde(
-        default = "NearChannelInboundEntryConfig::<In, AuthN>::default_authn"
+        default = "NearChannelInboundEntryConfig::<In, AuthN, Enc, Dec>::default_authn"
     )]
     authn: Option<AuthN>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
     /// Retry configuration for connections.
     #[serde(default)]
     retry: Option<Retry>,
@@ -1464,7 +1486,10 @@ pub struct NearChannelInboundEntryConfig<In, AuthN> {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "near-channels-duplex-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
+pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     /// Channel ID.
     id: String,
     /// Inbound acceptor configuration.
@@ -1473,14 +1498,18 @@ pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
     connect: Out,
     /// Entry-specific authenticator configuration.
     #[serde(
-        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN>::default_in_authn"
+        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN, Enc, Dec>::default_in_authn"
     )]
     inbound_authn: Option<InAuthN>,
     /// Entry-specific authenticator configuration.
     #[serde(
-        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN>::default_out_authn"
+        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN, Enc, Dec>::default_out_authn"
     )]
     outbound_authn: Option<OutAuthN>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
     /// Retry configuration for connections.
     #[serde(default)]
     retry: Option<Retry>,
@@ -1492,32 +1521,42 @@ pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN> {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "near-channels-entry")]
 #[serde(untagged)]
-pub enum NearChannelEntryConfig<In, Out, InAuthN, OutAuthN> {
+pub enum NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     Inbound {
-        inbound: NearChannelInboundEntryConfig<In, InAuthN>
+        inbound: NearChannelInboundEntryConfig<In, InAuthN, Enc, Dec>
     },
     Outbound {
-        outbound: NearChannelOutboundEntryConfig<Out, OutAuthN>
+        outbound: NearChannelOutboundEntryConfig<Out, OutAuthN, Enc, Dec>
     },
     Duplex {
-        duplex: NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN>
+        duplex: NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "near-channels-config")]
 #[serde(rename_all = "kebab-case")]
-pub struct NearChannelsConfig<In, Out, InAuthN, OutAuthN> {
+pub struct NearChannelsConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     /// Configuration of all channels.
-    channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+    channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
     /// Default authentication configuration.
     #[serde(default)]
     default_inbound_authn: InAuthN,
     #[serde(default)]
     default_outbound_authn: OutAuthN,
+    #[serde(default)]
+    default_encoder: Enc,
+    #[serde(default)]
+    default_decoder: Dec,
     /// Default retry configuration.
     #[serde(
-        default = "NearChannelsConfig::<In, Out, InAuthN, OutAuthN>::default_retry_value"
+        default = "NearChannelsConfig::<In, Out, InAuthN, OutAuthN, Enc, Dec>::default_retry_value"
     )]
     default_retry: Retry,
     #[serde(default)]
@@ -2778,7 +2817,8 @@ impl AddrsConfig {
     }
 }
 
-impl<Channel, AuthN, Xfrm> FarChannelEntryConfig<Channel, AuthN, Xfrm>
+impl<Channel, AuthN, Xfrm, Enc, Dec>
+    FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>
 where
     Xfrm: Default
 {
@@ -2794,6 +2834,8 @@ where
         authn_config: Option<AuthN>,
         flows_params: Option<FlowsConfig>,
         xfrm_params: Option<Xfrm>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
         retry: Option<Retry>,
         flows_size_hint: Option<usize>
     ) -> Self {
@@ -2804,6 +2846,8 @@ where
             authn: authn_config,
             flows_params: flows_params,
             xfrm_params: xfrm_params,
+            encoder: encoder,
+            decoder: decoder,
             retry: retry,
             flows_size_hint: flows_size_hint
         }
@@ -2824,6 +2868,16 @@ where
     #[inline]
     pub fn channel(&self) -> &Channel {
         &self.channel
+    }
+
+    #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
     }
 
     /// Get the retry configuration.
@@ -2866,6 +2920,8 @@ where
         Option<AuthN>,
         Option<FlowsConfig>,
         Option<Xfrm>,
+        Option<Enc>,
+        Option<Dec>,
         Option<Retry>,
         Option<usize>
     ) {
@@ -2876,6 +2932,8 @@ where
             self.authn,
             self.flows_params,
             self.xfrm_params,
+            self.encoder,
+            self.decoder,
             self.retry,
             self.flows_size_hint
         )
@@ -2915,7 +2973,8 @@ where
     }
 }
 
-impl<Channel, AuthN, Xfrm> FarChannelsConfig<Channel, AuthN, Xfrm>
+impl<Channel, AuthN, Xfrm, Enc, Dec>
+    FarChannelsConfig<Channel, AuthN, Xfrm, Enc, Dec>
 where
     Xfrm: Default
 {
@@ -2925,11 +2984,13 @@ where
     /// fields in the YAML format.  See documentation for details.
     #[inline]
     pub fn new(
-        channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm>>,
+        channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>>,
         resolve: AddrsConfig,
         authn_config: AuthN,
         flows_params: FlowsConfig,
         xfrm_params: Xfrm,
+        encoder: Enc,
+        decoder: Dec,
         retry: Retry,
         flows_size_hint: Option<usize>
     ) -> Self {
@@ -2939,6 +3000,8 @@ where
             default_authn: authn_config,
             default_flows_params: flows_params,
             default_xfrm_params: xfrm_params,
+            default_encoder: encoder,
+            default_decoder: decoder,
             default_retry: retry,
             default_flows_size_hint: flows_size_hint
         }
@@ -2946,7 +3009,9 @@ where
 
     /// Get the channel configurations.
     #[inline]
-    pub fn channels(&self) -> &[FarChannelEntryConfig<Channel, AuthN, Xfrm>] {
+    pub fn channels(
+        &self
+    ) -> &[FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>] {
         &self.channels
     }
 
@@ -2968,6 +3033,16 @@ where
         &self.default_xfrm_params
     }
 
+    #[inline]
+    pub fn encoder(&self) -> &Enc {
+        &self.default_encoder
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> &Dec {
+        &self.default_decoder
+    }
+
     /// Get the retry configuration.
     #[inline]
     pub fn retry(&self) -> &Retry {
@@ -2984,11 +3059,13 @@ where
     pub fn take(
         self
     ) -> (
-        Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm>>,
+        Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>>,
         AddrsConfig,
         AuthN,
         FlowsConfig,
         Xfrm,
+        Enc,
+        Dec,
         Retry,
         Option<usize>
     ) {
@@ -2998,6 +3075,8 @@ where
             self.default_authn,
             self.default_flows_params,
             self.default_xfrm_params,
+            self.default_encoder,
+            self.default_decoder,
             self.default_retry,
             self.default_flows_size_hint
         )
@@ -3164,8 +3243,10 @@ impl FlowsConfig {
     }
 }
 
-impl<In, Out, InAuthN, OutAuthN>
-    NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>
+impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
 {
     pub fn name(&self) -> &str {
         match self {
@@ -3176,14 +3257,18 @@ impl<In, Out, InAuthN, OutAuthN>
     }
 }
 
-impl<In, Out, InAuthN, OutAuthN>
-    NearChannelsConfig<In, Out, InAuthN, OutAuthN>
+impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    NearChannelsConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
 {
     #[inline]
     pub fn new(
-        channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+        channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
         default_inbound_authn: InAuthN,
         default_outbound_authn: OutAuthN,
+        default_encoder: Enc,
+        default_decoder: Dec,
         default_retry: Retry,
         default_num_sessions: Option<usize>
     ) -> Self {
@@ -3191,6 +3276,8 @@ impl<In, Out, InAuthN, OutAuthN>
             channels: channels,
             default_inbound_authn: default_inbound_authn,
             default_outbound_authn: default_outbound_authn,
+            default_encoder: default_encoder,
+            default_decoder: default_decoder,
             default_retry: default_retry,
             default_num_sessions: default_num_sessions
         }
@@ -3199,7 +3286,7 @@ impl<In, Out, InAuthN, OutAuthN>
     #[inline]
     pub fn channels(
         &self
-    ) -> &[NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>] {
+    ) -> &[NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>] {
         &self.channels
     }
 
@@ -3211,6 +3298,16 @@ impl<In, Out, InAuthN, OutAuthN>
     #[inline]
     pub fn default_inbound_authn(&self) -> &InAuthN {
         &self.default_inbound_authn
+    }
+
+    #[inline]
+    pub fn default_encoder(&self) -> &Enc {
+        &self.default_encoder
+    }
+
+    #[inline]
+    pub fn default_decoder(&self) -> &Dec {
+        &self.default_decoder
     }
 
     #[inline]
@@ -3227,9 +3324,11 @@ impl<In, Out, InAuthN, OutAuthN>
     pub fn take(
         self
     ) -> (
-        Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN>>,
+        Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
         InAuthN,
         OutAuthN,
+        Enc,
+        Dec,
         Retry,
         Option<usize>
     ) {
@@ -3237,6 +3336,8 @@ impl<In, Out, InAuthN, OutAuthN>
             self.channels,
             self.default_inbound_authn,
             self.default_outbound_authn,
+            self.default_encoder,
+            self.default_decoder,
             self.default_retry,
             self.default_num_sessions
         )
@@ -3247,8 +3348,10 @@ impl<In, Out, InAuthN, OutAuthN>
     }
 }
 
-impl<In, Out, InAuthN, OutAuthN>
-    NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN>
+impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
 {
     #[inline]
     pub fn new(
@@ -3257,6 +3360,8 @@ impl<In, Out, InAuthN, OutAuthN>
         connect: Out,
         inbound_authn: Option<InAuthN>,
         outbound_authn: Option<OutAuthN>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
         retry: Option<Retry>,
         num_sessions: Option<usize>
     ) -> Self {
@@ -3267,6 +3372,8 @@ impl<In, Out, InAuthN, OutAuthN>
             inbound_authn: inbound_authn,
             outbound_authn: outbound_authn,
             num_sessions: num_sessions,
+            encoder: encoder,
+            decoder: decoder,
             retry: retry
         }
     }
@@ -3297,6 +3404,16 @@ impl<In, Out, InAuthN, OutAuthN>
     }
 
     #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
+    #[inline]
     pub fn retry(&self) -> Option<&Retry> {
         self.retry.as_ref()
     }
@@ -3315,6 +3432,8 @@ impl<In, Out, InAuthN, OutAuthN>
         Out,
         Option<InAuthN>,
         Option<OutAuthN>,
+        Option<Enc>,
+        Option<Dec>,
         Option<Retry>,
         Option<usize>
     ) {
@@ -3324,6 +3443,8 @@ impl<In, Out, InAuthN, OutAuthN>
             self.connect,
             self.inbound_authn,
             self.outbound_authn,
+            self.encoder,
+            self.decoder,
             self.retry,
             self.num_sessions
         )
@@ -3338,12 +3459,17 @@ impl<In, Out, InAuthN, OutAuthN>
     }
 }
 
-impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
+impl<In, AuthN, Enc, Dec> NearChannelInboundEntryConfig<In, AuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     #[inline]
     pub fn new(
         id: String,
         listen: In,
         authn: Option<AuthN>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
         retry: Option<Retry>,
         num_sessions: Option<usize>
     ) -> Self {
@@ -3352,6 +3478,8 @@ impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
             listen: listen,
             authn: authn,
             num_sessions: num_sessions,
+            encoder: encoder,
+            decoder: decoder,
             retry: retry
         }
     }
@@ -3372,6 +3500,16 @@ impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
     }
 
     #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
+    #[inline]
     pub fn retry(&self) -> Option<&Retry> {
         self.retry.as_ref()
     }
@@ -3384,11 +3522,14 @@ impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
     #[inline]
     pub fn take(
         self
-    ) -> (String, In, Option<AuthN>, Option<Retry>, Option<usize>) {
+    ) -> (String, In, Option<AuthN>, Option<Enc>,
+          Option<Dec>, Option<Retry>, Option<usize>) {
         (
             self.id,
             self.listen,
             self.authn,
+            self.encoder,
+            self.decoder,
             self.retry,
             self.num_sessions
         )
@@ -3399,12 +3540,18 @@ impl<In, AuthN> NearChannelInboundEntryConfig<In, AuthN> {
     }
 }
 
-impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
+impl<Out, AuthN, Enc, Dec>
+    NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
+where Enc: Default,
+      Dec: Default
+{
     #[inline]
     pub fn new(
         id: String,
         connect: Out,
         authn: Option<AuthN>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
         retry: Option<Retry>,
         num_sessions: Option<usize>
     ) -> Self {
@@ -3413,6 +3560,8 @@ impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
             connect: connect,
             authn: authn,
             num_sessions: num_sessions,
+            encoder: encoder,
+            decoder: decoder,
             retry: retry
         }
     }
@@ -3433,6 +3582,16 @@ impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
     }
 
     #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
+    #[inline]
     pub fn retry(&self) -> Option<&Retry> {
         self.retry.as_ref()
     }
@@ -3445,11 +3604,14 @@ impl<Out, AuthN> NearChannelOutboundEntryConfig<Out, AuthN> {
     #[inline]
     pub fn take(
         self
-    ) -> (String, Out, Option<AuthN>, Option<Retry>, Option<usize>) {
+    ) -> (String, Out, Option<AuthN>, Option<Enc>,
+          Option<Dec>, Option<Retry>, Option<usize>) {
         (
             self.id,
             self.connect,
             self.authn,
+            self.encoder,
+            self.decoder,
             self.retry,
             self.num_sessions
         )

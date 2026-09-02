@@ -28,6 +28,8 @@ use std::net::SocketAddr;
 
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::SessionAuthN;
+use constellation_common::codec::Decoder;
+use constellation_common::codec::Encoder;
 use constellation_common::config::Create;
 use constellation_common::error::ScopedError;
 use constellation_common::net::DatagramXfrm;
@@ -40,10 +42,10 @@ use constellation_common::net::Session;
 use constellation_common::net::Socket;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::channels::ChannelParam;
-use constellation_streams::threads::types::DatagramDispatchPollTypes;
+use constellation_streams::threads::types::DatagramDispatchTypes;
 use constellation_streams::threads::types::DatagramMulticastPollTypes;
 use constellation_streams::threads::types::DatagramSelectorPollTypes;
-use constellation_streams::threads::types::LargeObjDispatchPollTypes;
+use constellation_streams::threads::types::LargeObjDispatchTypes;
 use constellation_streams::threads::types::LargeObjMulticastPollTypes;
 use constellation_streams::threads::types::LargeObjSelectorPollTypes;
 use mio::event::Source;
@@ -132,6 +134,18 @@ where
 pub trait FlowsEntryTypes<Flow>: FlowAuthNShutdownTypes<Flow> + Sized
 where
     Flow: Session + Read + Write {
+    type Wrapper;
+    type OutMsg;
+    type DecoderConfig: Clone + Default;
+    type DecoderCreateError: Debug + Display + ScopedError;
+    type Decoder: Decoder<Self::Wrapper>
+        + Create<Config = Self::DecoderConfig,
+                 CreateError = Self::DecoderCreateError>;
+    type EncoderConfig: Clone + Default;
+    type EncoderCreateError: Debug + Display + ScopedError;
+    type Encoder: Encoder<Self::OutMsg>
+        + Create<Config = Self::EncoderConfig,
+                 CreateError = Self::EncoderCreateError>;
     type LocalAddr: Clone + Display + From<Self::SockAddr>;
     type PeerAddr: Clone + Debug + Display + Eq + Hash;
     type SockAddr: Clone
@@ -235,16 +249,29 @@ pub trait FarChannelsTypes: FlowsEntryTypes<Self::Flow> {
 }
 
 #[derive(Debug)]
-pub struct CompoundFarChannelsTypes<AuthN, Unix, UDP>
+pub struct CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
 where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
         + DatagramXfrmCreate<Addr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
         + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone + Default,
+    UDP::CreateParam: Clone + Default,
     Unix::Error: ScopedError,
     UDP::Error: ScopedError {
+    outmsg: PhantomData<OutMsg>,
+    enc: PhantomData<Enc>,
+    wrapper: PhantomData<Wrapper>,
+    dec: PhantomData<Dec>,
     authn: PhantomData<AuthN>,
     unix: PhantomData<Unix>,
     udp: PhantomData<UDP>
@@ -274,7 +301,13 @@ pub type FarChannelsDatagramSelectorPollTypes<
             <Types as FlowAuthNShutdownTypes<
                 <Types as FarChannelsTypes>::Flow
             >>::AuthConfig,
-            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::EncoderConfig,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::DecoderConfig,
         >,
         FarChannelsCreateError<
             <Types as FlowAuthNShutdownTypes<
@@ -308,6 +341,8 @@ pub type CompoundFarChannelsDatagramSelectorPollTypes<
     InMsg,
     OutMsg,
     Wrapper,
+    Enc,
+    Dec,
     SessAuthN,
     MsgAuth,
     Unix,
@@ -326,7 +361,7 @@ pub type CompoundFarChannelsDatagramSelectorPollTypes<
     Resolve,
     Msgs,
     Recv,
-    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>,
     Ctx
 >;
 
@@ -349,7 +384,13 @@ pub type FarChannelsLargeObjSelectorPollTypes<
             <Types as FlowAuthNShutdownTypes<
                 <Types as FarChannelsTypes>::Flow
             >>::AuthConfig,
-            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::EncoderConfig,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::DecoderConfig,
         >,
         FarChannelsCreateError<
             <Types as FlowAuthNShutdownTypes<
@@ -381,6 +422,9 @@ pub type FarChannelsLargeObjSelectorPollTypes<
 pub type CompoundFarChannelsLargeObjSelectorPollTypes<
     InMsg,
     OutMsg,
+    Wrapper,
+    Enc,
+    Dec,
     SessAuthN,
     Unix,
     UDP,
@@ -393,12 +437,12 @@ pub type CompoundFarChannelsLargeObjSelectorPollTypes<
     OutMsg,
     Epochs,
     Resolve,
-    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>,
     LargeObjTypes,
     Ctx
 >;
 
-pub type FarChannelsDatagramDispatchPollTypes<
+pub type FarChannelsDatagramDispatchTypes<
     InMsg,
     OutMsg,
     Wrapper,
@@ -410,7 +454,7 @@ pub type FarChannelsDatagramDispatchPollTypes<
     Types,
     Ctx
 > =
-    DatagramDispatchPollTypes<
+    DatagramDispatchTypes<
         InMsg,
         OutMsg,
         Wrapper,
@@ -422,7 +466,13 @@ pub type FarChannelsDatagramDispatchPollTypes<
             <Types as FlowAuthNShutdownTypes<
                 <Types as FarChannelsTypes>::Flow
             >>::AuthConfig,
-            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::EncoderConfig,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::DecoderConfig,
         >,
         FarChannelsCreateError<
             <Types as FlowAuthNShutdownTypes<
@@ -452,10 +502,12 @@ pub type FarChannelsDatagramDispatchPollTypes<
         Ctx
     >;
 
-pub type CompoundFarChannelsDatagramDispatchPollTypes<
+pub type CompoundFarChannelsDatagramDispatchTypes<
     InMsg,
     OutMsg,
     Wrapper,
+    Enc,
+    Dec,
     SessAuthN,
     MsgAuth,
     Unix,
@@ -465,7 +517,7 @@ pub type CompoundFarChannelsDatagramDispatchPollTypes<
     Msgs,
     Recv,
     Ctx
-> = FarChannelsDatagramDispatchPollTypes<
+> = FarChannelsDatagramDispatchTypes<
     InMsg,
     OutMsg,
     Wrapper,
@@ -474,11 +526,11 @@ pub type CompoundFarChannelsDatagramDispatchPollTypes<
     Resolve,
     Msgs,
     Recv,
-    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>,
     Ctx
 >;
 
-pub type FarChannelsLargeObjDispatchPollTypes<
+pub type FarChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
     Epochs,
@@ -487,7 +539,7 @@ pub type FarChannelsLargeObjDispatchPollTypes<
     LargeObjTypes,
     Ctx
 > =
-    LargeObjDispatchPollTypes<
+    LargeObjDispatchTypes<
         InMsg,
         OutMsg,
         Epochs,
@@ -497,7 +549,13 @@ pub type FarChannelsLargeObjDispatchPollTypes<
             <Types as FlowAuthNShutdownTypes<
                 <Types as FarChannelsTypes>::Flow
             >>::AuthConfig,
-            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::EncoderConfig,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::DecoderConfig,
         >,
         FarChannelsCreateError<
             <Types as FlowAuthNShutdownTypes<
@@ -526,9 +584,12 @@ pub type FarChannelsLargeObjDispatchPollTypes<
         Ctx
     >;
 
-pub type CompoundFarChannelsLargeObjDispatchPollTypes<
+pub type CompoundFarChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
+    Wrapper,
+    Enc,
+    Dec,
     SessAuthN,
     Unix,
     UDP,
@@ -536,12 +597,12 @@ pub type CompoundFarChannelsLargeObjDispatchPollTypes<
     Resolve,
     LargeObjTypes,
     Ctx
-> = FarChannelsLargeObjDispatchPollTypes<
+> = FarChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
     Epochs,
     Resolve,
-    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>,
     LargeObjTypes,
     Ctx
 >;
@@ -570,7 +631,13 @@ pub type FarChannelsDatagramMulticastPollTypes<
             <Types as FlowAuthNShutdownTypes<
                 <Types as FarChannelsTypes>::Flow
             >>::AuthConfig,
-            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::EncoderConfig,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::DecoderConfig,
         >,
         FarChannelsCreateError<
             <Types as FlowAuthNShutdownTypes<
@@ -604,6 +671,8 @@ pub type CompoundFarChannelsDatagramMulticastPollTypes<
     InMsg,
     OutMsg,
     Wrapper,
+    Enc,
+    Dec,
     SessAuthN,
     MsgAuth,
     Unix,
@@ -622,7 +691,7 @@ pub type CompoundFarChannelsDatagramMulticastPollTypes<
     Resolve,
     Msgs,
     Recv,
-    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>,
     Ctx
 >;
 
@@ -645,7 +714,13 @@ pub type FarChannelsLargeObjMulticastPollTypes<
             <Types as FlowAuthNShutdownTypes<
                 <Types as FarChannelsTypes>::Flow
             >>::AuthConfig,
-            <Types as FarChannelsTypes>::InnerXfrmCreateParam
+            <Types as FarChannelsTypes>::InnerXfrmCreateParam,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::EncoderConfig,
+            <Types as FlowsEntryTypes<
+                <Types as FarChannelsTypes>::Flow
+            >>::DecoderConfig,
         >,
         FarChannelsCreateError<
             <Types as FlowAuthNShutdownTypes<
@@ -677,6 +752,9 @@ pub type FarChannelsLargeObjMulticastPollTypes<
 pub type CompoundFarChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
+    Wrapper,
+    Enc,
+    Dec,
     SessAuthN,
     Unix,
     UDP,
@@ -689,63 +767,20 @@ pub type CompoundFarChannelsLargeObjMulticastPollTypes<
     OutMsg,
     Epochs,
     Resolve,
-    CompoundFarChannelsTypes<SessAuthN, Unix, UDP>,
+    CompoundFarChannelsTypes<SessAuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>,
     LargeObjTypes,
     Ctx
 >;
 
-impl<AuthN, Unix, UDP> Clone for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+impl<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec> Clone
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
 where
-    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
-        + DatagramXfrmCreate<Addr = UnixSocketPath>,
-    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
-        + DatagramXfrmCreate<Addr = SocketAddr>,
-    Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
-    #[inline]
-    fn clone(&self) -> Self {
-        CompoundFarChannelsTypes {
-            authn: self.authn,
-            unix: self.unix,
-            udp: self.udp
-        }
-    }
-}
-
-unsafe impl<AuthN, Unix, UDP> Send
-    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
-where
-    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
-        + DatagramXfrmCreate<Addr = UnixSocketPath>,
-    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
-        + DatagramXfrmCreate<Addr = SocketAddr>,
-    Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
-}
-
-unsafe impl<AuthN, Unix, UDP> Sync
-    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
-where
-    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
-    AuthN::NegotiateError: ScopedError,
-    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
-        + DatagramXfrmCreate<Addr = UnixSocketPath>,
-    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
-        + DatagramXfrmCreate<Addr = SocketAddr>,
-    Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
-}
-
-impl<AuthN, Unix, UDP> FlowAuthNShutdownTypes<CompoundFlow<Unix, UDP>>
-    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
-where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
     AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
@@ -753,9 +788,89 @@ where
         + DatagramXfrmCreate<Addr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
         + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone + Default,
+    UDP::CreateParam: Clone + Default,
     Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
+    UDP::Error: ScopedError {
+    #[inline]
+    fn clone(&self) -> Self {
+        CompoundFarChannelsTypes {
+            outmsg: self.outmsg,
+            wrapper: self.wrapper,
+            enc: self.enc,
+            dec: self.dec,
+            authn: self.authn,
+            unix: self.unix,
+            udp: self.udp
+        }
+    }
+}
+
+unsafe impl<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec> Send
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
+where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone + Default,
+    UDP::CreateParam: Clone + Default,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError {
+}
+
+unsafe impl<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec> Sync
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
+where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone + Default,
+    UDP::CreateParam: Clone + Default,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError {
+}
+
+impl<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
+    FlowAuthNShutdownTypes<CompoundFlow<Unix, UDP>>
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
+where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
+    AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
+    AuthN::Config: Clone,
+    AuthN::NegotiateError: ScopedError,
+    Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>
+        + DatagramXfrmCreate<Addr = UnixSocketPath>,
+    UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
+        + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone + Default,
+    UDP::CreateParam: Clone + Default,
+    Unix::Error: ScopedError,
+    UDP::Error: ScopedError {
     type AuthConfig = AuthN::Config;
     type AuthCreateError = AuthN::CreateError;
     type AuthN = AuthN;
@@ -771,9 +886,16 @@ where
     type ShutdownStartError = CompoundNegotiatorStartError;
 }
 
-impl<AuthN, Unix, UDP> FlowsEntryTypes<CompoundFlow<Unix, UDP>>
-    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+impl<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
+    FlowsEntryTypes<CompoundFlow<Unix, UDP>>
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
 where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
     AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
@@ -781,9 +903,18 @@ where
         + DatagramXfrmCreate<Addr = UnixSocketPath>,
     UDP: DatagramXfrm<LocalAddr = SocketAddr, PeerAddr = SocketAddr>
         + DatagramXfrmCreate<Addr = SocketAddr>,
+    Unix::CreateParam: Clone + Default,
+    UDP::CreateParam: Clone + Default,
     Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
+    UDP::Error: ScopedError {
+    type OutMsg = OutMsg;
+    type Wrapper = Wrapper;
+    type DecoderConfig = <Dec as Create>::Config;
+    type DecoderCreateError = <Dec as Create>::CreateError;
+    type Decoder = Dec;
+    type EncoderConfig = <Enc as Create>::Config;
+    type EncoderCreateError = <Enc as Create>::CreateError;
+    type Encoder = Enc;
     type ChannelParam = CompoundFarChannelParam;
     type ConvertError = Infallible;
     type InNegoError = CompoundNegotiateError;
@@ -804,9 +935,15 @@ where
     type XfrmError = CompoundFarChannelXfrmWrapError<Unix::Error, UDP::Error>;
 }
 
-impl<AuthN, Unix, UDP> FarChannelsTypes
-    for CompoundFarChannelsTypes<AuthN, Unix, UDP>
+impl<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec> FarChannelsTypes
+    for CompoundFarChannelsTypes<AuthN, Unix, UDP, OutMsg, Wrapper, Enc, Dec>
 where
+    Dec: Decoder<Wrapper> + Create,
+    Dec::Config: Clone + Default,
+    Dec::CreateError: Debug + Display + ScopedError,
+    Enc: Encoder<OutMsg> + Create,
+    Enc::Config: Clone + Default,
+    Enc::CreateError: Debug + Display + ScopedError,
     AuthN: Create + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
     AuthN::Config: Clone,
     AuthN::NegotiateError: ScopedError,
@@ -817,8 +954,7 @@ where
     Unix::CreateParam: Clone + Default,
     UDP::CreateParam: Clone + Default,
     Unix::Error: ScopedError,
-    UDP::Error: ScopedError
-{
+    UDP::Error: ScopedError {
     type AcquireError = CompoundFarChannelAcquireError;
     type AcquireNegoError = CompoundFarChannelAcquireNegoError;
     type AcquirePending = CompoundFarChannelAcquireNegoPending;
