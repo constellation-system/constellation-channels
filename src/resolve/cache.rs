@@ -39,7 +39,9 @@ use constellation_common::error::ScopedError;
 use constellation_common::retry::Retry;
 use constellation_common::retry::next_retry_definite;
 use constellation_common::shutdown::ShutdownFlag;
+use constellation_streams::channels::Channels;
 use constellation_streams::threads::WithTokens;
+use constellation_streams::threads::poll::PollThreadCtx;
 use log::debug;
 use log::error;
 use log::info;
@@ -583,6 +585,18 @@ fn run_refresh_thread(
 
     info!(target: "ns-name-cache-refresh",
           "name caches have been dropped, refresher thread exiting")
+}
+
+impl<Party, Chans, Ctx> NSNameCachesCtx for PollThreadCtx<Party, Chans, Ctx>
+where
+    Chans: Channels<Ctx>,
+    Ctx: NSNameCachesCtx {
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Ctx::NameCaches {
+        self.inner_mut().name_caches()
+    }
 }
 
 impl<T> NSNameCachesCtx for WithTokens<T>

@@ -65,6 +65,7 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::select::OutboundEndpointConfig;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -403,7 +404,7 @@ pub enum CompoundFarChannelXfrmPeerAddr {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum CompoundOutboundNegotiatorParam {
     Basic,
@@ -1403,7 +1404,7 @@ pub struct DTLSFarChannelConfig<Inner> {
     tls: TLSChannelConfig<TLSPeerConfig, Inner>
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename = "dtls-param")]
 #[serde(rename_all = "kebab-case")]
 pub struct DTLSOutboundParam<Inner> {
@@ -4943,6 +4944,21 @@ impl Display for CompoundFarChannelXfrmPeerAddr {
                 write!(f, "unix://{}", unix)
             }
             CompoundFarChannelXfrmPeerAddr::IP { ip } => write!(f, "{}", ip)
+        }
+    }
+}
+
+impl Display for CompoundFarEndpoint {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarEndpoint::Unix { unix_datagram } =>
+                write!(f, "unix-datagram://{}",
+                       unix_datagram.to_string_lossy()),
+            CompoundFarEndpoint::UDP { udp } =>
+                write!(f, "udp://{}", udp)
         }
     }
 }

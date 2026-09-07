@@ -18,11 +18,9 @@
 
 use std::collections::HashSet;
 use std::io::Read;
-use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::TrivialAuthN;
 use constellation_auth::cred::NullCred;
@@ -38,6 +36,7 @@ use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::compound::CompoundFarChannelParam;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
+use constellation_common::codec::test::TestBytesCodec;
 use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
@@ -49,6 +48,10 @@ use constellation_common::unix::UnixSocketPath;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
+use constellation_streams::codec::DatagramCodecStream;
+use constellation_streams::stream::PullStream;
+use constellation_streams::stream::PushStreamPrivateSingle;
+use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
@@ -90,7 +93,11 @@ type ExampleFarChannelsTypes = CompoundFarChannelsTypes<
         >
     >,
     PassthruDatagramXfrm<UnixSocketPath>,
-    PassthruDatagramXfrm<SocketAddr>
+    PassthruDatagramXfrm<SocketAddr>,
+    Vec<u8>,
+    Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec
 >;
 
 impl<Ctx> RegistryCtx for ExampleCtx<Ctx>
@@ -137,26 +144,25 @@ fn read<R>(
     ctx: &mut ExampleCtx<SharedNSNameCaches>,
     events: &mut Events,
     channels: &mut FarChannels<ExampleFarChannelsTypes>,
-    stream: &mut BasicAuthNed<NullCred, R>,
-    buf: &mut [u8],
+    stream: &mut RefCellStream<DatagramCodecStream<
+        Vec<u8>,
+        Vec<u8>,
+        BasicAuthNed<NullCred, R>,
+        TestBytesCodec,
+        TestBytesCodec
+    >>,
     addr: CompoundFarChannelXfrmPeerAddr,
     channel_id: FarChannelID,
     channel_param: CompoundFarChannelParam
-) -> usize
+) -> Vec<u8>
 where R: Read
 {
-    let mut nbytes = 0;
-
-    while {
+    loop {
         trace!(target: "read",
                "attempting to read");
 
-        match stream.get_mut().read(buf) {
-            Ok(n) => {
-                nbytes = n;
-
-                false
-            }
+        match stream.pull() {
+            Ok(out) => return out,
             Err(err) => if err.scope() != ErrorScope::WouldBlock {
                 panic!("{}", err)
             } else {
@@ -200,20 +206,18 @@ where R: Read
 
                     !ready
                 } {}
-
-                true
             }
         }
-    } {}
-
-    nbytes
+    }
 }
 
 fn server(conf: &str) {
     let server_config: FarChannelsConfig<
         CompoundFarChannelConfig, (),
         CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                PassthruDatagramXfrmParam>
+                                PassthruDatagramXfrmParam>,
+        (),
+        ()
     > = yaml_serde::from_str(conf).unwrap();
     let mut ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
@@ -261,10 +265,8 @@ fn server(conf: &str) {
           "reading message");
 
     let (addr, channel_id, channel_param, mut stream) = session.unwrap();
-    let mut buf = [0; FIRST_BYTES.len()];
-
-    let nbytes = read(&mut ctx, &mut events, &mut channels, &mut stream,
-                      &mut buf, addr, channel_id, channel_param);
+    let buf = read(&mut ctx, &mut events, &mut channels, &mut stream,
+                   addr, channel_id, channel_param);
 
     info!(target: "server",
           "received {:?}", buf);
@@ -272,11 +274,11 @@ fn server(conf: &str) {
     info!(target: "server",
           "sending message {:?}", &SECOND_BYTES);
 
-    stream.get_mut().write(&SECOND_BYTES)
+    stream.push(&mut ctx, &SECOND_BYTES.to_vec())
         .expect("Expected success");
 
-    assert_eq!(FIRST_BYTES.len(), nbytes);
-    assert_eq!(FIRST_BYTES, buf);
+    assert_eq!(FIRST_BYTES.len(), buf.len());
+    assert_eq!(FIRST_BYTES.as_slice(), buf.as_slice());
 }
 
 fn client(
@@ -288,7 +290,9 @@ fn client(
     let client_config: FarChannelsConfig<
         CompoundFarChannelConfig, (),
         CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                PassthruDatagramXfrmParam>
+                                PassthruDatagramXfrmParam>,
+        (),
+        ()
     > = yaml_serde::from_str(conf).unwrap();
     let mut ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
@@ -347,22 +351,20 @@ fn client(
     info!(target: "client",
           "sending message {:?}", FIRST_BYTES);
 
-    stream.get_mut().write(&FIRST_BYTES)
+    stream.push(&mut ctx, &FIRST_BYTES.to_vec())
         .expect("Expected success");
 
     info!(target: "client",
           "reading message");
 
-    let mut buf = [0; SECOND_BYTES.len()];
-
-    let nbytes = read(&mut ctx, &mut events, &mut channels, &mut stream,
-                      &mut buf, addr, channel_id, channel_param);
+    let buf = read(&mut ctx, &mut events, &mut channels, &mut stream,
+                   addr, channel_id, channel_param);
 
     info!(target: "server",
           "received {:?}", buf);
 
-    assert_eq!(SECOND_BYTES.len(), nbytes);
-    assert_eq!(SECOND_BYTES, buf);
+    assert_eq!(SECOND_BYTES.len(), buf.len());
+    assert_eq!(SECOND_BYTES.as_slice(), buf.as_slice());
 }
 
 fn main() {

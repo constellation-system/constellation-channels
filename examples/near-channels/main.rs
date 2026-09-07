@@ -17,8 +17,6 @@
 // <https://www.gnu.org/licenses/>.
 
 use std::collections::HashSet;
-use std::io::Read;
-use std::io::Write;
 use std::time::Instant;
 
 use log::LevelFilter;
@@ -31,7 +29,6 @@ use mio::Token;
 use serde::Deserialize;
 use serde::Serialize;
 
-use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::TrivialAuthN;
 use constellation_auth::cred::NullCred;
@@ -52,6 +49,7 @@ use constellation_channels::near::compound::CompoundNearServerConn;
 use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
+use constellation_common::codec::test::TestBytesCodec;
 use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
@@ -60,6 +58,10 @@ use constellation_common::retry::RetryWhen;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
+use constellation_streams::codec::DatagramCodecStream;
+use constellation_streams::stream::PullStream;
+use constellation_streams::stream::PushStreamPrivateSingle;
+use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
@@ -123,7 +125,7 @@ where
     }
 }
 
-fn read<R>(
+fn read(
     ctx: &mut ExampleCtx<SharedNSNameCaches>,
     events: &mut Events,
     channels: &mut NearChannels<
@@ -131,29 +133,39 @@ fn read<R>(
             TrivialAuthN<NullCred, CompoundNearServerConn>,
             TrivialAuthN<NullCred, CompoundNearClientConn>,
             TLSServerConfig,
-            TLSClientConfig
+            TLSClientConfig,
+            Vec<u8>,
+            Vec<u8>,
+            TestBytesCodec,
+            TestBytesCodec
         >
     >,
-    stream: &mut BasicAuthNed<NullCred, R>,
-    buf: &mut [u8],
+    stream: &mut RefCellStream<DuplexValue<
+        DatagramCodecStream<
+            Vec<u8>,
+            Vec<u8>,
+            BasicAuthNed<NullCred, CompoundNearServerConn>,
+            TestBytesCodec,
+            TestBytesCodec
+        >,
+        DatagramCodecStream<
+            Vec<u8>,
+            Vec<u8>,
+            BasicAuthNed<NullCred, CompoundNearClientConn>,
+            TestBytesCodec,
+            TestBytesCodec
+        >
+    >>,
     addr: CompoundNearNameAddr,
     channel_id: NearChannelID,
     channel_param: NearChannelParam
-) -> usize
-where R: Read
-{
-    let mut nbytes = 0;
-
-    while {
+) -> Vec<u8> {
+    loop {
         trace!(target: "read",
                "attempting to read");
 
-        match stream.get_mut().read(buf) {
-            Ok(n) => {
-                nbytes = n;
-
-                false
-            }
+        match stream.pull() {
+            Ok(out) => return out,
             Err(err) => if err.scope() != ErrorScope::WouldBlock {
                 panic!("{}", err)
             } else {
@@ -197,19 +209,17 @@ where R: Read
 
                     !ready
                 } {}
-
-                true
             }
         }
-    } {}
-
-    nbytes
+    }
 }
 
 fn server(conf: &str) {
     let server_config: NearChannelsConfig<
         CompoundNearAcceptorConfig<TLSServerConfig>,
         CompoundNearConnectorPartialConfig<TLSClientConfig>,
+        (),
+        (),
         (),
         ()
     > = yaml_serde::from_str(conf).unwrap();
@@ -224,7 +234,11 @@ fn server(conf: &str) {
             TrivialAuthN<NullCred, CompoundNearServerConn>,
             TrivialAuthN<NullCred, CompoundNearClientConn>,
             TLSServerConfig,
-            TLSClientConfig
+            TLSClientConfig,
+            Vec<u8>,
+            Vec<u8>,
+            TestBytesCodec,
+            TestBytesCodec
         >
     > = NearChannels::create(server_config, &mut ctx).unwrap();
     let mut session = None;
@@ -264,16 +278,9 @@ fn server(conf: &str) {
     info!(target: "server",
           "reading message");
 
-    let (addr, channel_id, channel_param, stream) = session.unwrap();
-    let mut buf = [0; FIRST_BYTES.len()];
-    let mut stream = if let DuplexValue::Accept(stream) = stream {
-        stream
-    } else {
-        panic!("Expected server stream");
-    };
-
-    let nbytes = read(&mut ctx, &mut events, &mut channels, &mut stream,
-                      &mut buf, addr, channel_id, channel_param);
+    let (addr, channel_id, channel_param, mut stream) = session.unwrap();
+    let buf = read(&mut ctx, &mut events, &mut channels, &mut stream,
+                   addr, channel_id, channel_param);
 
     info!(target: "server",
           "received {:?}", buf);
@@ -281,11 +288,11 @@ fn server(conf: &str) {
     info!(target: "server",
           "sending message {:?}", &SECOND_BYTES);
 
-    stream.get_mut().write(&SECOND_BYTES)
+    stream.push(&mut ctx, &SECOND_BYTES.to_vec())
         .expect("Expected success");
 
-    assert_eq!(FIRST_BYTES.len(), nbytes);
-    assert_eq!(FIRST_BYTES, buf);
+    assert_eq!(FIRST_BYTES.len(), buf.len());
+    assert_eq!(FIRST_BYTES.as_slice(), buf.as_slice());
 }
 
 fn client(
@@ -298,6 +305,8 @@ fn client(
     let client_config: NearChannelsConfig<
         CompoundNearAcceptorConfig<TLSServerConfig>,
         CompoundNearConnectorPartialConfig<TLSClientConfig>,
+        (),
+        (),
         (),
         ()
     > = yaml_serde::from_str(conf).unwrap();
@@ -312,7 +321,11 @@ fn client(
             TrivialAuthN<NullCred, CompoundNearServerConn>,
             TrivialAuthN<NullCred, CompoundNearClientConn>,
             TLSServerConfig,
-            TLSClientConfig
+            TLSClientConfig,
+            Vec<u8>,
+            Vec<u8>,
+            TestBytesCodec,
+            TestBytesCodec
         >
     > = NearChannels::create(client_config, &mut ctx).unwrap();
     let channel_id = channels.channel_id(&channel).unwrap();
@@ -359,32 +372,25 @@ fn client(
         }
     }
 
-    let stream = session.unwrap();
-    let mut stream = if let DuplexValue::Conn(stream) = stream {
-        stream
-    } else {
-        panic!("Expected client stream");
-    };
+    let mut stream = session.unwrap();
 
     info!(target: "client",
           "sending message {:?}", FIRST_BYTES);
 
-    stream.get_mut().write(&FIRST_BYTES)
+    stream.push(&mut ctx, &FIRST_BYTES.to_vec())
         .expect("Expected success");
 
     info!(target: "client",
           "reading message");
 
-    let mut buf = [0; SECOND_BYTES.len()];
-
-    let nbytes = read(&mut ctx, &mut events, &mut channels, &mut stream,
-                      &mut buf, addr, channel_id, channel_param);
+    let buf = read(&mut ctx, &mut events, &mut channels, &mut stream,
+                   addr, channel_id, channel_param);
 
     info!(target: "server",
           "received {:?}", buf);
 
-    assert_eq!(SECOND_BYTES.len(), nbytes);
-    assert_eq!(SECOND_BYTES, buf);
+    assert_eq!(SECOND_BYTES.len(), buf.len());
+    assert_eq!(SECOND_BYTES.as_slice(), buf.as_slice());
 }
 
 fn main() {

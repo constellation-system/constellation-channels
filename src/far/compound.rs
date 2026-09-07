@@ -37,6 +37,8 @@ use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 
+use constellation_auth::authn::basic::BasicCred;
+use constellation_auth::authn::basic::BasicCredFromSSLError;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::NullCred;
 #[cfg(feature = "tls")]
@@ -1146,6 +1148,13 @@ pub enum CompoundFarIPChannelXfrmPeerAddrError {
     SOCKS5
 }
 
+#[derive(Debug)]
+pub enum CompoundFarChannelSessionCredToBasicCredError {
+    SSL {
+        err: Box<BasicCredFromSSLError<CompoundFarChannelSessionCredToBasicCredError>>
+    }
+}
+
 impl<Unix, UDP> Credentials for CompoundFlow<Unix, UDP>
 where
     Unix: DatagramXfrm<LocalAddr = UnixSocketPath, PeerAddr = UnixSocketPath>,
@@ -1179,8 +1188,9 @@ where
             CompoundFlow::IP { flow } => {
                 let cred = flow.creds()?;
 
-                Ok(cred
-                    .map(|cred| CompoundFarChannelSessionCred::IP { ip: cred }))
+                Ok(cred.map(|cred| CompoundFarChannelSessionCred::IP {
+                    ip: cred
+                }))
             }
         }
     }
@@ -2216,10 +2226,78 @@ impl Receiver for CompoundFarIPChannelSocket {
     }
 }
 
+// XXX The enums here are messy and overlapping, and need to be refactored.
+impl TryFrom<CompoundFarChannelSessionCred> for BasicCred {
+    type Error = CompoundFarChannelSessionCredToBasicCredError;
+
+    #[inline]
+    fn try_from(
+        val: CompoundFarChannelSessionCred
+    ) -> Result<BasicCred, CompoundFarChannelSessionCredToBasicCredError> {
+        match val {
+            CompoundFarChannelSessionCred::Basic {
+                basic: CompoundFarChannelXfrmPeerAddr::Unix { unix }
+            } => Ok(BasicCred::Unix { addr: unix }),
+            CompoundFarChannelSessionCred::Basic {
+                basic: CompoundFarChannelXfrmPeerAddr::IP {
+                    ip: CompoundFarIPChannelXfrmPeerAddr::UDP { udp }
+                }
+            } => Ok(BasicCred::IP { unsafe_addr: IPEndpoint::from(udp) }),
+            CompoundFarChannelSessionCred::Basic {
+                basic: CompoundFarChannelXfrmPeerAddr::IP {
+                    ip: CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 }
+                }
+            } => Ok(BasicCred::IP { unsafe_addr: socks5 }),
+            CompoundFarChannelSessionCred::DTLS { dtls } =>
+                BasicCred::try_from(*dtls)
+                .map_err(|err| {
+                    CompoundFarChannelSessionCredToBasicCredError::SSL {
+                        err: Box::new(err)
+                    }
+                }),
+            CompoundFarChannelSessionCred::IP { ip } => BasicCred::try_from(ip)
+        }
+    }
+}
+
+impl TryFrom<CompoundFarIPChannelSessionCred> for BasicCred {
+    type Error = CompoundFarChannelSessionCredToBasicCredError;
+
+    #[inline]
+    fn try_from(
+        val: CompoundFarIPChannelSessionCred
+    ) -> Result<BasicCred, CompoundFarChannelSessionCredToBasicCredError> {
+        match val {
+            CompoundFarIPChannelSessionCred::Basic {
+                basic: CompoundFarIPChannelXfrmPeerAddr::UDP { udp }
+            } => Ok(BasicCred::IP { unsafe_addr: IPEndpoint::from(udp) }),
+            CompoundFarIPChannelSessionCred::Basic {
+                basic: CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 }
+            } => Ok(BasicCred::IP { unsafe_addr: socks5 }),
+            CompoundFarIPChannelSessionCred::DTLS { dtls } =>
+                BasicCred::try_from(*dtls)
+                .map_err(|err| {
+                    CompoundFarChannelSessionCredToBasicCredError::SSL {
+                        err: Box::new(err)
+                    }
+                })
+        }
+    }
+}
+
 impl From<CompoundFarChannelSessionCred> for NullCred {
     #[inline]
     fn from(_val: CompoundFarChannelSessionCred) -> NullCred {
         NullCred::default()
+    }
+}
+
+impl ScopedError for CompoundFarChannelSessionCredToBasicCredError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundFarChannelSessionCredToBasicCredError::SSL { err } =>
+                err.scope()
+        }
     }
 }
 
@@ -5264,6 +5342,18 @@ where
         match self {
             CompoundIPFlow::Basic { flow } => flow.flush(),
             CompoundIPFlow::DTLS { flow } => flow.flush()
+        }
+    }
+}
+
+impl Display for CompoundFarChannelSessionCredToBasicCredError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarChannelSessionCredToBasicCredError::SSL { err } =>
+                write!(f, "{}", err)
         }
     }
 }

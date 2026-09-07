@@ -49,6 +49,7 @@ use constellation_auth::cred::GSSAPICred;
 use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::config::authn::GSSAPISecurity;
 use constellation_common::config::authn::ServerGSSAPIConfig;
+use constellation_common::error::CompletableIOError;
 use constellation_common::error::ErrorScope;
 use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
@@ -1758,7 +1759,7 @@ where
 }
 
 impl RecoverableError for GSSAPIError {
-    type Completable = ();
+    type Completable = CompletableIOError;
     type Permanent = GSSAPIError;
 
     fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {

@@ -35,23 +35,38 @@ use std::vec::IntoIter;
 
 use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
+use constellation_auth::authn::AuthNedDestruct;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::config::Create;
 use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
+use constellation_common::hashid::HashID;
 use constellation_common::net::Negotiator;
 use constellation_common::net::NegotiatorResult;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
 use constellation_common::retry::Retry;
 use constellation_common::retry::RetryResult;
+use constellation_common::retry::RetryIndefResult;
 use constellation_streams::channels::ChannelParam;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
 use constellation_streams::codec::DatagramCodecStream;
+use constellation_streams::large_obj::LargeObjID;
+use constellation_streams::stream::LargeObjOfferStream;
+use constellation_streams::stream::LargeObjStream;
+use constellation_streams::stream::Parties;
+use constellation_streams::stream::PullStream;
+use constellation_streams::stream::PushStream;
+use constellation_streams::stream::PushStreamAdd;
+use constellation_streams::stream::PushStreamPartyID;
+use constellation_streams::stream::PushStreamPrivate;
+use constellation_streams::stream::PushStreamPrivateSingle;
+use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::TokensCtx;
 use log::debug;
@@ -1785,7 +1800,9 @@ fn start_incoming<Ctx, S, Types>(
     read: &mut bool,
     accept: &mut Types::InChannel,
     shutdown: &Types::InShutdownNego,
-    authn: &Types::InAuthN
+    authn: &Types::InAuthN,
+    encoder_config: &Types::EncoderConfig,
+    decoder_config: &Types::DecoderConfig,
 ) -> Result<
     Option<Vec<(Token, SessionNegoState<Types::Inbound>)>>,
     ChannelEntryListenError<Types::InSessionStartError,
@@ -1809,8 +1826,9 @@ where
                 Types::Encoder,
                 Types::Decoder
             >
-        >
-    ) -> Result<(), std::io::Error>,
+        >,
+        Types::OutEndpoint
+    ),
     Types: NearDuplexNegoTypes,
     Ctx: RegistryCtx + TokensCtx {
     if when.is_none_or(|when| when <= Instant::now()) {
@@ -1873,11 +1891,27 @@ where
                     out.push((token, ent));
 
                     if let Some(session) = session {
+                        let session: Types::InAuthNSession = session;
+                        let endpoint = session.peer_addr()
+                            .map_err(|err| ChannelEntryListenError::IO {
+                                err: err
+                            })?;
+                        let encoder = Types::Encoder::create(
+                            encoder_config.clone()
+                        ).map_err(|err| ChannelEntryListenError::Encoder {
+                            err: err
+                        })?;
+                        let decoder = Types::Decoder::create(
+                            decoder_config.clone()
+                        ).map_err(|err| ChannelEntryListenError::Decoder {
+                            err: err
+                        })?;
+                        let session = DatagramCodecStream::create(
+                            encoder, decoder, session
+                        );
                         let session = DuplexValue::Accept(session);
 
-                        report_session(session).map_err(|err| {
-                            ChannelEntryListenError::IO { err: err }
-                        })?
+                        report_session(session, endpoint.into());
                     }
                 }
                 Ok(None) => {}
@@ -2154,7 +2188,7 @@ where
                           endpoint);
 
                 self.insert_out_ent(
-                    out.map(|stream| stream.inner()),
+                    out.as_ref(),
                     ent,
                     endpoint,
                     token
@@ -2228,8 +2262,9 @@ where
                     Types::Encoder,
                     Types::Decoder
                 >
-            >
-        ) -> Result<(), std::io::Error>,
+            >,
+            Types::OutEndpoint
+        ),
         E: FnMut(Types::OutEndpoint),
         Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
@@ -2272,26 +2307,32 @@ where
                                             }
                                         })?;
 
+                                    let endpoint = session.peer_addr()
+                                        .map_err(|err| {
+                                            ChannelEntryListenError::IO {
+                                                err: err
+                                            }
+                                        })?;
                                     let encoder = Types::Encoder::create(
                                         encoder_config.clone()
-                                    ).map_err(|err| ChannelEntryListenError::Encoder {
-                                        err: err
+                                    ).map_err(|err| {
+                                        ChannelEntryListenError::Encoder {
+                                            err: err
+                                        }
                                     })?;
                                     let decoder = Types::Decoder::create(
                                         decoder_config.clone()
-                                    ).map_err(|err| ChannelEntryListenError::Decoder {
-                                        err: err
+                                    ).map_err(|err| {
+                                        ChannelEntryListenError::Decoder {
+                                            err: err
+                                        }
                                     })?;
                                     let session = DatagramCodecStream::create(
                                         encoder, decoder, session
                                     );
                                     let session = DuplexValue::Conn(session);
 
-                                    report_session(session).map_err(
-                                        |err| ChannelEntryListenError::IO {
-                                            err: err
-                                        }
-                                    )?;
+                                    report_session(session, endpoint);
                                 }
                                 // Session shut down; clean up after it.
                                 StepResult::Shutdown { endpoint } => {
@@ -2334,7 +2375,6 @@ where
                             }) => {
                                 // Need to insert the token entry.
                                 let endpoint = session
-                                    .get()
                                     .peer_addr()
                                     .map_err(|err| {
                                         ChannelEntryListenError::IO {
@@ -2343,13 +2383,17 @@ where
                                     })?;
                                 let encoder = Types::Encoder::create(
                                     encoder_config.clone()
-                                ).map_err(|err| ChannelEntryListenError::Encoder {
-                                    err: err
+                                ).map_err(|err| {
+                                    ChannelEntryListenError::Encoder {
+                                        err: err
+                                    }
                                 })?;
                                 let decoder = Types::Decoder::create(
                                     decoder_config.clone()
-                                ).map_err(|err| ChannelEntryListenError::Decoder {
-                                    err: err
+                                ).map_err(|err| {
+                                    ChannelEntryListenError::Decoder {
+                                        err: err
+                                    }
                                 })?;
                                 let session = DatagramCodecStream::create(
                                     encoder, decoder, session
@@ -2363,11 +2407,7 @@ where
                                 );
 
                                 *ent = Some(state);
-                                report_session(session).map_err(
-                                    |err| ChannelEntryListenError::IO {
-                                        err: err
-                                    }
-                                )?;
+                                report_session(session, endpoint.into());
                             }
                             // Session shut down; clean up after it.
                             Ok(StepResult::Shutdown { endpoint }) => {
@@ -2425,7 +2465,9 @@ where
                         &mut read,
                         &mut self.acceptor,
                         &self.shutdown,
-                        &self.in_authn
+                        &self.in_authn,
+                        encoder_config,
+                        decoder_config,
                     )?
                 } else {
                     None
@@ -2669,7 +2711,13 @@ where
 
     fn insert_out_ent(
         &mut self,
-        session: &Option<Types::OutAuthNSession>,
+        session: Option<&DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::OutAuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        >>,
         ent: ConnectorEntry<Types::Outbound>,
         endpoint: Types::OutEndpoint,
         token: Token
@@ -2691,7 +2739,7 @@ where
         if let Some(session) = &session {
             Self::insert_out_ent_extra(
                 &mut self.conn_tokens,
-                session,
+                session.inner(),
                 &endpoint,
                 token
             )?
@@ -2716,7 +2764,7 @@ where
         endpoint: &Types::OutEndpoint,
         token: Token
     ) -> Result<(), std::io::Error> {
-        let session_endpoint = session.get().peer_addr()?;
+        let session_endpoint = session.peer_addr()?;
 
         if &session_endpoint != endpoint {
             trace!(target: "duplex-channel-mode",
@@ -3046,7 +3094,7 @@ where
                           endpoint);
 
                 self.insert_out_ent(
-                    out.map(|session| session.inner()),
+                    out.as_ref(),
                     ent,
                     endpoint,
                     token
@@ -3114,8 +3162,9 @@ where
                     Types::Encoder,
                     Types::Decoder
                 >
-            >
-        ) -> Result<(), std::io::Error>,
+            >,
+            Types::OutEndpoint
+        ),
         E: FnMut(Types::OutEndpoint) {
         let mut deletes: Option<Vec<Token>> = None;
         let len = self.negos.len();
@@ -3146,6 +3195,11 @@ where
                                 ChannelEntryListenError::IO { err: err }
                             })?;
 
+                            let endpoint = session
+                                .peer_addr()
+                                .map_err(|err| ChannelEntryListenError::IO {
+                                    err: err
+                                })?;
                             let encoder = Types::Encoder::create(
                                 encoder_config.clone()
                             ).map_err(|err| ChannelEntryListenError::Encoder {
@@ -3161,9 +3215,7 @@ where
                             );
                             let session = DuplexValue::Conn(session);
 
-                            report_session(session).map_err(|err| {
-                                ChannelEntryListenError::IO { err: err }
-                            })?;
+                            report_session(session, endpoint);
                         }
                         // Session shut down; clean up after it.
                         StepResult::Shutdown { endpoint } => {
@@ -3322,7 +3374,13 @@ where
 
     fn insert_out_ent(
         &mut self,
-        session: &Option<Types::OutAuthNSession>,
+        session: Option<&DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::OutAuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        >>,
         ent: ConnectorEntry<Types::Outbound>,
         endpoint: Types::OutEndpoint,
         token: Token
@@ -3342,7 +3400,7 @@ where
         if let Some(session) = &session {
             Self::insert_out_ent_extra(
                 &mut self.tokens,
-                session,
+                session.inner(),
                 &endpoint,
                 token
             )?
@@ -3367,7 +3425,7 @@ where
         endpoint: &Types::OutEndpoint,
         token: Token
     ) -> Result<(), std::io::Error> {
-        let session_endpoint = session.get().peer_addr()?;
+        let session_endpoint = session.peer_addr()?;
 
         if &session_endpoint != endpoint {
             trace!(target: "outbound-channel-mode",
@@ -3580,8 +3638,9 @@ where
                     Types::Encoder,
                     Types::Decoder
                 >
-            >
-        ) -> Result<(), std::io::Error>,
+            >,
+            Types::OutEndpoint
+        ),
         E: FnMut(Types::OutEndpoint),
         Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
@@ -3607,7 +3666,6 @@ where
                         }) => {
                             // Need to insert the token entry.
                             let endpoint = session
-                                .get()
                                 .peer_addr()
                                 .map_err(|err| {
                                     ChannelEntryListenError::IO { err: err }
@@ -3633,9 +3691,7 @@ where
                                 *token
                             );
                             *ent = Some(state);
-                            report_session(session).map_err(|err| {
-                                ChannelEntryListenError::IO { err: err }
-                            })?;
+                            report_session(session, endpoint.into());
                         }
                         // Session shut down; clean up after it.
                         Ok(StepResult::Shutdown { endpoint }) => {
@@ -3692,7 +3748,9 @@ where
                         &mut read,
                         &mut self.acceptor,
                         &self.shutdown,
-                        &self.authn
+                        &self.authn,
+                        encoder_config,
+                        decoder_config,
                     )?
                 } else {
                     None
@@ -4291,8 +4349,9 @@ where
                     Types::Encoder,
                     Types::Decoder
                 >
-            >
-        ) -> Result<(), std::io::Error>,
+            >,
+            Types::OutEndpoint
+        ),
         E: FnMut(Types::OutEndpoint),
         Ctx: RegistryCtx + TokensCtx {
         match &mut self.mode {
@@ -4382,7 +4441,7 @@ where
 
                 ent.listen(
                     ctx,
-                    |session| {
+                    |session, _| {
                         match &mut sessions {
                             Some(sessions) => {
                                 sessions.push(session);
@@ -4394,8 +4453,6 @@ where
                                 sessions = Some(vec);
                             }
                         }
-
-                        Ok(())
                     },
                     |endpoint| {
                         trace!(target: "channel-entry",
@@ -4417,7 +4474,7 @@ where
 
                 let deletes = ent
                     .listen(
-                        |session| {
+                        |session, _| {
                             match &mut sessions {
                                 Some(sessions) => {
                                     sessions.push(session);
@@ -4429,8 +4486,6 @@ where
                                     sessions = Some(vec);
                                 }
                             }
-
-                            Ok(())
                         },
                         |endpoint| {
                             trace!(target: "channel-entry",
@@ -4454,7 +4509,7 @@ where
 
                 ent.listen(
                     ctx,
-                    |session| {
+                    |session, _| {
                         match &mut sessions {
                             Some(sessions) => sessions.push(session),
                             None => {
@@ -4464,8 +4519,6 @@ where
                                 sessions = Some(vec)
                             }
                         }
-
-                        Ok(())
                     },
                     |endpoint| {
                         trace!(target: "channel-entry",
@@ -4487,6 +4540,13 @@ where
             let mut shutdowns: Option<HashSet<Token>> = None;
 
             for session in sessions.into_iter() {
+                let session = match session {
+                    DuplexValue::Conn(session) =>
+                        DuplexValue::Conn(session.into_inner()),
+                    DuplexValue::Accept(session) =>
+                        DuplexValue::Accept(session.into_inner()),
+                };
+
                 if let Some(token) = self
                     .shutdown_stream(ctx.registry(), session)
                     .map_err(|err| {
@@ -4552,20 +4612,8 @@ where
         &mut self,
         registry: &Registry,
         stream: DuplexValue<
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::InAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >,
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::OutAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >
+            Types::InAuthNSession,
+            Types::OutAuthNSession
         >
     ) -> Result<
         Option<Token>,
@@ -4585,22 +4633,22 @@ where
     > {
         match (&mut self.mode, stream) {
             (ChannelMode::Duplex(ent), DuplexValue::Conn(stream)) => {
-                let (_, stream) = stream.take();
+                let (_, stream) = AuthNedDestruct::take(stream);
 
                 ent.shutdown_conn(registry, stream)
             }
             (ChannelMode::Duplex(ent), DuplexValue::Accept(stream)) => {
-                let (_, stream) = stream.take();
+                let (_, stream) = AuthNedDestruct::take(stream);
 
                 ent.shutdown_accept(registry, stream)
             }
             (ChannelMode::Outbound(ent), DuplexValue::Conn(stream)) => {
-                let (_, stream) = stream.take();
+                let (_, stream) = AuthNedDestruct::take(stream);
 
                 ent.shutdown_conn(registry, stream)
             }
             (ChannelMode::Inbound(ent), DuplexValue::Accept(stream)) => {
-                let (_, stream) = stream.take();
+                let (_, stream) = AuthNedDestruct::take(stream);
 
                 ent.shutdown_accept(registry, stream)
             }
@@ -4704,7 +4752,7 @@ where
             Types::DecoderCreateError
         >
     >;
-    type Stream = DuplexValue<
+    type Stream = RefCellStream<DuplexValue<
         DatagramCodecStream<
             Types::OutMsg,
             Types::Wrapper,
@@ -4719,7 +4767,7 @@ where
             Types::Encoder,
             Types::Decoder
         >
-    >;
+    >>;
 
     #[inline]
     fn params<I>(
@@ -4756,7 +4804,8 @@ where
                           token, curr);
                 }
 
-                let out = out.map(DuplexValue::Conn);
+                let out = out
+                    .map(|out| RefCellStream::new(DuplexValue::Conn(out)));
 
                 (out, None, None)
             }))
@@ -4807,25 +4856,10 @@ where
         for id in lives {
             let (creates, deletes) = self.channels[id.0].listen(
                 ctx,
-                |session| {
-                    let (peer_addr, session) = match session {
-                        DuplexValue::Accept(accept) => {
-                            let peer_addr = accept.get().peer_addr()?;
-                            let accept = DuplexValue::Accept(accept);
-
-                            (peer_addr.into(), accept)
-                        }
-                        DuplexValue::Conn(conn) => {
-                            let peer_addr = conn.get().peer_addr()?;
-                            let conn = DuplexValue::Conn(conn);
-
-                            (peer_addr, conn)
-                        }
-                    };
+                |session, peer_addr| {
+                    let session = RefCellStream::new(session);
 
                     sessions.push((peer_addr, id, NearChannelParam, session));
-
-                    Ok(())
                 },
                 |endpoint| endpoints.push((endpoint, id, NearChannelParam)),
                 live
@@ -4903,8 +4937,8 @@ where
         &mut self,
         ctx: &mut Ctx,
         channel: &NearChannelID,
-        _param: &Self::Param,
-        stream: DuplexValue<
+        param: &Self::Param,
+        stream: RefCellStream<DuplexValue<
             DatagramCodecStream<
                 Types::OutMsg,
                 Types::Wrapper,
@@ -4919,7 +4953,7 @@ where
                 Types::Encoder,
                 Types::Decoder
             >
-        >
+        >>
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
@@ -4927,16 +4961,33 @@ where
         >,
         Self::ShutdownStreamError
     > {
-        if let Some(token) =
-            self.channels[channel.0].shutdown_stream(ctx.registry(), stream)?
-        {
-            if self.tokens.remove(&token).is_none() {
-                error!(target: "near-channels",
-                       "token {:?} was not present in tokens table",
-                       token);
-            }
+        match stream.into_inner() {
+            Some(stream) => {
+                let stream = match stream {
+                    DuplexValue::Conn(stream) =>
+                        DuplexValue::Conn(stream.into_inner()),
+                    DuplexValue::Accept(stream) =>
+                        DuplexValue::Accept(stream.into_inner()),
+                };
 
-            ctx.free_token(token);
+                if let Some(token) = self
+                    .channels[channel.0]
+                    .shutdown_stream(ctx.registry(), stream)?
+                {
+                    if self.tokens.remove(&token).is_none() {
+                        error!(target: "near-channels",
+                               "token {:?} was not present in tokens table",
+                               token);
+                    }
+
+                    ctx.free_token(token);
+                }
+            }
+            None => {
+                debug!(target: "near-channels",
+                       "channel on {}, {} still has references",
+                       channel, param);
+            }
         }
 
         Ok(RetryResult::Success((None, None)))
@@ -5140,8 +5191,9 @@ where
                           "creating outbound near channel \"{}\"",
                           name);
 
+                    // XXX have context carry parameters such as unsafe options.
                     let authn =
-                        Types::OutAuthN::create(authn).map_err(|err| {
+                        Types::OutAuthN::create(authn, false).map_err(|err| {
                             NearChannelsCreateError::OutAuth { err: err }
                         })?;
                     let channel = match nsessions {
@@ -5179,8 +5231,9 @@ where
                           "creating inbound near channel \"{}\"",
                           name);
 
+                    // XXX have context carry parameters such as unsafe options.
                     let authn =
-                        Types::InAuthN::create(authn).map_err(|err| {
+                        Types::InAuthN::create(authn, false).map_err(|err| {
                             NearChannelsCreateError::InAuth { err: err }
                         })?;
                     let mut acceptor = Types::InChannel::create(ctx, listen)
@@ -5246,12 +5299,14 @@ where
                           "creating duplex near channel \"{}\"",
                           name);
 
-                    let out_authn = Types::OutAuthN::create(out_authn)
+                    // XXX have context carry parameters such as unsafe options.
+                    let out_authn = Types::OutAuthN::create(out_authn, false)
                         .map_err(|err| NearChannelsCreateError::OutAuth {
                             err: err
                         })?;
+                    // XXX have context carry parameters such as unsafe options.
                     let in_authn =
-                        Types::InAuthN::create(in_authn).map_err(|err| {
+                        Types::InAuthN::create(in_authn, false).map_err(|err| {
                             NearChannelsCreateError::InAuth { err: err }
                         })?;
                     let mut acceptor = Types::InChannel::create(ctx, listen)
@@ -5384,6 +5439,441 @@ where
     }
 }
 
+impl<Accept, Conn, Ctx> PushStream<Ctx> for DuplexValue<Accept, Conn>
+where
+    Accept: PushStream<Ctx>,
+    Conn: PushStream<Ctx,
+                     BatchID = Accept::BatchID,
+                     CancelBatchError = Accept::CancelBatchError,
+                     CancelBatchRetry = Accept::CancelBatchRetry,
+                     FinishBatchError = Accept::FinishBatchError,
+                     FinishBatchRetry = Accept::FinishBatchRetry,
+                     ReportError = Accept::ReportError,
+                     StreamFlags = Accept::StreamFlags> {
+    type BatchID = Accept::BatchID;
+    type CancelBatchError = Accept::CancelBatchError;
+    type CancelBatchRetry = Accept::CancelBatchRetry;
+    type FinishBatchError = Accept::FinishBatchError;
+    type FinishBatchRetry = Accept::FinishBatchRetry;
+    type ReportError = Accept::ReportError;
+    type StreamFlags = Accept::StreamFlags;
+
+    #[inline]
+    fn empty_flags_with_capacity(size: usize) -> Self::StreamFlags {
+        Accept::empty_flags_with_capacity(size)
+    }
+
+    fn finish_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        batch: &Self::BatchID
+    ) -> Result<RetryResult<(), Self::FinishBatchRetry>, Self::FinishBatchError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.finish_batch(ctx, flags, batch),
+            DuplexValue::Accept(accept) =>
+                accept.finish_batch(ctx, flags, batch)
+        }
+    }
+
+    fn retry_finish_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        batch: &Self::BatchID,
+        retry: Self::FinishBatchRetry
+    ) -> Result<RetryResult<(), Self::FinishBatchRetry>, Self::FinishBatchError>
+    {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_finish_batch(ctx, flags, batch, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_finish_batch(ctx, flags, batch, retry)
+        }
+    }
+
+    fn complete_finish_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        batch: &Self::BatchID,
+        err: <Self::FinishBatchError as RecoverableError>::Completable
+    ) -> Result<RetryResult<(), Self::FinishBatchRetry>, Self::FinishBatchError>
+    {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_finish_batch(ctx, flags, batch, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_finish_batch(ctx, flags, batch, err)
+        }
+    }
+
+    fn cancel_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        batch: &Self::BatchID
+    ) -> Result<RetryResult<(), Self::CancelBatchRetry>, Self::CancelBatchError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.cancel_batch(ctx, flags, batch),
+            DuplexValue::Accept(accept) =>
+                accept.cancel_batch(ctx, flags, batch)
+        }
+    }
+
+    fn retry_cancel_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        batch: &Self::BatchID,
+        retry: Self::CancelBatchRetry
+    ) -> Result<RetryResult<(), Self::CancelBatchRetry>, Self::CancelBatchError>
+    {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_cancel_batch(ctx, flags, batch, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_cancel_batch(ctx, flags, batch, retry)
+        }
+    }
+
+    fn complete_cancel_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        batch: &Self::BatchID,
+        err: <Self::CancelBatchError as RecoverableError>::Completable
+    ) -> Result<RetryResult<(), Self::CancelBatchRetry>, Self::CancelBatchError>
+    {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_cancel_batch(ctx, flags, batch, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_cancel_batch(ctx, flags, batch, err)
+        }
+    }
+
+    fn cancel_batches(&mut self) {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.cancel_batches(),
+            DuplexValue::Accept(accept) =>
+                accept.cancel_batches()
+        }
+    }
+
+    fn report_failure(
+        &mut self,
+        batch: &Self::BatchID
+    ) -> Result<(), Self::ReportError> {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.report_failure(batch),
+            DuplexValue::Accept(accept) =>
+                accept.report_failure(batch),
+        }
+    }
+}
+
+impl<Accept, Conn> PushStreamPartyID for DuplexValue<Accept, Conn>
+where
+    Accept: PushStreamPartyID,
+    Conn: PushStreamPartyID<PartyID = Accept::PartyID> {
+    type PartyID = Accept::PartyID;
+}
+
+impl<Accept, Conn, T, Ctx> PushStreamAdd<T, Ctx> for DuplexValue<Accept, Conn>
+where
+    Accept: PushStreamAdd<T, Ctx>,
+    Conn: PushStreamAdd<T, Ctx,
+                        BatchID = Accept::BatchID,
+                        AddError = Accept::AddError,
+                        AddRetry = Accept::AddRetry,
+                        CancelBatchError = Accept::CancelBatchError,
+                        CancelBatchRetry = Accept::CancelBatchRetry,
+                        FinishBatchError = Accept::FinishBatchError,
+                        FinishBatchRetry = Accept::FinishBatchRetry,
+                        ReportError = Accept::ReportError,
+                        StreamFlags = Accept::StreamFlags> {
+    type AddError = Accept::AddError;
+    type AddRetry = Accept::AddRetry;
+
+    fn add(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        msg: &T,
+        batch: &Self::BatchID
+    ) -> Result<RetryResult<(), Self::AddRetry>, Self::AddError> {
+        match self {
+            DuplexValue::Conn(conn) => conn.add(ctx, flags, msg, batch),
+            DuplexValue::Accept(accept) => accept.add(ctx, flags, msg, batch)
+        }
+    }
+
+    fn retry_add(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        msg: &T,
+        batch: &Self::BatchID,
+        retry: Self::AddRetry
+    ) -> Result<RetryResult<(), Self::AddRetry>, Self::AddError> {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_add(ctx, flags, msg, batch, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_add(ctx, flags, msg, batch, retry)
+        }
+    }
+
+    fn complete_add(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        msg: &T,
+        batch: &Self::BatchID,
+        err: <Self::AddError as RecoverableError>::Completable
+    ) -> Result<RetryResult<(), Self::AddRetry>, Self::AddError> {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_add(ctx, flags, msg, batch, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_add(ctx, flags, msg, batch, err)
+        }
+    }
+}
+
+impl<Accept, Conn, Ctx> PushStreamPrivate<Ctx> for DuplexValue<Accept, Conn>
+where
+    Accept: PushStreamPrivate<Ctx>,
+    Conn: PushStreamPrivate<Ctx,
+                            BatchID = Accept::BatchID,
+                            Selections = Accept::Selections,
+                            SelectError = Accept::SelectError,
+                            SelectRetry = Accept::SelectRetry,
+                            AbortBatchRetry = Accept::AbortBatchRetry,
+                            StartBatchError = Accept::StartBatchError,
+                            StartBatchRetry = Accept::StartBatchRetry,
+                            CreateBatchError = Accept::CreateBatchError,
+                            CreateBatchRetry = Accept::CreateBatchRetry,
+                            CancelBatchError = Accept::CancelBatchError,
+                            CancelBatchRetry = Accept::CancelBatchRetry,
+                            FinishBatchError = Accept::FinishBatchError,
+                            FinishBatchRetry = Accept::FinishBatchRetry,
+                            ReportError = Accept::ReportError,
+                            StartBatchStreamBatches = Accept::StartBatchStreamBatches,
+                            StreamFlags = Accept::StreamFlags> {
+    type AbortBatchRetry = Accept::AbortBatchRetry;
+    type CreateBatchError = Accept::CreateBatchError;
+    type CreateBatchRetry = Accept::CreateBatchRetry;
+    type SelectError = Accept::SelectError;
+    type SelectRetry = Accept::SelectRetry;
+    type Selections = Accept::Selections;
+    type StartBatchError = Accept::StartBatchError;
+    type StartBatchRetry = Accept::StartBatchRetry;
+    type StartBatchStreamBatches = Accept::StartBatchStreamBatches;
+
+    #[inline]
+    fn empty_selections_with_capacity(size: usize) -> Self::Selections {
+        Accept::empty_selections_with_capacity(size)
+    }
+
+    #[inline]
+    fn empty_batches_with_capacity(
+        size: usize
+    ) -> Self::StartBatchStreamBatches {
+        Accept::empty_batches_with_capacity(size)
+    }
+
+    fn select(
+        &mut self,
+        ctx: &mut Ctx,
+        selections: &mut Self::Selections
+    ) -> Result<
+        RetryIndefResult<(), Self::SelectRetry>,
+        Self::SelectError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.select(ctx, selections),
+            DuplexValue::Accept(accept) =>
+                accept.select(ctx, selections),
+        }
+    }
+
+    fn retry_select(
+        &mut self,
+        ctx: &mut Ctx,
+        selections: &mut Self::Selections,
+        retry: Self::SelectRetry
+    ) -> Result<
+        RetryIndefResult<(), Self::SelectRetry>,
+        Self::SelectError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_select(ctx, selections, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_select(ctx, selections, retry),
+        }
+    }
+
+    fn complete_select(
+        &mut self,
+        ctx: &mut Ctx,
+        selections: &mut Self::Selections,
+        err: <Self::SelectError as RecoverableError>::Completable
+    ) -> Result<
+        RetryIndefResult<(), Self::SelectRetry>,
+        Self::SelectError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_select(ctx, selections, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_select(ctx, selections, err),
+        }
+    }
+
+    fn create_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        batches: &mut Self::StartBatchStreamBatches,
+        selections: &Self::Selections
+    ) -> Result<
+        RetryResult<Self::BatchID, Self::CreateBatchRetry>,
+        Self::CreateBatchError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.create_batch(ctx, batches, selections),
+            DuplexValue::Accept(accept) =>
+                accept.create_batch(ctx, batches, selections),
+        }
+    }
+
+    fn retry_create_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        batches: &mut Self::StartBatchStreamBatches,
+        selections: &Self::Selections,
+        retry: Self::CreateBatchRetry
+    ) -> Result<
+        RetryResult<Self::BatchID, Self::CreateBatchRetry>,
+        Self::CreateBatchError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_create_batch(ctx, batches, selections, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_create_batch(ctx, batches, selections, retry),
+        }
+    }
+
+    fn complete_create_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        batches: &mut Self::StartBatchStreamBatches,
+        selections: &Self::Selections,
+        err: <Self::CreateBatchError as RecoverableError>::Completable
+    ) -> Result<
+        RetryResult<Self::BatchID, Self::CreateBatchRetry>,
+        Self::CreateBatchError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_create_batch(ctx, batches, selections, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_create_batch(ctx, batches, selections, err),
+        }
+    }
+
+    fn start_batch(
+        &mut self,
+        ctx: &mut Ctx
+    ) -> Result<
+        RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
+        Self::StartBatchError
+    > {
+        match self {
+            DuplexValue::Conn(conn) => conn.start_batch(ctx),
+            DuplexValue::Accept(accept) => accept.start_batch(ctx)
+        }
+    }
+
+    fn retry_start_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        retry: Self::StartBatchRetry
+    ) -> Result<
+        RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
+        Self::StartBatchError
+    > {
+        match self {
+            DuplexValue::Conn(conn) => conn.retry_start_batch(ctx, retry),
+            DuplexValue::Accept(accept) => accept.retry_start_batch(ctx, retry)
+        }
+    }
+
+    fn complete_start_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        err: <Self::StartBatchError as RecoverableError>::Completable
+    ) -> Result<
+        RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
+        Self::StartBatchError
+    > {
+        match self {
+            DuplexValue::Conn(conn) => conn.complete_start_batch(ctx, err),
+            DuplexValue::Accept(accept) => accept.complete_start_batch(ctx, err)
+        }
+    }
+
+    fn abort_start_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        err: <Self::StartBatchError as RecoverableError>::Permanent
+    ) -> RetryResult<(), Self::AbortBatchRetry> {
+        match self {
+            DuplexValue::Conn(conn) => conn.abort_start_batch(ctx, flags, err),
+            DuplexValue::Accept(accept) =>
+                accept.abort_start_batch(ctx, flags, err)
+        }
+    }
+
+    fn retry_abort_start_batch(
+        &mut self,
+        ctx: &mut Ctx,
+        flags: &mut Self::StreamFlags,
+        retry: Self::AbortBatchRetry
+    ) -> RetryResult<(), Self::AbortBatchRetry> {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_abort_start_batch(ctx, flags, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_abort_start_batch(ctx, flags, retry)
+        }
+    }
+}
+
+impl<Accept, Conn, T> PullStream<T> for DuplexValue<Accept, Conn>
+where
+    Accept: PullStream<T>,
+    Conn: PullStream<T, PullError = Accept::PullError> {
+    type PullError = Accept::PullError;
+
+    fn pull(&mut self) -> Result<T, Self::PullError> {
+        match self {
+            DuplexValue::Accept(stream) => stream.pull(),
+            DuplexValue::Conn(stream) => stream.pull(),
+        }
+    }
+}
+
 impl<Accept, Conn> Session for DuplexValue<Accept, Conn>
 where
     Accept: Session<LocalAddr = Conn::LocalAddr, PeerAddr = Conn::PeerAddr>,
@@ -5405,6 +5895,270 @@ where
         match self {
             DuplexValue::Accept(accept) => accept.peer_addr(),
             DuplexValue::Conn(accept) => accept.peer_addr()
+        }
+    }
+}
+
+impl<Accept, Conn, T, Ctx> PushStreamPrivateSingle<T, Ctx>
+    for DuplexValue<Accept, Conn>
+where
+    Accept: PushStreamPrivateSingle<T, Ctx>,
+    Conn: PushStreamPrivateSingle<
+        T, Ctx,
+    BatchID = Accept::BatchID,
+    Selections = Accept::Selections,
+    SelectError = Accept::SelectError,
+    SelectRetry = Accept::SelectRetry,
+    AddError = Accept::AddError,
+    AddRetry = Accept::AddRetry,
+    PushError = Accept::PushError,
+    PushRetry = Accept::PushRetry,
+    CancelPushError = Accept::CancelPushError,
+    CancelPushRetry = Accept::CancelPushRetry,
+    AbortBatchRetry = Accept::AbortBatchRetry,
+    StartBatchError = Accept::StartBatchError,
+    StartBatchRetry = Accept::StartBatchRetry,
+    CreateBatchError = Accept::CreateBatchError,
+    CreateBatchRetry = Accept::CreateBatchRetry,
+    CancelBatchError = Accept::CancelBatchError,
+    CancelBatchRetry = Accept::CancelBatchRetry,
+    FinishBatchError = Accept::FinishBatchError,
+    FinishBatchRetry = Accept::FinishBatchRetry,
+    ReportError = Accept::ReportError,
+    StartBatchStreamBatches = Accept::StartBatchStreamBatches,
+    StreamFlags = Accept::StreamFlags> {
+    type CancelPushError = Accept::CancelPushError;
+    type CancelPushRetry = Accept::CancelPushRetry;
+    type PushError = Accept::PushError;
+    type PushRetry = Accept::PushRetry;
+
+    fn push(
+        &mut self,
+        ctx: &mut Ctx,
+        msg: &T
+    ) -> Result<RetryIndefResult<Self::BatchID, Self::PushRetry>, Self::PushError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.push(ctx, msg),
+            DuplexValue::Accept(accept) => accept.push(ctx, msg)
+        }
+    }
+
+    fn retry_push(
+        &mut self,
+        ctx: &mut Ctx,
+        msg: &T,
+        retry: Self::PushRetry
+    ) -> Result<RetryIndefResult<Self::BatchID, Self::PushRetry>, Self::PushError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.retry_push(ctx, msg, retry),
+            DuplexValue::Accept(accept) => accept.retry_push(ctx, msg, retry)
+        }
+    }
+
+    fn complete_push(
+        &mut self,
+        ctx: &mut Ctx,
+        msg: &T,
+        err: <Self::PushError as RecoverableError>::Completable
+    ) -> Result<RetryIndefResult<Self::BatchID, Self::PushRetry>, Self::PushError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.complete_push(ctx, msg, err),
+            DuplexValue::Accept(accept) => accept.complete_push(ctx, msg, err)
+        }
+    }
+
+    fn cancel_push(
+        &mut self,
+        ctx: &mut Ctx,
+        err: <Self::PushError as RecoverableError>::Permanent
+    ) -> Result<RetryResult<(), Self::CancelPushRetry>, Self::CancelPushError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.cancel_push(ctx, err),
+            DuplexValue::Accept(accept) => accept.cancel_push(ctx, err)
+        }
+    }
+
+    fn retry_cancel_push(
+        &mut self,
+        ctx: &mut Ctx,
+        retry: Self::CancelPushRetry
+    ) -> Result<RetryResult<(), Self::CancelPushRetry>, Self::CancelPushError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.retry_cancel_push(ctx, retry),
+            DuplexValue::Accept(accept) => accept.retry_cancel_push(ctx, retry)
+        }
+    }
+
+    fn complete_cancel_push(
+        &mut self,
+        ctx: &mut Ctx,
+        err: <Self::CancelPushError as RecoverableError>::Completable
+    ) -> Result<RetryResult<(), Self::CancelPushRetry>, Self::CancelPushError>
+    {
+        match self {
+            DuplexValue::Conn(conn) => conn.complete_cancel_push(ctx, err),
+            DuplexValue::Accept(accept) => accept.complete_cancel_push(ctx, err)
+        }
+    }
+}
+
+impl<Accept, Conn, Ctx> LargeObjStream<Ctx> for DuplexValue<Accept, Conn>
+where
+    Accept: LargeObjStream<Ctx>,
+    Conn: LargeObjStream<Ctx,
+                         Frags = Accept::Frags,
+                         Parties = Accept::Parties,
+                         PushFragError = Accept::PushFragError,
+                         PushFragRetry = Accept::PushFragRetry> {
+    type Frags = Accept::Frags;
+    type Parties = Accept::Parties;
+    type PushFragError = Accept::PushFragError;
+    type PushFragRetry = Accept::PushFragRetry;
+
+    fn push_frags(
+        &mut self,
+        ctx: &mut Ctx,
+        id: LargeObjID,
+        frags: &mut Self::Frags
+    ) -> Result<
+        RetryIndefResult<
+            (Option<Instant>, Accept::Parties),
+            Self::PushFragRetry,
+            Parties<Accept::Parties>
+        >,
+        Self::PushFragError
+    > {
+        match self {
+            DuplexValue::Conn(conn) => conn.push_frags(ctx, id, frags),
+            DuplexValue::Accept(accept) => accept.push_frags(ctx, id, frags)
+        }
+    }
+
+    fn retry_push_frags(
+        &mut self,
+        ctx: &mut Ctx,
+        id: LargeObjID,
+        frags: &mut Self::Frags,
+        retry: Self::PushFragRetry
+    ) -> Result<
+        RetryIndefResult<
+            (Option<Instant>, Accept::Parties),
+            Self::PushFragRetry,
+            Parties<Accept::Parties>
+        >,
+        Self::PushFragError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_push_frags(ctx, id, frags, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_push_frags(ctx, id, frags, retry)
+        }
+    }
+
+    fn complete_push_frags(
+        &mut self,
+        ctx: &mut Ctx,
+        id: LargeObjID,
+        frags: &mut Self::Frags,
+        err: <Self::PushFragError as RecoverableError>::Completable
+    ) -> Result<
+        RetryIndefResult<
+            (Option<Instant>, Accept::Parties),
+            Self::PushFragRetry,
+            Parties<Accept::Parties>
+        >,
+        Self::PushFragError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_push_frags(ctx, id, frags, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_push_frags(ctx, id, frags, err)
+        }
+    }
+}
+
+impl<Accept, Conn, H, Ctx> LargeObjOfferStream<H, Ctx>
+    for DuplexValue<Accept, Conn>
+where
+    H: HashID,
+    Accept: LargeObjOfferStream<H, Ctx>,
+    Conn: LargeObjOfferStream<H, Ctx,
+                              Frags = Accept::Frags,
+                              Parties = Accept::Parties,
+                              PushFragError = Accept::PushFragError,
+                              PushFragRetry = Accept::PushFragRetry,
+                              PushOfferError = Accept::PushOfferError,
+                              PushOfferRetry = Accept::PushOfferRetry> {
+    type PushOfferError = Accept::PushOfferError;
+    type PushOfferRetry = Accept::PushOfferRetry;
+
+    fn push_offer(
+        &mut self,
+        ctx: &mut Ctx,
+        hash: H,
+        frags: &mut Self::Frags
+    ) -> Result<
+        RetryIndefResult<
+            (Option<Instant>, Self::Parties),
+            Self::PushOfferRetry,
+            Parties<Self::Parties>
+        >,
+        Self::PushOfferError
+    > {
+        match self {
+            DuplexValue::Conn(conn) => conn.push_offer(ctx, hash, frags),
+            DuplexValue::Accept(accept) => accept.push_offer(ctx, hash, frags)
+        }
+    }
+
+    fn retry_push_offer(
+        &mut self,
+        ctx: &mut Ctx,
+        hash: H,
+        frags: &mut Self::Frags,
+        retry: Self::PushOfferRetry
+    ) -> Result<
+        RetryIndefResult<
+            (Option<Instant>, Self::Parties),
+            Self::PushOfferRetry,
+            Parties<Self::Parties>
+        >,
+        Self::PushOfferError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.retry_push_offer(ctx, hash, frags, retry),
+            DuplexValue::Accept(accept) =>
+                accept.retry_push_offer(ctx, hash, frags, retry)
+        }
+    }
+
+    fn complete_push_offer(
+        &mut self,
+        ctx: &mut Ctx,
+        hash: H,
+        frags: &mut Self::Frags,
+        err: <Self::PushOfferError as RecoverableError>::Completable
+    ) -> Result<
+        RetryIndefResult<
+            (Option<Instant>, Self::Parties),
+            Self::PushOfferRetry,
+            Parties<Self::Parties>
+        >,
+        Self::PushOfferError
+    > {
+        match self {
+            DuplexValue::Conn(conn) =>
+                conn.complete_push_offer(ctx, hash, frags, err),
+            DuplexValue::Accept(accept) =>
+                accept.complete_push_offer(ctx, hash, frags, err)
         }
     }
 }
@@ -5924,7 +6678,11 @@ use std::thread::spawn;
 use std::time::Duration;
 
 #[cfg(test)]
+use constellation_auth::authn::BasicAuthNed;
+#[cfg(test)]
 use constellation_auth::authn::TrivialAuthN;
+#[cfg(test)]
+use constellation_common::codec::test::TestBytesCodec;
 #[cfg(test)]
 use constellation_common::unix::UnixSocketAddr;
 #[cfg(test)]
@@ -5980,18 +6738,41 @@ struct TestPrin;
 #[cfg(test)]
 type TestAcceptorNegoTypes = CompoundAcceptorNegoTypes<
     TrivialAuthN<TestPrin, CompoundNearServerConn>,
-    TLSServerConfig
+    TLSServerConfig,
+    Vec<u8>,
+    Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec
 >;
 
 #[cfg(test)]
 type TestConnectorNegoTypes = CompoundConnectorNegoTypes<
     TrivialAuthN<TestPrin, CompoundNearClientConn>,
-    TLSClientConfig
+    TLSClientConfig,
+    Vec<u8>,
+    Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec
 >;
 
 #[cfg(test)]
-type TestDuplexNegoTypes =
-    SimpleNearDuplexNegoTypes<TestAcceptorNegoTypes, TestConnectorNegoTypes>;
+type TestDuplexNegoTypes = SimpleNearDuplexNegoTypes<
+    TestAcceptorNegoTypes,
+    TestConnectorNegoTypes,
+    BasicAuthNed<
+        TestPrin,
+        RefCellStream<DatagramCodecStream<
+            Vec<u8>,
+            Vec<u8>,
+            DuplexValue<
+                CompoundNearServerConn,
+                CompoundNearClientConn
+            >,
+            TestBytesCodec,
+            TestBytesCodec
+        >>
+    >
+>;
 
 #[cfg(test)]
 struct TestCtx<'a, Ctx, I>
@@ -6076,7 +6857,13 @@ fn get_out_session<Types, Ctx>(
     endpoint: Types::OutEndpoint,
     param: Types::OutParam,
     token: Token
-) -> Types::OutAuthNSession
+) -> DatagramCodecStream<
+    Types::OutMsg,
+    Types::Wrapper,
+    Types::OutAuthNSession,
+    Types::Encoder,
+    Types::Decoder
+>
 where
     Ctx: NSNameCachesCtx,
     Types: NearDuplexNegoTypes {
@@ -6146,10 +6933,8 @@ where
                             freed: Vec::new(),
                             tokens: &mut gentok
                         },
-                        |session| {
+                        |session, _| {
                             sessions.push(session);
-
-                            Ok(())
                         },
                         |endpoint| {
                             endpoints.insert(endpoint);
@@ -6192,7 +6977,13 @@ fn get_in_session<Types, Ctx>(
     entry: &mut ChannelEntry<Types>,
     poll: &mut Poll,
     token: Token
-) -> Types::InAuthNSession
+) -> DatagramCodecStream<
+    Types::OutMsg,
+    Types::Wrapper,
+    Types::InAuthNSession,
+    Types::Encoder,
+    Types::Decoder
+>
 where
     Ctx: NSNameCachesCtx,
     Types: NearDuplexNegoTypes {
@@ -6240,10 +7031,8 @@ where
         let (creates, deletes) = entry
             .listen(
                 &mut ctx,
-                |session| {
+                |session, _| {
                     sessions.push(session);
-
-                    Ok(())
                 },
                 |endpoint| {
                     endpoints.insert(endpoint);
@@ -6339,10 +7128,8 @@ fn shutdown_out_session<Types, Ctx>(
                             freed: Vec::new(),
                             tokens: &mut gentok
                         },
-                        |session| {
+                        |session, _| {
                             sessions.push(session);
-
-                            Ok(())
                         },
                         |endpoint| {
                             endpoints.insert(endpoint);
@@ -6436,10 +7223,8 @@ fn shutdown_in_session<Types, Ctx>(
                             freed: Vec::new(),
                             tokens: &mut gentok
                         },
-                        |session| {
+                        |session, _| {
                             sessions.push(session);
-
-                            Ok(())
                         },
                         |endpoint| {
                             endpoints.insert(endpoint);
@@ -6499,19 +7284,29 @@ fn entry_test<Types>(
             .expect("Expected success");
 
         let mut entry: ChannelEntry<Types> =
-            ChannelEntry::inbound(acceptor, in_authn, Retry::default(), listen);
+            ChannelEntry::inbound(acceptor, in_authn,
+                                  Types::EncoderConfig::default(),
+                                  Types::DecoderConfig::default(),
+                                  Retry::default(), listen);
 
         assert!(entry.is_empty());
 
         trace!(target: "entry-test-server",
                "listening");
 
-        let mut session: Types::InAuthNSession = get_in_session(
+        let session: DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::InAuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        > = get_in_session(
             &mut listen_nscaches,
             &mut entry,
             &mut poll,
             in_session
         );
+        let mut session = session.into_inner();
 
         assert!(!entry.is_empty());
 
@@ -6520,13 +7315,13 @@ fn entry_test<Types>(
         trace!(target: "entry-test-server",
                "reading message");
 
-        read_one(session.get_mut(), &mut poll, in_session, &mut buf)
+        read_one(&mut session, &mut poll, in_session, &mut buf)
             .expect("Expected success");
 
         trace!(target: "entry-test-server",
                "writing message");
 
-        write_one(session.get_mut(), &mut poll, in_session, &SECOND_BYTES)
+        write_one(&mut session, &mut poll, in_session, &SECOND_BYTES)
             .expect("Expected success");
 
         trace!(target: "entry-test-server",
@@ -6547,7 +7342,10 @@ fn entry_test<Types>(
 
     let send = spawn(move || {
         let mut entry: ChannelEntry<Types> =
-            ChannelEntry::outbound(out_config, out_authn, Retry::default());
+            ChannelEntry::outbound(out_config, out_authn,
+                                   Types::EncoderConfig::default(),
+                                   Types::DecoderConfig::default(),
+                                   Retry::default());
 
         assert!(entry.is_empty());
 
@@ -6555,7 +7353,13 @@ fn entry_test<Types>(
                "connecting");
 
         let mut poll = Poll::new().expect("Expected success");
-        let mut session: Types::OutAuthNSession = get_out_session(
+        let session: DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::OutAuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        > = get_out_session(
             &mut nscaches,
             &mut entry,
             &mut poll,
@@ -6563,13 +7367,14 @@ fn entry_test<Types>(
             param,
             out_session
         );
+        let mut session = session.into_inner();
 
         assert!(!entry.is_empty());
 
         trace!(target: "entry-test-client",
                "writing message");
 
-        write_one(session.get_mut(), &mut poll, out_session, &FIRST_BYTES)
+        write_one(&mut session, &mut poll, out_session, &FIRST_BYTES)
             .expect("Expected success");
 
         let mut buf = [0; SECOND_BYTES.len()];
@@ -6577,7 +7382,7 @@ fn entry_test<Types>(
         trace!(target: "entry-test-client",
                "reading message");
 
-        read_one(session.get_mut(), &mut poll, out_session, &mut buf)
+        read_one(&mut session, &mut poll, out_session, &mut buf)
             .expect("Expected success");
 
         trace!(target: "entry-test-client",

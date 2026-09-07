@@ -33,6 +33,8 @@ use std::vec::IntoIter;
 
 use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
+use constellation_auth::authn::AuthNedDestruct;
+use constellation_auth::authn::AuthNedMap;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::config::Create;
 use constellation_common::config::CreateWithParam;
@@ -381,6 +383,13 @@ pub enum FlowsEntryReqFlowError<AuthN, Start, Flow, Shutdown, Enc, Dec> {
     GetFlow {
         err: FlowStateGetFlowError<AuthN, Start, Flow, Shutdown>
     },
+    Codec {
+        err: FlowsEntryCodecError<Enc, Dec>
+    }
+}
+
+#[derive(Debug)]
+pub enum FlowsEntryCodecError<Enc, Dec> {
     Encoder {
         err: Enc
     },
@@ -425,14 +434,11 @@ pub enum SessionListenError<Flows, Start, AuthN, Shutdown, Enc, Dec> {
         /// The error that occurred stepping session negotiations.
         err: SessionNegoStepError<AuthN, Shutdown>
     },
+    Codec {
+        err: FlowsEntryCodecError<Enc, Dec>
+    },
     IO {
         err: Error
-    },
-    Encoder {
-        err: Enc
-    },
-    Decoder {
-        err: Dec
     },
 }
 
@@ -1485,7 +1491,7 @@ where
         shutdown: &Types::ShutdownNego,
         param: &Types::ShutdownParam,
         addr: Addr,
-        session: Types::AuthNSession
+        session: Flow
     ) -> Result<
         (),
         SessionShutdownError<
@@ -1505,8 +1511,6 @@ where
                 error!(target: "flows-nego-state",
                        "shutting down active session with {}",
                        addr);
-
-                let (_, session) = session.take();
 
                 self.live = false;
 
@@ -1740,6 +1744,33 @@ where
         self.sessions.is_empty()
     }
 
+    fn session_to_chan(
+        &self,
+        encoder_config: &Types::EncoderConfig,
+        decoder_config: &Types::DecoderConfig,
+        session: Types::AuthNSession
+    ) -> Result<Types::AuthNChan,
+                FlowsEntryCodecError<
+                    Types::EncoderCreateError,
+                    Types::DecoderCreateError
+                >> {
+        let encoder = Types::Encoder::create(encoder_config.clone())
+            .map_err(|err| FlowsEntryCodecError::Encoder {
+                err: err
+            })?;
+        let decoder = Types::Decoder::create(decoder_config.clone())
+            .map_err(|err| FlowsEntryCodecError::Decoder {
+                err: err
+            })?;
+        let out = session.map(|stream| {
+            let out = DatagramCodecStream::create(encoder, decoder, stream);
+
+            RefCellStream::new(out)
+        });
+
+        Ok(out)
+    }
+
     /// Request a flow for a given endpoint.
     ///
     /// This will attempt to negotiate and authenticate a session with
@@ -1787,13 +1818,7 @@ where
         out_param: &Types::OutParam,
         endpoint: &Types::PeerAddr
     ) -> Result<
-        RetryResult<Option<DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::AuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >>>,
+        RetryResult<Option<Types::AuthNChan>>,
         FlowsEntryReqFlowError<
             Types::AuthNegoError,
             Types::AuthStartError,
@@ -1821,24 +1846,17 @@ where
                     ).map_err(|err| FlowsEntryReqFlowError::GetFlow {
                         err: err
                     })?
-                    .map_ok(|stream| {
-                        stream.map(|stream| {
-                            let encoder = Types::Encoder::create(
-                                encoder_config.clone()
-                            ).map_err(|err| FlowsEntryReqFlowError::Encoder {
-                                err: err
-                            })?;
-                            let decoder = Types::Decoder::create(
-                                decoder_config.clone()
-                            ).map_err(|err| FlowsEntryReqFlowError::Decoder {
-                                err: err
-                            })?;
-                            let out = DatagramCodecStream::create(encoder,
-                                                                  decoder,
-                                                                  stream);
-
-                            Ok(out)
+                    .map_ok(|session| {
+                        session.map(|session| {
+                            self.session_to_chan(
+                                encoder_config,
+                                decoder_config,
+                                session,
+                            )
                         }).transpose()
+                            .map_err(|err| FlowsEntryReqFlowError::Codec {
+                                err: err
+                            })
                     })
                 } else {
                     Ok(RetryResult::Retry(ent.retry.retry_when))
@@ -1862,24 +1880,17 @@ where
                 ).map_err(|err| FlowsEntryReqFlowError::GetFlow {
                     err: err
                 })?
-                .map_ok(|stream| {
-                    stream.map(|stream| {
-                        let encoder = Types::Encoder::create(
-                            encoder_config.clone()
-                        ).map_err(|err| FlowsEntryReqFlowError::Encoder {
-                            err: err
-                        })?;
-                        let decoder = Types::Decoder::create(
-                            decoder_config.clone()
-                        ).map_err(|err| FlowsEntryReqFlowError::Decoder {
-                            err: err
-                        })?;
-                        let out = DatagramCodecStream::create(encoder,
-                                                              decoder,
-                                                              stream);
-
-                        Ok(out)
+                .map_ok(|session| {
+                    session.map(|session| {
+                        self.session_to_chan(
+                            encoder_config,
+                            decoder_config,
+                            session,
+                        )
                     }).transpose()
+                        .map_err(|err| FlowsEntryReqFlowError::Codec {
+                            err: err
+                        })
                 })
             }
         }
@@ -1904,7 +1915,7 @@ where
         &mut self,
         shutdown: &Types::ShutdownNego,
         param: &Types::ShutdownParam,
-        session: Types::AuthNSession,
+        session: Flow,
         endpoint: Types::PeerAddr
     ) -> Result<
         (),
@@ -1989,15 +2000,10 @@ where
     >
     where
         S: FnMut(
+            Types::AuthNChan,
             Types::ChannelParam,
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >
-        ) -> Result<(), Error>,
+            Types::PeerAddr
+        ),
         E: FnMut(Types::PeerAddr, Types::ChannelParam) {
         let mut endpoints = HashSet::new();
         let mut flows = Vec::new();
@@ -2105,25 +2111,21 @@ where
                                 debug!(target: "flows-nego-state",
                                        "reporting completed session");
 
-                                let encoder = Types::Encoder::create(
-                                    encoder_config.clone()
-                                ).map_err(|err| SessionListenError::Encoder {
-                                    err: err
-                                })?;
-                                let decoder = Types::Decoder::create(
-                                    decoder_config.clone()
-                                ).map_err(|err| SessionListenError::Decoder {
-                                    err: err
-                                })?;
-                                let session = DatagramCodecStream::create(
-                                    encoder, decoder, session
-                                );
-
-                                // Session negotiations complete; report it out.
-                                report_session(self.param.clone(), session)
+                                let peer_addr = session.peer_addr()
                                     .map_err(|err| SessionListenError::IO {
                                         err: err
                                     })?;
+                                let chan = self.session_to_chan(
+                                    encoder_config,
+                                    decoder_config,
+                                    session,
+                                ).map_err(|err| SessionListenError::Codec {
+                                    err: err
+                                })?;
+
+                                // Session negotiations complete; report it out.
+                                report_session(chan, self.param.clone(),
+                                               peer_addr);
                             }
                         }
                         Entry::Vacant(ent) => {
@@ -2158,25 +2160,21 @@ where
                                 debug!(target: "flows-nego-state",
                                        "reporting completed session");
 
-                                let encoder = Types::Encoder::create(
-                                    encoder_config.clone()
-                                ).map_err(|err| SessionListenError::Encoder {
-                                    err: err
-                                })?;
-                                let decoder = Types::Decoder::create(
-                                    decoder_config.clone()
-                                ).map_err(|err| SessionListenError::Decoder {
-                                    err: err
-                                })?;
-                                let session = DatagramCodecStream::create(
-                                    encoder, decoder, session
-                                );
-
-                                // Session negotiations complete; report it out.
-                                report_session(self.param.clone(), session)
+                                let peer_addr = session.peer_addr()
                                     .map_err(|err| SessionListenError::IO {
                                         err: err
                                     })?;
+                                let chan = self.session_to_chan(
+                                    encoder_config,
+                                    decoder_config,
+                                    session,
+                                ).map_err(|err| SessionListenError::Codec {
+                                    err: err
+                                })?;
+
+                                // Session negotiations complete; report it out.
+                                report_session(chan, self.param.clone(),
+                                               peer_addr);
                             }
                         }
                     }
@@ -2201,8 +2199,7 @@ where
                 {
                     read = true;
 
-                    // Step negotiations.
-                    if let Some(session) = ent
+                    let session = ent
                         .get_mut()
                         .step(
                             |endpoint| report_endpoint(endpoint, param),
@@ -2212,30 +2209,7 @@ where
                             retry,
                             endpoint.clone()
                         )
-                        .map_err(|err| SessionListenError::Step { err: err })?
-                    {
-                        debug!(target: "flows-nego-state",
-                               "reporting completed session");
-
-                        let encoder = Types::Encoder::create(
-                            encoder_config.clone()
-                        ).map_err(|err| SessionListenError::Encoder {
-                            err: err
-                        })?;
-                        let decoder = Types::Decoder::create(
-                            decoder_config.clone()
-                        ).map_err(|err| SessionListenError::Decoder {
-                            err: err
-                        })?;
-                        let session = DatagramCodecStream::create(
-                            encoder, decoder, session
-                        );
-
-                        // Session negotiations complete; report it out.
-                        report_session(self.param.clone(), session).map_err(
-                            |err| SessionListenError::IO { err: err }
-                        )?;
-                    }
+                        .map_err(|err| SessionListenError::Step { err: err })?;
 
                     if !ent.get().is_live() {
                         trace!(target: "flows-nego-state",
@@ -2243,6 +2217,27 @@ where
                                endpoint);
 
                         ent.remove();
+                    }
+
+                    // Step negotiations.
+                    if let Some(session) = session {
+                        debug!(target: "flows-nego-state",
+                               "reporting completed session");
+
+                        let peer_addr = session.peer_addr()
+                            .map_err(|err| SessionListenError::IO {
+                                err: err
+                            })?;
+                        let chan = self.session_to_chan(
+                            encoder_config,
+                            decoder_config,
+                            session,
+                        ).map_err(|err| SessionListenError::Codec {
+                            err: err
+                        })?;
+
+                        // Session negotiations complete; report it out.
+                        report_session(chan, self.param.clone(), peer_addr);
                     }
                 } else {
                     error!(target: "flows-nego-state",
@@ -2679,13 +2674,7 @@ where
         endpoint: &Types::PeerAddr
     ) -> Result<
         RetryResult<(
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>,
+            Option<Types::AuthNChan>,
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
@@ -2870,12 +2859,12 @@ where
         shutdown: &Types::ShutdownNego,
         param: &Types::ShutdownParam,
         channel_param: &Types::ChannelParam,
-        session: Types::AuthNSession,
+        session: Types::Flow,
         peer: Types::PeerAddr
     ) -> Result<
         RetryResult<
             (Option<Vec<Types::ChannelParam>>, Option<Instant>),
-            WithRetryWhen<Types::AuthNSession>
+            WithRetryWhen<Types::Flow>
         >,
         AcquiredEntryShutdownError<
             FarChannelFlowsError<
@@ -2930,12 +2919,12 @@ where
         shutdown: &Types::ShutdownNego,
         param: &Types::ShutdownParam,
         channel_param: &Types::ChannelParam,
-        retry: WithRetryWhen<Types::AuthNSession>,
+        retry: WithRetryWhen<Types::Flow>,
         peer: Types::PeerAddr
     ) -> Result<
         RetryResult<
             (Option<Vec<Types::ChannelParam>>, Option<Instant>),
-            WithRetryWhen<Types::AuthNSession>
+            WithRetryWhen<Types::Flow>
         >,
         AcquiredEntryShutdownError<
             FarChannelFlowsError<
@@ -3102,15 +3091,10 @@ where
     >
     where
         S: FnMut(
+            Types::AuthNChan,
             Types::ChannelParam,
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >
-        ) -> Result<(), Error>,
+            Types::PeerAddr
+        ),
         E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: RegistryCtx + TokensCtx {
         self.refresh(ctx, channel, policy)
@@ -3567,13 +3551,7 @@ where
         out_param: &Types::OutParam
     ) -> Result<
         RetryResult<(
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>,
+            Option<Types::AuthNChan>,
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
@@ -3671,11 +3649,11 @@ where
         &mut self,
         ctx: &mut Ctx,
         channel_param: &Types::ChannelParam,
-        session: Types::AuthNSession
+        session: Types::Flow
     ) -> Result<
         RetryResult<
             (Option<Vec<Types::ChannelParam>>, Option<Instant>),
-            WithRetryWhen<Types::AuthNSession>
+            WithRetryWhen<Types::Flow>
         >,
         ChannelEntryShutdownFlowError<
             AcquiredEntryShutdownError<
@@ -3692,7 +3670,6 @@ where
     where
         Ctx: RegistryCtx + TokensCtx {
         let addr = session
-            .get()
             .peer_addr()
             .map_err(|err| ChannelEntryShutdownFlowError::IO { err: err })?;
 
@@ -3736,11 +3713,11 @@ where
         &mut self,
         ctx: &mut Ctx,
         channel_param: &Types::ChannelParam,
-        retry: WithRetryWhen<Types::AuthNSession>
+        retry: WithRetryWhen<Types::Flow>
     ) -> Result<
         RetryResult<
             (Option<Vec<Types::ChannelParam>>, Option<Instant>),
-            WithRetryWhen<Types::AuthNSession>
+            WithRetryWhen<Types::Flow>
         >,
         ChannelEntryShutdownFlowError<
             AcquiredEntryShutdownError<
@@ -3757,7 +3734,7 @@ where
     where
         Ctx: RegistryCtx + TokensCtx {
         let addr =
-            retry.get().get().peer_addr().map_err(|err| {
+            retry.get().peer_addr().map_err(|err| {
                 ChannelEntryShutdownFlowError::IO { err: err }
             })?;
 
@@ -3929,15 +3906,10 @@ where
     >
     where
         S: FnMut(
+            Types::AuthNChan,
             Types::ChannelParam,
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >
-        ) -> Result<(), Error>,
+            Types::PeerAddr
+        ),
         E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         match self.acquired.take().ok_or(ChannelEntryListenError::None)? {
@@ -4403,13 +4375,7 @@ where
             >
         >
     >;
-    type Stream = DatagramCodecStream<
-        Types::OutMsg,
-        Types::Wrapper,
-        Types::AuthNSession,
-        Types::Encoder,
-        Types::Decoder
-    >;
+    type Stream = Types::AuthNChan;
 
     #[inline]
     fn req_stream(
@@ -4421,13 +4387,7 @@ where
         nego_param: &Self::OutNegoParam
     ) -> Result<
         RetryResult<(
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>,
+            Option<Types::AuthNChan>,
             Option<Vec<Types::ChannelParam>>,
             Option<Instant>
         )>,
@@ -4547,17 +4507,13 @@ where
         for id in lives {
             match self.channels[id.0].listen(
                 ctx,
-                |param, stream| {
-                    let endpoint = stream.get().peer_addr()?;
-
+                |chan, param, endpoint| {
                     sessions.push((
                         endpoint,
                         id.clone(),
                         param.clone(),
-                        stream
+                        chan
                     ));
-
-                    Ok(())
                 },
                 |endpoint, param| {
                     endpoints.push((
@@ -4691,7 +4647,7 @@ where
             Types::WrapError
         >
     >;
-    type ShutdownStreamRetry = WithRetryWhen<Types::AuthNSession>;
+    type ShutdownStreamRetry = WithRetryWhen<Types::Flow>;
 
     #[inline]
     fn shutdown_stream(
@@ -4699,13 +4655,7 @@ where
         ctx: &mut Ctx,
         channel: &FarChannelID,
         param: &Types::ChannelParam,
-        session: DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::AuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >
+        session: Types::AuthNChan
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
@@ -4713,9 +4663,22 @@ where
         >,
         Self::ShutdownStreamError
     > {
-        let session = session.into_inner();
+        let (_, session) = AuthNedDestruct::take(session);
 
-        self.channels[channel.0].shutdown_flow(ctx, param, session)
+        match session.into_inner() {
+            Some(session) => {
+                let session = session.into_inner();
+
+                self.channels[channel.0].shutdown_flow(ctx, param, session)
+            }
+            None => {
+                debug!(target: "far-channels",
+                       "channel on {}, {} still has references",
+                       channel, param);
+
+                Ok(RetryResult::Success((None, None)))
+            }
+        }
     }
 
     #[inline]
@@ -4739,8 +4702,7 @@ where
         mut self,
         ctx: &mut Ctx,
         live: &HashSet<Token>
-    ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError>
-    {
+    ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError> {
         let lives: Vec<FarChannelID> = self
             .tokens
             .iter()
@@ -4757,7 +4719,7 @@ where
                 Types::PeerAddr,
                 FarChannelID,
                 Types::ChannelParam,
-                Types::AuthNSession
+                Types::AuthNChan
             )>
         > = None;
         let mut next: Option<Instant> = None;
@@ -4771,10 +4733,7 @@ where
                     match self.channels[id.0]
                         .listen(
                             ctx,
-                            |param, stream| {
-                                let stream = stream.into_inner();
-                                let endpoint = stream.get().peer_addr()?;
-
+                            |stream, param, endpoint| {
                                 match &mut sessions {
                                     Some(sessions) => {
                                         sessions.push((
@@ -4797,8 +4756,6 @@ where
                                         sessions = Some(vec);
                                     }
                                 }
-
-                                Ok(())
                             },
                             |endpoint, param| {
                                 trace!(target: "far-channels",
@@ -4978,7 +4935,8 @@ where
                   "creating far channel \"{}\"",
                   name);
 
-            let authn = Types::AuthN::create(authn_config)
+            // XXX have context carry parameters such as unsafe options.
+            let authn = Types::AuthN::create(authn_config, false)
                 .map_err(|err| FarChannelsCreateError::Auth { err: err })?;
             let channel = Types::Channel::create(ctx, channel)
                 .map_err(|err| FarChannelsCreateError::Channel { err: err })?;
@@ -5130,8 +5088,21 @@ where
     fn scope(&self) -> ErrorScope {
         match self {
             FlowsEntryReqFlowError::GetFlow { err } => err.scope(),
-            FlowsEntryReqFlowError::Encoder { err } => err.scope(),
-            FlowsEntryReqFlowError::Decoder { err } => err.scope(),
+            FlowsEntryReqFlowError::Codec { err } => err.scope(),
+        }
+    }
+}
+
+
+impl<Enc, Dec> ScopedError for FlowsEntryCodecError<Enc, Dec>
+where
+    Enc: ScopedError,
+    Dec: ScopedError
+{
+    fn scope(&self) -> ErrorScope {
+        match self {
+            FlowsEntryCodecError::Encoder { err } => err.scope(),
+            FlowsEntryCodecError::Decoder { err } => err.scope(),
         }
     }
 }
@@ -5294,8 +5265,7 @@ where
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            SessionListenError::Encoder { err } => err.scope(),
-            SessionListenError::Decoder { err } => err.scope(),
+            SessionListenError::Codec { err } => err.scope(),
             SessionListenError::Flows { err } => err.scope(),
             SessionListenError::Start { err } => err.scope(),
             SessionListenError::Step { err } => err.scope(),
@@ -5471,8 +5441,7 @@ where
         f: &mut Formatter<'_>
     ) -> Result<(), std::fmt::Error> {
         match self {
-            SessionListenError::Encoder { err } => err.fmt(f),
-            SessionListenError::Decoder { err } => err.fmt(f),
+            SessionListenError::Codec { err } => err.fmt(f),
             SessionListenError::Flows { err } => err.fmt(f),
             SessionListenError::Start { err } => err.fmt(f),
             SessionListenError::Step { err } => err.fmt(f),
@@ -5561,8 +5530,23 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             FlowsEntryReqFlowError::GetFlow { err } => err.fmt(f),
-            FlowsEntryReqFlowError::Encoder { err } => err.fmt(f),
-            FlowsEntryReqFlowError::Decoder { err } => err.fmt(f),
+            FlowsEntryReqFlowError::Codec { err } => err.fmt(f),
+        }
+    }
+}
+
+impl<Enc, Dec> Display for FlowsEntryCodecError<Enc, Dec>
+where
+    Enc: Display,
+    Dec: Display
+{
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            FlowsEntryCodecError::Encoder { err } => err.fmt(f),
+            FlowsEntryCodecError::Decoder { err } => err.fmt(f),
         }
     }
 }
@@ -5877,7 +5861,11 @@ use std::thread::spawn;
 use std::time::Duration;
 
 #[cfg(test)]
+use constellation_auth::authn::BasicAuthNed;
+#[cfg(test)]
 use constellation_auth::authn::TrivialAuthN;
+#[cfg(test)]
+use constellation_common::codec::test::TestBytesCodec;
 #[cfg(test)]
 use constellation_common::net::IPEndpointAddr;
 #[cfg(test)]
@@ -5928,8 +5916,25 @@ type TestFarChannelsTypes = CompoundFarChannelsTypes<
             PassthruDatagramXfrm<SocketAddr>
         >
     >,
+    BasicAuthNed<
+        TestPrin,
+        RefCellStream<DatagramCodecStream<
+            Vec<u8>,
+            Vec<u8>,
+            CompoundFlow<
+                PassthruDatagramXfrm<UnixSocketPath>,
+                PassthruDatagramXfrm<SocketAddr>
+            >,
+            TestBytesCodec,
+            TestBytesCodec
+        >>
+    >,
     PassthruDatagramXfrm<UnixSocketPath>,
-    PassthruDatagramXfrm<SocketAddr>
+    PassthruDatagramXfrm<SocketAddr>,
+    Vec<u8>,
+    Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec
 >;
 
 #[cfg(test)]
@@ -6012,7 +6017,7 @@ fn get_acquired<Types, Ctx>(
     ctx: &mut Ctx,
     poll: &mut Poll,
     endpoints: &mut HashSet<Types::PeerAddr>,
-    sessions: &mut Vec<Types::AuthNSession>,
+    sessions: &mut Vec<Types::AuthNChan>,
     channel: Types::Channel,
     authn: Types::AuthN,
     flows_config: FlowsConfig,
@@ -6039,6 +6044,8 @@ where
         flows_config,
         addrs_config,
         xfrm_param,
+        Types::EncoderConfig::default(),
+        Types::DecoderConfig::default(),
         Retry::default(),
         None
     )
@@ -6113,10 +6120,8 @@ where
                         freed: Vec::new(),
                         tokens: once(token)
                     },
-                    |_, session| {
+                    |session, _, _| {
                         sessions.push(session);
-
-                        Ok(())
                     },
                     |endpoint, _| {
                         endpoints.insert(endpoint);
@@ -6149,7 +6154,7 @@ fn get_in_session<Ctx, Types>(
     ctx: &mut Ctx,
     poll: &mut Poll,
     endpoints: &mut HashSet<Types::PeerAddr>
-) -> Types::AuthNSession
+) -> Types::AuthNChan
 where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
@@ -6191,10 +6196,8 @@ where
                 freed: Vec::new(),
                 tokens: empty()
             },
-            |_, session| {
+            |session, _, _| {
                 sessions.push(session);
-
-                Ok(())
             },
             |endpoint, _| {
                 endpoints.insert(endpoint);
@@ -6221,7 +6224,7 @@ fn get_out_session<Ctx, Types>(
     endpoint: &Types::PeerAddr,
     channel_param: &Types::ChannelParam,
     out_param: &Types::OutParam
-) -> Types::AuthNSession
+) -> Types::AuthNChan
 where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
@@ -6288,10 +6291,8 @@ where
                         freed: Vec::new(),
                         tokens: empty()
                     },
-                    |_, session| {
+                    |session, _, _| {
                         sessions.push(session);
-
-                        Ok(())
                     },
                     |endpoint, _| {
                         endpoints.insert(endpoint);
@@ -6315,7 +6316,7 @@ fn read_one<Ctx, Types>(
     ent: &mut ChannelEntry<Types>,
     ctx: &mut Ctx,
     poll: &mut Poll,
-    flow: &mut Types::Flow,
+    flow: &mut Types::AuthNSession,
     buf: &mut [u8],
     endpoint: &Types::PeerAddr
 ) -> Result<usize, Error>
@@ -6373,10 +6374,8 @@ where
                             freed: Vec::new(),
                             tokens: empty()
                         },
-                        |_, session| {
+                        |_, session, _| {
                             sessions.push(session);
-
-                            Ok(())
                         },
                         |endpoint, _| {
                             endpoints.insert(endpoint);
@@ -6407,7 +6406,7 @@ fn write_one<Ctx, Types>(
     ent: &mut ChannelEntry<Types>,
     ctx: &mut Ctx,
     poll: &mut Poll,
-    flow: &mut Types::Flow,
+    flow: &mut Types::AuthNSession,
     buf: &[u8],
     endpoint: &Types::PeerAddr
 ) -> Result<usize, Error>
@@ -6465,10 +6464,8 @@ where
                             freed: Vec::new(),
                             tokens: empty()
                         },
-                        |_, session| {
+                        |_, session, _| {
                             sessions.push(session);
-
-                            Ok(())
                         },
                         |endpoint, _| {
                             endpoints.insert(endpoint);
@@ -6500,10 +6497,12 @@ fn shutdown_session<Ctx, Types>(
     ctx: &mut Ctx,
     poll: &mut Poll,
     channel_param: &Types::ChannelParam,
-    session: Types::AuthNSession
+    session: Types::AuthNSession,
 ) where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
+    let (_, session) = AuthNedDestruct::take(session);
+
     match ent
         .shutdown_flow(
             &mut TestCtx {
@@ -6562,10 +6561,8 @@ fn shutdown_session<Ctx, Types>(
                 freed: Vec::new(),
                 tokens: empty()
             },
-            |param, session| {
+            |param, session, _| {
                 sessions.push((session, param));
-
-                Ok(())
             },
             |endpoint, param| {
                 endpoints.insert((endpoint, param));
@@ -6634,10 +6631,8 @@ fn shutdown_entry<Ctx, Types>(
                     freed: Vec::new(),
                     tokens: empty()
                 },
-                |_, session| {
+                |_, session, _| {
                     sessions.push(session);
-
-                    Ok(())
                 },
                 |endpoint, _| {
                     endpoints.insert(endpoint);
@@ -6704,7 +6699,13 @@ fn entry_test<Types, Ctx>(
         )
         .expect("Expected success");
         let mut endpoints: HashSet<Types::PeerAddr> = HashSet::new();
-        let mut sessions: Vec<Types::AuthNSession> = Vec::new();
+        let mut sessions: Vec<DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::AuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        >> = Vec::new();
         let (mut entry, params, _) = get_acquired::<Types, _>(
             &mut server_nscaches,
             &mut poll,
@@ -6730,7 +6731,7 @@ fn entry_test<Types, Ctx>(
             _ => panic!("Expected exactly one param")
         };
 
-        let mut session = if let Some(session) = sessions.pop() {
+        let session = if let Some(session) = sessions.pop() {
             assert!(sessions.is_empty());
 
             session
@@ -6742,8 +6743,8 @@ fn entry_test<Types, Ctx>(
                 &mut endpoints
             )
         };
-
-        let peer_addr = session.get().peer_addr().expect("Expected success");
+        let mut session = session.into_inner();
+        let peer_addr = session.peer_addr().expect("Expected success");
 
         assert!(!entry.is_shutdown());
         assert!(!entry.is_shutdown_safe());
@@ -6754,7 +6755,7 @@ fn entry_test<Types, Ctx>(
             &mut entry,
             &mut server_nscaches,
             &mut poll,
-            session.get_mut(),
+            &mut session,
             &mut buf,
             &peer_addr
         )
@@ -6764,7 +6765,7 @@ fn entry_test<Types, Ctx>(
             &mut entry,
             &mut server_nscaches,
             &mut poll,
-            session.get_mut(),
+            &mut session,
             &SECOND_BYTES,
             &peer_addr
         )
@@ -6812,7 +6813,13 @@ fn entry_test<Types, Ctx>(
         )
         .expect("Expected success");
         let mut endpoints: HashSet<Types::PeerAddr> = HashSet::new();
-        let mut sessions: Vec<Types::AuthNSession> = Vec::new();
+        let mut sessions: Vec<DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::AuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        >> = Vec::new();
         let (mut entry, params, _) = get_acquired::<Types, _>(
             &mut client_nscaches,
             &mut poll,
@@ -6838,7 +6845,13 @@ fn entry_test<Types, Ctx>(
             [param] => param,
             _ => panic!("Expected exactly one param")
         };
-        let mut session: Types::AuthNSession = get_out_session(
+        let session: DatagramCodecStream<
+            Types::OutMsg,
+            Types::Wrapper,
+            Types::AuthNSession,
+            Types::Encoder,
+            Types::Decoder
+        > = get_out_session(
             &mut entry,
             &mut client_nscaches,
             &mut poll,
@@ -6847,7 +6860,8 @@ fn entry_test<Types, Ctx>(
             &param,
             &out_param
         );
-        let peer_addr = session.get().peer_addr().expect("Expected success");
+        let mut session = session.into_inner();
+        let peer_addr = session.peer_addr().expect("Expected success");
 
         assert!(!entry.is_shutdown());
         assert!(!entry.is_shutdown_safe());
@@ -6857,7 +6871,7 @@ fn entry_test<Types, Ctx>(
             &mut entry,
             &mut client_nscaches,
             &mut poll,
-            session.get_mut(),
+            &mut session,
             &FIRST_BYTES,
             &peer_addr
         )
@@ -6868,7 +6882,7 @@ fn entry_test<Types, Ctx>(
             &mut entry,
             &mut client_nscaches,
             &mut poll,
-            session.get_mut(),
+            &mut session,
             &mut buf,
             &peer_addr
         )

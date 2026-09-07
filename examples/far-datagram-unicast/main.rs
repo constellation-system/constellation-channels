@@ -261,6 +261,8 @@ type ExampleServerPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     Vec<u8>,
     Vec<u8>,
     Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -277,6 +279,8 @@ type ExampleClientPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     Vec<u8>,
     Vec<u8>,
     Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -294,7 +298,8 @@ fn server(conf: &str) {
         FarChannelsConfig<
             CompoundFarChannelConfig, (),
             CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                    PassthruDatagramXfrmParam>
+                                    PassthruDatagramXfrmParam>,
+            (), ()
         >,
         PrivateDatagramModeConfig,
         PartyConfig<ResolverConfig, (), String, CompoundFarEndpoint>,
@@ -328,7 +333,8 @@ fn client(conf: &str) {
         FarChannelsConfig<
             CompoundFarChannelConfig, (),
             CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                    PassthruDatagramXfrmParam>
+                                    PassthruDatagramXfrmParam>,
+            (), ()
         >,
         PrivateDatagramModeConfig,
         PartyConfig<ResolverConfig, (), String, CompoundFarEndpoint>,
@@ -369,8 +375,8 @@ fn main() {
     let conf = std::fs::read_to_string(&args[2]).unwrap();
 
     match args[1].as_str() {
-        "client" => client(&conf),
-        "server" => server(&conf),
+//        "client" => client(&conf),
+//        "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);
