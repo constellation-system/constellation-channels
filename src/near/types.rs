@@ -161,9 +161,7 @@ pub trait NearDuplexNegoTypes {
     type Encoder: Encoder<Self::OutMsg>
         + Create<Config = Self::EncoderConfig,
                  CreateError = Self::EncoderCreateError>;
-    type AuthNChan: Read + Write
-        + Session<PeerAddr = Self::OutEndpoint>
-        + AuthNedDestruct<
+    type AuthNChan: AuthNedDestruct<
             Self::Prin,
             RefCellStream<DatagramCodecStream<
                 Self::OutMsg,
@@ -411,9 +409,7 @@ where
         EncoderCreateError = In::EncoderCreateError,
         Encoder = In::Encoder,
     >,
-    AuthNChan: Read + Write
-        + Session<PeerAddr = Out::Endpoint>
-        + AuthNedDestruct<
+    AuthNChan: AuthNedDestruct<
             In::Prin,
             RefCellStream<DatagramCodecStream<
                 In::OutMsg,
@@ -1130,9 +1126,7 @@ where
         EncoderCreateError = In::EncoderCreateError,
         Encoder = In::Encoder,
     >,
-    AuthNChan: Read + Write
-        + Session<PeerAddr = Out::Endpoint>
-        + AuthNedDestruct<
+    AuthNChan: AuthNedDestruct<
             In::Prin,
             RefCellStream<DatagramCodecStream<
                 In::OutMsg,
@@ -1142,7 +1136,7 @@ where
                     Out::Conn,
                 >,
                 In::Encoder,
-                Out::Decoder
+                In::Decoder
             >>
         >,
     Out::Endpoint: From<In::Endpoint>,

@@ -36,6 +36,7 @@ use std::vec::IntoIter;
 use constellation_auth::authn::AuthNResult;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::AuthNedDestruct;
+use constellation_auth::authn::AuthNedMap;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::config::Create;
 use constellation_common::config::CreateWithParam;
@@ -410,7 +411,8 @@ pub enum ConnectorEntryCreateError<Start, Nego, Enc, Dec> {
     Start { err: Start },
     Nego { err: Nego },
     Encoder { err: Enc },
-    Decoder { err: Dec }
+    Decoder { err: Dec },
+    IO { err: std::io::Error },
 }
 
 #[derive(Debug)]
@@ -1214,7 +1216,7 @@ where
     ///
     /// - `RetryResult::Success((self, None))`: If negotiations could not be
     ///   concluded, or concluded but did not yield a session.
-    fn create(
+    fn create<AuthNChan, InConn>(
         registry: &Registry,
         mut channel: Types::Channel,
         authn: &Types::AuthN,
@@ -1224,16 +1226,7 @@ where
         req_endpoint: Types::Endpoint,
         token: Token
     ) -> Result<
-        RetryResult<(
-            Self,
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::AuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>
-        )>,
+        RetryResult<(Self, Option<(AuthNChan, Types::Endpoint)>)>,
         ConnectorEntryCreateError<
             Types::SessionStartError,
             SessionCreateError<
@@ -1252,7 +1245,36 @@ where
             Types::EncoderCreateError,
             Types::DecoderCreateError
         >
-    > {
+    >
+    where
+        AuthNChan: AuthNedDestruct<
+            Types::Prin,
+            RefCellStream<DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                DuplexValue<
+                    InConn,
+                    Types::Conn,
+                >,
+                Types::Encoder,
+                Types::Decoder
+            >>
+        >,
+        Types::AuthNSession: AuthNedMap<
+            Types::Prin, Types::Conn,
+            RefCellStream<DatagramCodecStream<
+                Types::OutMsg,
+                Types::Wrapper,
+                DuplexValue<
+                    InConn,
+                    Types::Conn,
+                >,
+                Types::Encoder,
+                Types::Decoder
+            >>,
+            AuthNChan,
+        >,
+        InConn: Read + Write {
         trace!(target: "connector-entry",
                "creating connector entry with {}",
                channel.endpoint());
@@ -1276,6 +1298,10 @@ where
                         |err| ConnectorEntryCreateError::Nego { err: err }
                     )?
                     .map(|session| {
+                        let session: Types::AuthNSession = session;
+                        let endpoint = session.peer_addr().map_err(|err| {
+                            ConnectorEntryCreateError::IO { err: err }
+                        })?;
                         let encoder = Types::Encoder::create(
                             encoder_config.clone()
                         ).map_err(|err| ConnectorEntryCreateError::Encoder {
@@ -1286,10 +1312,16 @@ where
                         ).map_err(|err| ConnectorEntryCreateError::Decoder {
                             err: err
                         })?;
+                        let chan = session.map(|stream| {
+                            let stream = DuplexValue::Conn(stream);
+                            let out = DatagramCodecStream::create(
+                                encoder, decoder, stream
+                            );
 
-                        Ok(DatagramCodecStream::create(
-                            encoder, decoder, session
-                        ))
+                            RefCellStream::new(out)
+                        });
+
+                        Ok((chan, endpoint))
                     }).transpose()?;
 
                 Ok((entry, session))
@@ -1810,25 +1842,7 @@ fn start_incoming<Ctx, S, Types>(
                             Types::DecoderCreateError>
 >
 where
-    S: FnMut(
-        DuplexValue<
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::InAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >,
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::OutAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >
-        >,
-        Types::OutEndpoint
-    ),
+    S: FnMut(Types::AuthNChan, Types::OutEndpoint),
     Types: NearDuplexNegoTypes,
     Ctx: RegistryCtx + TokensCtx {
     if when.is_none_or(|when| when <= Instant::now()) {
@@ -1906,10 +1920,14 @@ where
                         ).map_err(|err| ChannelEntryListenError::Decoder {
                             err: err
                         })?;
-                        let session = DatagramCodecStream::create(
-                            encoder, decoder, session
-                        );
-                        let session = DuplexValue::Accept(session);
+                        let session = session.map(|stream| {
+                            let stream = DuplexValue::Accept(stream);
+                            let out = DatagramCodecStream::create(
+                                encoder, decoder, stream
+                            );
+
+                            RefCellStream::new(out)
+                        });
 
                         report_session(session, endpoint.into());
                     }
@@ -2103,16 +2121,7 @@ where
         endpoint: Types::OutEndpoint,
         param: Types::OutParam
     ) -> Result<
-        RetryResult<(
-            Token,
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::OutAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>
-        )>,
+        RetryResult<(Token, Option<Types::AuthNChan>)>,
         ChannelEntryReqError<
             Types::OutCreateError,
             ConnectorEntryCreateError<
@@ -2175,27 +2184,20 @@ where
                 ChannelEntryReqError::Entry { err: err }
             })?
             .map_ok(|(ent, out)| {
-                let out: Option<DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::OutAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >> = out;
+                let out: Option<(Types::AuthNChan, Types::OutEndpoint)> = out;
 
                 trace!(target: "duplex-channel-mode",
                           "connector entry created for {}",
                           endpoint);
 
                 self.insert_out_ent(
-                    out.as_ref(),
+                    out.as_ref().map(|(_, endpoint)| endpoint),
                     ent,
                     endpoint,
                     token
-                )
-                    .map_err(|err| ChannelEntryReqError::IO { err: err })?;
+                );
 
-                Ok((token, out))
+                Ok((token, out.map(|(session, _)| session)))
             })
         } else {
             Err(ChannelEntryReqError::Collision)
@@ -2246,25 +2248,7 @@ where
                                 Types::DecoderCreateError>
     >
     where
-        S: FnMut(
-            DuplexValue<
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::InAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >,
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::OutAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >
-            >,
-            Types::OutEndpoint
-        ),
+        S: FnMut(Types::AuthNChan, Types::OutEndpoint),
         E: FnMut(Types::OutEndpoint),
         Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
@@ -2293,26 +2277,22 @@ where
                             // Session was produced; record it.
                             Ok(RetryResult::Success(res)) => match res {
                                 StepResult::Create { session } => {
-                                    // Need to insert the extra token
-                                    // entry.
-                                    Self::insert_out_ent_extra(
-                                        &mut self.conn_tokens,
-                                        &session,
-                                        &ent.req_endpoint,
-                                        *token
-                                    )
-                                        .map_err(|err| {
-                                            ChannelEntryListenError::IO {
-                                                err: err
-                                            }
-                                        })?;
-
                                     let endpoint = session.peer_addr()
                                         .map_err(|err| {
                                             ChannelEntryListenError::IO {
                                                 err: err
                                             }
                                         })?;
+
+                                    // Need to insert the extra token
+                                    // entry.
+                                    Self::insert_out_ent_extra(
+                                        &mut self.conn_tokens,
+                                        &endpoint,
+                                        &ent.req_endpoint,
+                                        *token
+                                    );
+
                                     let encoder = Types::Encoder::create(
                                         encoder_config.clone()
                                     ).map_err(|err| {
@@ -2327,10 +2307,14 @@ where
                                             err: err
                                         }
                                     })?;
-                                    let session = DatagramCodecStream::create(
-                                        encoder, decoder, session
-                                    );
-                                    let session = DuplexValue::Conn(session);
+                                    let session = session.map(|stream| {
+                                        let stream = DuplexValue::Conn(stream);
+                                        let out = DatagramCodecStream::create(
+                                            encoder, decoder, stream
+                                        );
+
+                                        RefCellStream::new(out)
+                                    });
 
                                     report_session(session, endpoint);
                                 }
@@ -2395,10 +2379,14 @@ where
                                         err: err
                                     }
                                 })?;
-                                let session = DatagramCodecStream::create(
-                                    encoder, decoder, session
-                                );
-                                let session = DuplexValue::Accept(session);
+                                let session = session.map(|stream| {
+                                    let stream = DuplexValue::Accept(stream);
+                                    let out = DatagramCodecStream::create(
+                                        encoder, decoder, stream
+                                    );
+
+                                    RefCellStream::new(out)
+                                });
 
                                 Self::insert_in_ent_token(
                                     &mut self.accept_tokens,
@@ -2711,17 +2699,11 @@ where
 
     fn insert_out_ent(
         &mut self,
-        session: Option<&DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::OutAuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >>,
+        session_endpoint: Option<&Types::OutEndpoint>,
         ent: ConnectorEntry<Types::Outbound>,
         endpoint: Types::OutEndpoint,
         token: Token
-    ) -> Result<(), std::io::Error> {
+    ) {
         let ent = DuplexValue::Conn(ent);
 
         trace!(target: "duplex-channel-mode",
@@ -2736,13 +2718,13 @@ where
 
         // We also need to check to see if the address reported by the
         // session differs from the one used to connect.
-        if let Some(session) = &session {
+        if let Some(session) = session_endpoint {
             Self::insert_out_ent_extra(
                 &mut self.conn_tokens,
-                session.inner(),
+                session,
                 &endpoint,
                 token
-            )?
+            )
         }
 
         trace!(target: "duplex-channel-mode",
@@ -2754,19 +2736,15 @@ where
                    "sessions table contains {:?}",
                    token);
         }
-
-        Ok(())
     }
 
     fn insert_out_ent_extra(
         conn_tokens: &mut HashMap<Types::OutEndpoint, Token>,
-        session: &Types::OutAuthNSession,
+        session_endpoint: &Types::OutEndpoint,
         endpoint: &Types::OutEndpoint,
         token: Token
-    ) -> Result<(), std::io::Error> {
-        let session_endpoint = session.peer_addr()?;
-
-        if &session_endpoint != endpoint {
+    ) {
+        if session_endpoint != endpoint {
             trace!(target: "duplex-channel-mode",
                    "adding extra tokens entry for {} to token {:?}",
                    session_endpoint, token);
@@ -2779,8 +2757,6 @@ where
                        endpoint, token);
             }
         }
-
-        Ok(())
     }
 
     fn remove_out_ent_token(
@@ -3005,16 +2981,7 @@ where
         endpoint: Types::OutEndpoint,
         param: Types::OutParam
     ) -> Result<
-        RetryResult<(
-            Token,
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::OutAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>
-        )>,
+        RetryResult<(Token, Option<Types::AuthNChan>)>,
         ChannelEntryReqError<
             Types::OutCreateError,
             ConnectorEntryCreateError<
@@ -3081,27 +3048,20 @@ where
                 ChannelEntryReqError::Entry { err: err }
             })?
             .map_ok(|(ent, out)| {
-                let out: Option<DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::OutAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >> = out;
+                let out: Option<(Types::AuthNChan, Types::OutEndpoint)> = out;
 
                 trace!(target: "outbound-channel-mode",
                           "connector entry created for {}",
                           endpoint);
 
                 self.insert_out_ent(
-                    out.as_ref(),
+                    out.as_ref().map(|(_, endpoint)| endpoint),
                     ent,
                     endpoint,
                     token
-                )
-                    .map_err(|err| ChannelEntryReqError::IO { err: err })?;
+                );
 
-                Ok((token, out))
+                Ok((token, out.map(|(session, _)| session)))
             })
         } else {
             Err(ChannelEntryReqError::Collision)
@@ -3146,25 +3106,7 @@ where
                                 Types::DecoderCreateError>
     >
     where
-        S: FnMut(
-            DuplexValue<
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::InAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >,
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::OutAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >
-            >,
-            Types::OutEndpoint
-        ),
+        S: FnMut(Types::AuthNChan, Types::OutEndpoint),
         E: FnMut(Types::OutEndpoint) {
         let mut deletes: Option<Vec<Token>> = None;
         let len = self.negos.len();
@@ -3183,23 +3125,20 @@ where
                     // Session was produced; record it.
                     Ok(RetryResult::Success(res)) => match res {
                         StepResult::Create { session } => {
-                            // Need to insert the extra token
-                            // entry.
-                            Self::insert_out_ent_extra(
-                                &mut self.tokens,
-                                &session,
-                                &ent.req_endpoint,
-                                *token
-                            )
-                            .map_err(|err| {
-                                ChannelEntryListenError::IO { err: err }
-                            })?;
-
                             let endpoint = session
                                 .peer_addr()
                                 .map_err(|err| ChannelEntryListenError::IO {
                                     err: err
                                 })?;
+
+                            // Need to insert the extra token
+                            // entry.
+                            Self::insert_out_ent_extra(
+                                &mut self.tokens,
+                                &endpoint,
+                                &ent.req_endpoint,
+                                *token
+                            );
                             let encoder = Types::Encoder::create(
                                 encoder_config.clone()
                             ).map_err(|err| ChannelEntryListenError::Encoder {
@@ -3210,10 +3149,14 @@ where
                             ).map_err(|err| ChannelEntryListenError::Decoder {
                                 err: err
                             })?;
-                            let session = DatagramCodecStream::create(
-                                encoder, decoder, session
-                            );
-                            let session = DuplexValue::Conn(session);
+                            let session = session.map(|stream| {
+                                let stream = DuplexValue::Conn(stream);
+                                let out = DatagramCodecStream::create(
+                                    encoder, decoder, stream
+                                );
+
+                                RefCellStream::new(out)
+                            });
 
                             report_session(session, endpoint);
                         }
@@ -3374,17 +3317,11 @@ where
 
     fn insert_out_ent(
         &mut self,
-        session: Option<&DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::OutAuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >>,
+        session_endpoint: Option<&Types::OutEndpoint>,
         ent: ConnectorEntry<Types::Outbound>,
         endpoint: Types::OutEndpoint,
         token: Token
-    ) -> Result<(), std::io::Error> {
+    ) {
         trace!(target: "outbound-channel-mode",
                "adding tokens entry for {} to token {:?}",
                endpoint, token);
@@ -3397,13 +3334,13 @@ where
 
         // We also need to check to see if the address reported by the
         // session differs from the one used to connect.
-        if let Some(session) = &session {
+        if let Some(session_endpoint) = &session_endpoint {
             Self::insert_out_ent_extra(
                 &mut self.tokens,
-                session.inner(),
+                session_endpoint,
                 &endpoint,
                 token
-            )?
+            )
         }
 
         trace!(target: "outbound-channel-mode",
@@ -3415,19 +3352,15 @@ where
                    "sessions table contains {:?}",
                    token);
         }
-
-        Ok(())
     }
 
     fn insert_out_ent_extra(
         conn_tokens: &mut HashMap<Types::OutEndpoint, Token>,
-        session: &Types::OutAuthNSession,
+        session_endpoint: &Types::OutEndpoint,
         endpoint: &Types::OutEndpoint,
         token: Token
-    ) -> Result<(), std::io::Error> {
-        let session_endpoint = session.peer_addr()?;
-
-        if &session_endpoint != endpoint {
+    ) {
+        if session_endpoint != endpoint {
             trace!(target: "outbound-channel-mode",
                    "adding session tokens entry for {} to token {:?}",
                    session_endpoint, token);
@@ -3440,8 +3373,6 @@ where
                        endpoint, token);
             }
         }
-
-        Ok(())
     }
 
     fn remove_out_ent_token(
@@ -3622,25 +3553,7 @@ where
                                 Types::DecoderCreateError>
     >
     where
-        S: FnMut(
-            DuplexValue<
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::InAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >,
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::OutAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >
-            >,
-            Types::OutEndpoint
-        ),
+        S: FnMut(Types::AuthNChan, Types::OutEndpoint),
         E: FnMut(Types::OutEndpoint),
         Ctx: RegistryCtx + TokensCtx {
         let mut creates = HashSet::with_capacity(self.negos.len());
@@ -3680,10 +3593,14 @@ where
                             ).map_err(|err| ChannelEntryListenError::Decoder {
                                 err: err
                             })?;
-                            let session = DatagramCodecStream::create(
-                                encoder, decoder, session
-                            );
-                            let session = DuplexValue::Accept(session);
+                            let session = session.map(|stream| {
+                                let stream = DuplexValue::Accept(stream);
+                                let out = DatagramCodecStream::create(
+                                    encoder, decoder, stream
+                                );
+
+                                RefCellStream::new(out)
+                            });
 
                             Self::insert_in_ent_token(
                                 &mut self.tokens,
@@ -4236,16 +4153,7 @@ where
         endpoint: Types::OutEndpoint,
         param: Types::OutParam
     ) -> Result<
-        RetryResult<(
-            Token,
-            Option<DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::OutAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >>,
-        )>,
+        RetryResult<(Token, Option<Types::AuthNChan>)>,
         ChannelEntryReqError<
             Types::OutCreateError,
             ConnectorEntryCreateError<
@@ -4333,25 +4241,7 @@ where
                                 Types::DecoderCreateError>
     >
     where
-        S: FnMut(
-            DuplexValue<
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::InAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >,
-                DatagramCodecStream<
-                    Types::OutMsg,
-                    Types::Wrapper,
-                    Types::OutAuthNSession,
-                    Types::Encoder,
-                    Types::Decoder
-                >
-            >,
-            Types::OutEndpoint
-        ),
+        S: FnMut(Types::AuthNChan, Types::OutEndpoint),
         E: FnMut(Types::OutEndpoint),
         Ctx: RegistryCtx + TokensCtx {
         match &mut self.mode {
@@ -4415,26 +4305,7 @@ where
     >
     where
         Ctx: RegistryCtx + TokensCtx {
-        let mut sessions: Option<
-            Vec<
-                DuplexValue<
-                    DatagramCodecStream<
-                        Types::OutMsg,
-                        Types::Wrapper,
-                        Types::InAuthNSession,
-                        Types::Encoder,
-                        Types::Decoder
-                    >,
-                    DatagramCodecStream<
-                        Types::OutMsg,
-                        Types::Wrapper,
-                        Types::OutAuthNSession,
-                        Types::Encoder,
-                        Types::Decoder
-                    >
-                >
-            >
-        > = None;
+        let mut sessions: Option<Vec<Types::AuthNChan>> = None;
         let (creates, deletes) = match &mut self.mode {
             ChannelMode::Duplex(ent) => {
                 let nnegos = ent.negos.len();
@@ -4540,30 +4411,39 @@ where
             let mut shutdowns: Option<HashSet<Token>> = None;
 
             for session in sessions.into_iter() {
-                let session = match session {
-                    DuplexValue::Conn(session) =>
-                        DuplexValue::Conn(session.into_inner()),
-                    DuplexValue::Accept(session) =>
-                        DuplexValue::Accept(session.into_inner()),
-                };
+                let (prin, session) = AuthNedDestruct::take(session);
 
-                if let Some(token) = self
-                    .shutdown_stream(ctx.registry(), session)
-                    .map_err(|err| {
-                        ChannelEntryShutdownListenError::Shutdown { err: err }
-                    })?
-                {
-                    match &mut shutdowns {
-                        Some(shutdowns) => {
-                            shutdowns.insert(token);
+                match session.into_inner() {
+                    Some(session) => {
+                        let session = session.into_inner();
+
+                        if let Some(token) = self
+                            .shutdown_stream(ctx.registry(), session)
+                            .map_err(|err| {
+                                ChannelEntryShutdownListenError::Shutdown {
+                                    err: err
+                                }
+                            })?
+                        {
+                            match &mut shutdowns {
+                                Some(shutdowns) => {
+                                    shutdowns.insert(token);
+                                }
+                                None => {
+                                    let mut set =
+                                        HashSet::with_capacity(nshutdowns);
+
+                                    set.insert(token);
+                                    shutdowns = Some(set)
+                                }
+                            }
                         }
-                        None => {
-                            let mut set = HashSet::with_capacity(nshutdowns);
-
-                            set.insert(token);
-
-                            shutdowns = Some(set)
-                        }
+                    }
+                    None => {
+                        error!(target: "channel-entry",
+                               "new channel with {} should only have one \
+                                reference",
+                               prin);
                     }
                 }
             }
@@ -4612,8 +4492,8 @@ where
         &mut self,
         registry: &Registry,
         stream: DuplexValue<
-            Types::InAuthNSession,
-            Types::OutAuthNSession
+            Types::InConn,
+            Types::OutConn
         >
     ) -> Result<
         Option<Token>,
@@ -4633,23 +4513,15 @@ where
     > {
         match (&mut self.mode, stream) {
             (ChannelMode::Duplex(ent), DuplexValue::Conn(stream)) => {
-                let (_, stream) = AuthNedDestruct::take(stream);
-
                 ent.shutdown_conn(registry, stream)
             }
             (ChannelMode::Duplex(ent), DuplexValue::Accept(stream)) => {
-                let (_, stream) = AuthNedDestruct::take(stream);
-
                 ent.shutdown_accept(registry, stream)
             }
             (ChannelMode::Outbound(ent), DuplexValue::Conn(stream)) => {
-                let (_, stream) = AuthNedDestruct::take(stream);
-
                 ent.shutdown_conn(registry, stream)
             }
             (ChannelMode::Inbound(ent), DuplexValue::Accept(stream)) => {
-                let (_, stream) = AuthNedDestruct::take(stream);
-
                 ent.shutdown_accept(registry, stream)
             }
             _ => Err(ChannelEntryShutdownError::Mismatch)
@@ -4752,22 +4624,7 @@ where
             Types::DecoderCreateError
         >
     >;
-    type Stream = RefCellStream<DuplexValue<
-        DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::InAuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >,
-        DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::OutAuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >
-    >>;
+    type Stream = Types::AuthNChan;
 
     #[inline]
     fn params<I>(
@@ -4803,9 +4660,6 @@ where
                           "tokens table contains entry for {:?} ({})",
                           token, curr);
                 }
-
-                let out = out
-                    .map(|out| RefCellStream::new(DuplexValue::Conn(out)));
 
                 (out, None, None)
             }))
@@ -4857,8 +4711,6 @@ where
             let (creates, deletes) = self.channels[id.0].listen(
                 ctx,
                 |session, peer_addr| {
-                    let session = RefCellStream::new(session);
-
                     sessions.push((peer_addr, id, NearChannelParam, session));
                 },
                 |endpoint| endpoints.push((endpoint, id, NearChannelParam)),
@@ -4938,22 +4790,7 @@ where
         ctx: &mut Ctx,
         channel: &NearChannelID,
         param: &Self::Param,
-        stream: RefCellStream<DuplexValue<
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::InAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >,
-            DatagramCodecStream<
-                Types::OutMsg,
-                Types::Wrapper,
-                Types::OutAuthNSession,
-                Types::Encoder,
-                Types::Decoder
-            >
-        >>
+        chan: Types::AuthNChan
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
@@ -4961,14 +4798,11 @@ where
         >,
         Self::ShutdownStreamError
     > {
-        match stream.into_inner() {
+        let (_, session) = AuthNedDestruct::take(chan);
+
+        match session.into_inner() {
             Some(stream) => {
-                let stream = match stream {
-                    DuplexValue::Conn(stream) =>
-                        DuplexValue::Conn(stream.into_inner()),
-                    DuplexValue::Accept(stream) =>
-                        DuplexValue::Accept(stream.into_inner()),
-                };
+                let stream = stream.into_inner();
 
                 if let Some(token) = self
                     .channels[channel.0]
@@ -6260,7 +6094,8 @@ where
             ConnectorEntryCreateError::Start { err } => err.scope(),
             ConnectorEntryCreateError::Nego { err } => err.scope(),
             ConnectorEntryCreateError::Encoder { err } => err.scope(),
-            ConnectorEntryCreateError::Decoder { err } => err.scope()
+            ConnectorEntryCreateError::Decoder { err } => err.scope(),
+            ConnectorEntryCreateError::IO { err } => err.scope(),
         }
     }
 }
@@ -6520,7 +6355,8 @@ where
             ConnectorEntryCreateError::Start { err } => err.fmt(f),
             ConnectorEntryCreateError::Nego { err } => err.fmt(f),
             ConnectorEntryCreateError::Encoder { err } => err.fmt(f),
-            ConnectorEntryCreateError::Decoder { err } => err.fmt(f)
+            ConnectorEntryCreateError::Decoder { err } => err.fmt(f),
+            ConnectorEntryCreateError::IO { err } => write!(f, "{}", err),
         }
     }
 }

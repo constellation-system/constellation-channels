@@ -1999,11 +1999,7 @@ where
         >
     >
     where
-        S: FnMut(
-            Types::AuthNChan,
-            Types::ChannelParam,
-            Types::PeerAddr
-        ),
+        S: FnMut(Types::AuthNChan, Types::ChannelParam, Types::PeerAddr),
         E: FnMut(Types::PeerAddr, Types::ChannelParam) {
         let mut endpoints = HashSet::new();
         let mut flows = Vec::new();
@@ -3090,11 +3086,7 @@ where
         >
     >
     where
-        S: FnMut(
-            Types::AuthNChan,
-            Types::ChannelParam,
-            Types::PeerAddr
-        ),
+        S: FnMut(Types::AuthNChan, Types::ChannelParam, Types::PeerAddr),
         E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: RegistryCtx + TokensCtx {
         self.refresh(ctx, channel, policy)
@@ -3905,11 +3897,7 @@ where
         >
     >
     where
-        S: FnMut(
-            Types::AuthNChan,
-            Types::ChannelParam,
-            Types::PeerAddr
-        ),
+        S: FnMut(Types::AuthNChan, Types::ChannelParam, Types::PeerAddr),
         E: FnMut(Types::PeerAddr, Types::ChannelParam),
         Ctx: NSNameCachesCtx + RegistryCtx + TokensCtx {
         match self.acquired.take().ok_or(ChannelEntryListenError::None)? {
