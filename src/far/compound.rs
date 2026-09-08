@@ -77,12 +77,12 @@ use mio::event::Source;
 
 use crate::addrs::SocketAddrPolicy;
 use crate::config::CompoundFarChannelConfig;
+use crate::config::CompoundFarChannelXfrmPeerAddr;
 use crate::config::CompoundFarEndpoint;
 use crate::config::CompoundFarIPChannelConfig;
-use crate::config::CompoundXfrmCreateParam;
-use crate::config::CompoundFarChannelXfrmPeerAddr;
 use crate::config::CompoundFarIPChannelXfrmPeerAddr;
 use crate::config::CompoundOutboundNegotiatorParam;
+use crate::config::CompoundXfrmCreateParam;
 use crate::config::ResolverConfig;
 use crate::config::tls::TLSLoadConfigError;
 use crate::config::tls::TLSPeerConfig;
@@ -1151,7 +1151,11 @@ pub enum CompoundFarIPChannelXfrmPeerAddrError {
 #[derive(Debug)]
 pub enum CompoundFarChannelSessionCredToBasicCredError {
     SSL {
-        err: Box<BasicCredFromSSLError<CompoundFarChannelSessionCredToBasicCredError>>
+        err: Box<
+            BasicCredFromSSLError<
+                CompoundFarChannelSessionCredToBasicCredError
+            >
+        >
     }
 }
 
@@ -1188,9 +1192,8 @@ where
             CompoundFlow::IP { flow } => {
                 let cred = flow.creds()?;
 
-                Ok(cred.map(|cred| CompoundFarChannelSessionCred::IP {
-                    ip: cred
-                }))
+                Ok(cred
+                    .map(|cred| CompoundFarChannelSessionCred::IP { ip: cred }))
             }
         }
     }
@@ -2239,22 +2242,28 @@ impl TryFrom<CompoundFarChannelSessionCred> for BasicCred {
                 basic: CompoundFarChannelXfrmPeerAddr::Unix { unix }
             } => Ok(BasicCred::Unix { addr: unix }),
             CompoundFarChannelSessionCred::Basic {
-                basic: CompoundFarChannelXfrmPeerAddr::IP {
-                    ip: CompoundFarIPChannelXfrmPeerAddr::UDP { udp }
-                }
-            } => Ok(BasicCred::IP { unsafe_addr: IPEndpoint::from(udp) }),
+                basic:
+                    CompoundFarChannelXfrmPeerAddr::IP {
+                        ip: CompoundFarIPChannelXfrmPeerAddr::UDP { udp }
+                    }
+            } => Ok(BasicCred::IP {
+                unsafe_addr: IPEndpoint::from(udp)
+            }),
             CompoundFarChannelSessionCred::Basic {
-                basic: CompoundFarChannelXfrmPeerAddr::IP {
-                    ip: CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 }
-                }
-            } => Ok(BasicCred::IP { unsafe_addr: socks5 }),
-            CompoundFarChannelSessionCred::DTLS { dtls } =>
-                BasicCred::try_from(*dtls)
-                .map_err(|err| {
+                basic:
+                    CompoundFarChannelXfrmPeerAddr::IP {
+                        ip: CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 }
+                    }
+            } => Ok(BasicCred::IP {
+                unsafe_addr: socks5
+            }),
+            CompoundFarChannelSessionCred::DTLS { dtls } => {
+                BasicCred::try_from(*dtls).map_err(|err| {
                     CompoundFarChannelSessionCredToBasicCredError::SSL {
                         err: Box::new(err)
                     }
-                }),
+                })
+            }
             CompoundFarChannelSessionCred::IP { ip } => BasicCred::try_from(ip)
         }
     }
@@ -2270,17 +2279,21 @@ impl TryFrom<CompoundFarIPChannelSessionCred> for BasicCred {
         match val {
             CompoundFarIPChannelSessionCred::Basic {
                 basic: CompoundFarIPChannelXfrmPeerAddr::UDP { udp }
-            } => Ok(BasicCred::IP { unsafe_addr: IPEndpoint::from(udp) }),
+            } => Ok(BasicCred::IP {
+                unsafe_addr: IPEndpoint::from(udp)
+            }),
             CompoundFarIPChannelSessionCred::Basic {
                 basic: CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 }
-            } => Ok(BasicCred::IP { unsafe_addr: socks5 }),
-            CompoundFarIPChannelSessionCred::DTLS { dtls } =>
-                BasicCred::try_from(*dtls)
-                .map_err(|err| {
+            } => Ok(BasicCred::IP {
+                unsafe_addr: socks5
+            }),
+            CompoundFarIPChannelSessionCred::DTLS { dtls } => {
+                BasicCred::try_from(*dtls).map_err(|err| {
                     CompoundFarChannelSessionCredToBasicCredError::SSL {
                         err: Box::new(err)
                     }
                 })
+            }
         }
     }
 }
@@ -2288,15 +2301,16 @@ impl TryFrom<CompoundFarIPChannelSessionCred> for BasicCred {
 impl From<CompoundFarChannelSessionCred> for NullCred {
     #[inline]
     fn from(_val: CompoundFarChannelSessionCred) -> NullCred {
-        NullCred::default()
+        NullCred
     }
 }
 
 impl ScopedError for CompoundFarChannelSessionCredToBasicCredError {
     fn scope(&self) -> ErrorScope {
         match self {
-            CompoundFarChannelSessionCredToBasicCredError::SSL { err } =>
+            CompoundFarChannelSessionCredToBasicCredError::SSL { err } => {
                 err.scope()
+            }
         }
     }
 }
@@ -5352,8 +5366,9 @@ impl Display for CompoundFarChannelSessionCredToBasicCredError {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundFarChannelSessionCredToBasicCredError::SSL { err } =>
+            CompoundFarChannelSessionCredToBasicCredError::SSL { err } => {
                 write!(f, "{}", err)
+            }
         }
     }
 }

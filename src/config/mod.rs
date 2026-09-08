@@ -65,7 +65,6 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
 use constellation_common::unix::UnixSocketPath;
-use constellation_streams::select::OutboundEndpointConfig;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -1430,9 +1429,9 @@ pub struct FlowsConfig {
 #[serde(rename = "near-channels-outbound-entry")]
 #[serde(rename_all = "kebab-case")]
 pub struct NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
-{
+where
+    Enc: Default,
+    Dec: Default {
     /// Channel ID.
     id: String,
     /// Outbound connector configuration.
@@ -1459,9 +1458,9 @@ where Enc: Default,
 #[serde(rename = "near-channels-inbound-entry")]
 #[serde(rename_all = "kebab-case")]
 pub struct NearChannelInboundEntryConfig<In, AuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
-{
+where
+    Enc: Default,
+    Dec: Default {
     /// Channel ID.
     id: String,
     /// Inbound acceptor configuration.
@@ -1488,9 +1487,9 @@ where Enc: Default,
 #[serde(rename = "near-channels-duplex-entry")]
 #[serde(rename_all = "kebab-case")]
 pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
-{
+where
+    Enc: Default,
+    Dec: Default {
     /// Channel ID.
     id: String,
     /// Inbound acceptor configuration.
@@ -1523,9 +1522,9 @@ where Enc: Default,
 #[serde(rename = "near-channels-entry")]
 #[serde(untagged)]
 pub enum NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
-{
+where
+    Enc: Default,
+    Dec: Default {
     Inbound {
         inbound: NearChannelInboundEntryConfig<In, InAuthN, Enc, Dec>
     },
@@ -1533,7 +1532,8 @@ where Enc: Default,
         outbound: NearChannelOutboundEntryConfig<Out, OutAuthN, Enc, Dec>
     },
     Duplex {
-        duplex: NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+        duplex:
+            NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
     }
 }
 
@@ -1541,9 +1541,9 @@ where Enc: Default,
 #[serde(rename = "near-channels-config")]
 #[serde(rename_all = "kebab-case")]
 pub struct NearChannelsConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
-{
+where
+    Enc: Default,
+    Dec: Default {
     /// Configuration of all channels.
     channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
     /// Default authentication configuration.
@@ -3149,7 +3149,6 @@ impl From<IPEndpoint> for CompoundFarEndpoint {
     }
 }
 
-
 impl From<IPEndpoint> for CompoundNearEndpoint {
     #[inline]
     fn from(val: IPEndpoint) -> Self {
@@ -3246,8 +3245,9 @@ impl FlowsConfig {
 
 impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
     NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
+where
+    Enc: Default,
+    Dec: Default
 {
     pub fn name(&self) -> &str {
         match self {
@@ -3260,12 +3260,15 @@ where Enc: Default,
 
 impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
     NearChannelsConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
+where
+    Enc: Default,
+    Dec: Default
 {
     #[inline]
     pub fn new(
-        channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
+        channels: Vec<
+            NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+        >,
         default_inbound_authn: InAuthN,
         default_outbound_authn: OutAuthN,
         default_encoder: Enc,
@@ -3351,8 +3354,9 @@ where Enc: Default,
 
 impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
     NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
+where
+    Enc: Default,
+    Dec: Default
 {
     #[inline]
     pub fn new(
@@ -3461,8 +3465,9 @@ where Enc: Default,
 }
 
 impl<In, AuthN, Enc, Dec> NearChannelInboundEntryConfig<In, AuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
+where
+    Enc: Default,
+    Dec: Default
 {
     #[inline]
     pub fn new(
@@ -3523,8 +3528,15 @@ where Enc: Default,
     #[inline]
     pub fn take(
         self
-    ) -> (String, In, Option<AuthN>, Option<Enc>,
-          Option<Dec>, Option<Retry>, Option<usize>) {
+    ) -> (
+        String,
+        In,
+        Option<AuthN>,
+        Option<Enc>,
+        Option<Dec>,
+        Option<Retry>,
+        Option<usize>
+    ) {
         (
             self.id,
             self.listen,
@@ -3541,10 +3553,10 @@ where Enc: Default,
     }
 }
 
-impl<Out, AuthN, Enc, Dec>
-    NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
-where Enc: Default,
-      Dec: Default
+impl<Out, AuthN, Enc, Dec> NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default
 {
     #[inline]
     pub fn new(
@@ -3605,8 +3617,15 @@ where Enc: Default,
     #[inline]
     pub fn take(
         self
-    ) -> (String, Out, Option<AuthN>, Option<Enc>,
-          Option<Dec>, Option<Retry>, Option<usize>) {
+    ) -> (
+        String,
+        Out,
+        Option<AuthN>,
+        Option<Enc>,
+        Option<Dec>,
+        Option<Retry>,
+        Option<usize>
+    ) {
         (
             self.id,
             self.connect,
@@ -4917,7 +4936,6 @@ impl UnixNearChannelConfig {
     }
 }
 
-
 impl Display for CompoundFarIPChannelXfrmPeerAddr {
     fn fmt(
         &self,
@@ -4954,11 +4972,10 @@ impl Display for CompoundFarEndpoint {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundFarEndpoint::Unix { unix_datagram } =>
-                write!(f, "unix-datagram://{}",
-                       unix_datagram.to_string_lossy()),
-            CompoundFarEndpoint::UDP { udp } =>
-                write!(f, "udp://{}", udp)
+            CompoundFarEndpoint::Unix { unix_datagram } => {
+                write!(f, "unix-datagram://{}", unix_datagram.to_string_lossy())
+            }
+            CompoundFarEndpoint::UDP { udp } => write!(f, "udp://{}", udp)
         }
     }
 }

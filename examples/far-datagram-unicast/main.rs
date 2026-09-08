@@ -30,21 +30,21 @@ use std::time::Instant;
 use constellation_auth::authn::AuthNMsgRecv;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::BasicAuthNed;
-use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::authn::PassthruMsgAuthN;
-use constellation_channels::config::FarChannelsConfig;
+use constellation_auth::authn::basic::BasicAuthN;
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundFarEndpoint;
 use constellation_channels::config::CompoundXfrmCreateParam;
+use constellation_channels::config::FarChannelsConfig;
 use constellation_channels::config::ResolverConfig;
 use constellation_channels::far::types::CompoundFarChannelsDatagramSelectorPollTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::codec::test::TestBytesCodec;
-use constellation_common::error::MutexPoison;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::ids::AscendingCount;
 use constellation_common::net::PassthruDatagramXfrm;
@@ -157,8 +157,7 @@ impl PrivateMsgs<Vec<u8>> for ExampleServerMsgs {
     }
 }
 
-impl<AuthMsg> AuthNMsgRecv<String, Vec<u8>, AuthMsg>
-    for ExampleClientRecv
+impl<AuthMsg> AuthNMsgRecv<String, Vec<u8>, AuthMsg> for ExampleClientRecv
 where
     AuthMsg: AuthNed<String, Vec<u8>>
 {
@@ -179,8 +178,7 @@ where
     }
 }
 
-impl<AuthMsg> AuthNMsgRecv<String, Vec<u8>, AuthMsg>
-    for ExampleServerRecv
+impl<AuthMsg> AuthNMsgRecv<String, Vec<u8>, AuthMsg> for ExampleServerRecv
 where
     AuthMsg: AuthNed<String, Vec<u8>>
 {
@@ -268,8 +266,7 @@ type ExampleServerPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     PassthruDatagramXfrm<UnixSocketPath>,
     PassthruDatagramXfrm<SocketAddr>,
     AscendingCount<u128>,
-    MixedResolver<CompoundFarChannelXfrmPeerAddr,
-                  CompoundFarEndpoint>,
+    MixedResolver<CompoundFarChannelXfrmPeerAddr, CompoundFarEndpoint>,
     ExampleServerMsgs,
     ExampleServerRecv,
     ExampleCtx<SharedNSNameCaches>
@@ -286,8 +283,7 @@ type ExampleClientPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     PassthruDatagramXfrm<UnixSocketPath>,
     PassthruDatagramXfrm<SocketAddr>,
     AscendingCount<u128>,
-    MixedResolver<CompoundFarChannelXfrmPeerAddr,
-                  CompoundFarEndpoint>,
+    MixedResolver<CompoundFarChannelXfrmPeerAddr, CompoundFarEndpoint>,
     ExampleClientMsgs,
     ExampleClientRecv,
     ExampleCtx<SharedNSNameCaches>
@@ -296,19 +292,21 @@ type ExampleClientPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
 fn server(conf: &str) {
     let poll_config: PollThreadConfig<
         FarChannelsConfig<
-            CompoundFarChannelConfig, (),
-            CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                    PassthruDatagramXfrmParam>,
-            (), ()
+            CompoundFarChannelConfig,
+            (),
+            CompoundXfrmCreateParam<
+                PassthruDatagramXfrmParam,
+                PassthruDatagramXfrmParam
+            >,
+            (),
+            ()
         >,
         PrivateDatagramModeConfig,
         PartyConfig<ResolverConfig, (), String, CompoundFarEndpoint>,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
-    let recv = ExampleServerRecv {
-        live: live.clone()
-    };
+    let recv = ExampleServerRecv { live: live.clone() };
     let msgs = ExampleServerMsgs {
         live: live,
         sent: false
@@ -319,11 +317,13 @@ fn server(conf: &str) {
         poll: Poll::new().expect("Expected success")
     };
     let self_party: Option<String> = None;
-    let poll: JoinHandle<()> =
-        PollThread::<ExampleCtx<SharedNSNameCaches>,
-                     ExampleServerPollTypes>::start(
-            poll_config, self_party, ctx, recv, msgs
-        ).unwrap();
+    let poll: JoinHandle<()> = PollThread::<
+        ExampleCtx<SharedNSNameCaches>,
+        ExampleServerPollTypes
+    >::start(
+        poll_config, self_party, ctx, recv, msgs
+    )
+    .unwrap();
 
     poll.join().unwrap();
 }
@@ -331,19 +331,21 @@ fn server(conf: &str) {
 fn client(conf: &str) {
     let poll_config: PollThreadConfig<
         FarChannelsConfig<
-            CompoundFarChannelConfig, (),
-            CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                    PassthruDatagramXfrmParam>,
-            (), ()
+            CompoundFarChannelConfig,
+            (),
+            CompoundXfrmCreateParam<
+                PassthruDatagramXfrmParam,
+                PassthruDatagramXfrmParam
+            >,
+            (),
+            ()
         >,
         PrivateDatagramModeConfig,
         PartyConfig<ResolverConfig, (), String, CompoundFarEndpoint>,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
-    let recv = ExampleServerRecv {
-        live: live.clone()
-    };
+    let recv = ExampleServerRecv { live: live.clone() };
     let msgs = ExampleClientMsgs {
         live: live,
         retry: Retry::default(),
@@ -361,8 +363,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() != 3 {
-        eprintln!("Usage: {} [client| server] <config>",
-                  args[0]);
+        eprintln!("Usage: {} [client| server] <config>", args[0]);
 
         std::process::exit(1);
     }
@@ -375,8 +376,8 @@ fn main() {
     let conf = std::fs::read_to_string(&args[2]).unwrap();
 
     match args[1].as_str() {
-//        "client" => client(&conf),
-//        "server" => server(&conf),
+        //        "client" => client(&conf),
+        //        "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);

@@ -17,7 +17,6 @@
 // <https://www.gnu.org/licenses/>.
 
 use std::collections::HashSet;
-use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -29,11 +28,11 @@ use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundOutboundNegotiatorParam;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FarChannelsConfig;
-use constellation_channels::far::types::CompoundFarChannelsTypes;
-use constellation_channels::far::channels::FarChannels;
 use constellation_channels::far::channels::FarChannelID;
-use constellation_channels::far::compound::CompoundFlow;
+use constellation_channels::far::channels::FarChannels;
 use constellation_channels::far::compound::CompoundFarChannelParam;
+use constellation_channels::far::compound::CompoundFlow;
+use constellation_channels::far::types::CompoundFarChannelsTypes;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::codec::test::TestBytesCodec;
@@ -92,6 +91,21 @@ type ExampleFarChannelsTypes = CompoundFarChannelsTypes<
             PassthruDatagramXfrm<SocketAddr>
         >
     >,
+    BasicAuthNed<
+        NullCred,
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                CompoundFlow<
+                    PassthruDatagramXfrm<UnixSocketPath>,
+                    PassthruDatagramXfrm<SocketAddr>
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
+    >,
     PassthruDatagramXfrm<UnixSocketPath>,
     PassthruDatagramXfrm<SocketAddr>,
     Vec<u8>,
@@ -140,72 +154,87 @@ where
     }
 }
 
-fn read<R>(
+fn read(
     ctx: &mut ExampleCtx<SharedNSNameCaches>,
     events: &mut Events,
     channels: &mut FarChannels<ExampleFarChannelsTypes>,
-    stream: &mut RefCellStream<DatagramCodecStream<
-        Vec<u8>,
-        Vec<u8>,
-        BasicAuthNed<NullCred, R>,
-        TestBytesCodec,
-        TestBytesCodec
-    >>,
+    stream: &mut BasicAuthNed<
+        NullCred,
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                CompoundFlow<
+                    PassthruDatagramXfrm<UnixSocketPath>,
+                    PassthruDatagramXfrm<SocketAddr>
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
+    >,
     addr: CompoundFarChannelXfrmPeerAddr,
     channel_id: FarChannelID,
     channel_param: CompoundFarChannelParam
-) -> Vec<u8>
-where R: Read
-{
+) -> Vec<u8> {
     loop {
         trace!(target: "read",
                "attempting to read");
 
         match stream.pull() {
             Ok(out) => return out,
-            Err(err) => if err.scope() != ErrorScope::WouldBlock {
-                panic!("{}", err)
-            } else {
-                // Obtain the incoming session
-                while {
-                    let mut ready = false;
+            Err(err) => {
+                if err.scope() != ErrorScope::WouldBlock {
+                    panic!("{}", err)
+                } else {
+                    // Obtain the incoming session
+                    while {
+                        let mut ready = false;
 
-                    trace!(target: "read",
+                        trace!(target: "read",
                            "poll wait");
 
-                    ctx.poll.poll(events, None).unwrap();
+                        ctx.poll.poll(events, None).unwrap();
 
-                    let live: HashSet<Token> =
-                        events.iter().map(|event| event.token()).collect();
+                        let live: HashSet<Token> =
+                            events.iter().map(|event| event.token()).collect();
 
-                    match channels.listen(ctx, &live).unwrap() {
-                        RetryResult::Success((streams, endpoints, _, _)) => {
-                            for _ in streams {
-                                panic!("Should not see incoming sessions")
+                        match channels.listen(ctx, &live).unwrap() {
+                            RetryResult::Success((
+                                streams,
+                                endpoints,
+                                _,
+                                _
+                            )) => {
+                                for _ in streams {
+                                    panic!("Should not see incoming sessions")
+                                }
+
+                                for (in_addr, in_chan_id, in_param) in endpoints
+                                {
+                                    if addr == in_addr &&
+                                        channel_param == in_param &&
+                                        channel_id == in_chan_id
+                                    {
+                                        ready = true;
+                                    } else {
+                                        panic!("Unexpected messages")
+                                    }
+                                }
                             }
+                            RetryResult::Retry(retry) => {
+                                let when = retry.when();
+                                let now = Instant::now();
 
-                            for (in_addr, in_chan_id, in_param) in endpoints {
-                                if addr == in_addr &&
-                                    channel_param == in_param &&
-                                    channel_id == in_chan_id {
-                                    ready = true;
-                                } else {
-                                    panic!("Unexpected messages")
+                                if now < when {
+                                    std::thread::sleep(when - now)
                                 }
                             }
                         }
-                        RetryResult::Retry(retry) => {
-                            let when = retry.when();
-                            let now = Instant::now();
 
-                            if now < when {
-                                std::thread::sleep(when - now)
-                            }
-                        }
-                    }
-
-                    !ready
-                } {}
+                        !ready
+                    } {}
+                }
             }
         }
     }
@@ -213,9 +242,12 @@ where R: Read
 
 fn server(conf: &str) {
     let server_config: FarChannelsConfig<
-        CompoundFarChannelConfig, (),
-        CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                PassthruDatagramXfrmParam>,
+        CompoundFarChannelConfig,
+        (),
+        CompoundXfrmCreateParam<
+            PassthruDatagramXfrmParam,
+            PassthruDatagramXfrmParam
+        >,
         (),
         ()
     > = yaml_serde::from_str(conf).unwrap();
@@ -265,8 +297,15 @@ fn server(conf: &str) {
           "reading message");
 
     let (addr, channel_id, channel_param, mut stream) = session.unwrap();
-    let buf = read(&mut ctx, &mut events, &mut channels, &mut stream,
-                   addr, channel_id, channel_param);
+    let buf = read(
+        &mut ctx,
+        &mut events,
+        &mut channels,
+        &mut stream,
+        addr,
+        channel_id,
+        channel_param
+    );
 
     info!(target: "server",
           "received {:?}", buf);
@@ -274,7 +313,8 @@ fn server(conf: &str) {
     info!(target: "server",
           "sending message {:?}", &SECOND_BYTES);
 
-    stream.push(&mut ctx, &SECOND_BYTES.to_vec())
+    stream
+        .push(&mut ctx, &SECOND_BYTES.to_vec())
         .expect("Expected success");
 
     assert_eq!(FIRST_BYTES.len(), buf.len());
@@ -286,11 +326,18 @@ fn client(
     endpoint: &str
 ) {
     let endpoint: ClientEndpoint = yaml_serde::from_str(endpoint).unwrap();
-    let ClientEndpoint { channel, addr, param: negoparam } = endpoint;
+    let ClientEndpoint {
+        channel,
+        addr,
+        param: negoparam
+    } = endpoint;
     let client_config: FarChannelsConfig<
-        CompoundFarChannelConfig, (),
-        CompoundXfrmCreateParam<PassthruDatagramXfrmParam,
-                                PassthruDatagramXfrmParam>,
+        CompoundFarChannelConfig,
+        (),
+        CompoundXfrmCreateParam<
+            PassthruDatagramXfrmParam,
+            PassthruDatagramXfrmParam
+        >,
         (),
         ()
     > = yaml_serde::from_str(conf).unwrap();
@@ -308,7 +355,8 @@ fn client(
 
     for (id, params) in channels
         .params(&mut ctx, [channel_id.clone()].into_iter())
-        .unwrap() {
+        .unwrap()
+    {
         assert_eq!(id, channel_id);
 
         let params = if let RetryResult::Success((params, _)) = params {
@@ -330,8 +378,16 @@ fn client(
           "requesting stream");
 
     while session.is_none() {
-        match channels.req_stream(&mut ctx, &channel_id, &channel_param,
-                                  &addr, &negoparam).unwrap() {
+        match channels
+            .req_stream(
+                &mut ctx,
+                &channel_id,
+                &channel_param,
+                &addr,
+                &negoparam
+            )
+            .unwrap()
+        {
             RetryResult::Success((newsession, _, _)) => {
                 session = newsession;
             }
@@ -351,14 +407,22 @@ fn client(
     info!(target: "client",
           "sending message {:?}", FIRST_BYTES);
 
-    stream.push(&mut ctx, &FIRST_BYTES.to_vec())
+    stream
+        .push(&mut ctx, &FIRST_BYTES.to_vec())
         .expect("Expected success");
 
     info!(target: "client",
           "reading message");
 
-    let buf = read(&mut ctx, &mut events, &mut channels, &mut stream,
-                   addr, channel_id, channel_param);
+    let buf = read(
+        &mut ctx,
+        &mut events,
+        &mut channels,
+        &mut stream,
+        addr,
+        channel_id,
+        channel_param
+    );
 
     info!(target: "server",
           "received {:?}", buf);
@@ -371,8 +435,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
-        eprintln!("Usage: {} [client <config> <endpoint>| server <config>]",
-                  args[0]);
+        eprintln!(
+            "Usage: {} [client <config> <endpoint>| server <config>]",
+            args[0]
+        );
 
         std::process::exit(1);
     }
@@ -385,12 +451,14 @@ fn main() {
     let conf = std::fs::read_to_string(&args[2]).unwrap();
 
     match args[1].as_str() {
-        "client" => if args.len() != 4 {
-        } else {
-            let endpoint = std::fs::read_to_string(&args[3]).unwrap();
+        "client" => {
+            if args.len() != 4 {
+            } else {
+                let endpoint = std::fs::read_to_string(&args[3]).unwrap();
 
-            client(&conf, &endpoint)
-        },
+                client(&conf, &endpoint)
+            }
+        }
         "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);

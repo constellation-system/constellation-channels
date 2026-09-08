@@ -54,11 +54,11 @@ use constellation_common::retry::next_retry;
 use constellation_common::retry::next_retry_definite;
 use constellation_common::sched::Policy;
 use constellation_streams::addrs::Addrs;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
 use constellation_streams::channels::ChannelsShutdown;
+use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::TokensCtx;
@@ -180,7 +180,7 @@ where
         Types::OutboundNego,
         Types::Xfrm
     >,
-    param: Types::ChannelParam,
+    param: Types::ChannelParam
 }
 
 /// Entry associated with an acquired value on a channel.
@@ -390,12 +390,8 @@ pub enum FlowsEntryReqFlowError<AuthN, Start, Flow, Shutdown, Enc, Dec> {
 
 #[derive(Debug)]
 pub enum FlowsEntryCodecError<Enc, Dec> {
-    Encoder {
-        err: Enc
-    },
-    Decoder {
-        err: Dec
-    },
+    Encoder { err: Enc },
+    Decoder { err: Dec }
 }
 
 #[derive(Debug)]
@@ -439,7 +435,7 @@ pub enum SessionListenError<Flows, Start, AuthN, Shutdown, Enc, Dec> {
     },
     IO {
         err: Error
-    },
+    }
 }
 
 #[derive(Debug)]
@@ -513,8 +509,15 @@ pub enum AcquiredEntryCreateError<Resolve, Flows, Wrap> {
 }
 
 #[derive(Debug)]
-pub enum AcquiredEntryListenError<Refresh, Flows, Start, AuthN,
-                                  Shutdown, Enc, Dec> {
+pub enum AcquiredEntryListenError<
+    Refresh,
+    Flows,
+    Start,
+    AuthN,
+    Shutdown,
+    Enc,
+    Dec
+> {
     /// Error occurred refreshing addresses.
     Refresh {
         /// Error that occurred while refreshing addresses.
@@ -1130,7 +1133,7 @@ where
             Types::AuthNegoError,
             Types::AuthStartError,
             FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
         >
     >
     where
@@ -1258,7 +1261,7 @@ where
             Types::AuthNegoError,
             Types::AuthStartError,
             FlowsFlowError<Types::OutStartError, Types::OutNegoError>,
-            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>,
+            ShutdownError<Types::ShutdownStartError, Types::ShutdownNegoError>
         >
     >
     where
@@ -1683,7 +1686,7 @@ where
             Types::Xfrm
         >,
         token: Token,
-        param: Types::ChannelParam,
+        param: Types::ChannelParam
     ) -> Result<Self, Error> {
         registry.register(
             &mut flows,
@@ -1749,19 +1752,17 @@ where
         encoder_config: &Types::EncoderConfig,
         decoder_config: &Types::DecoderConfig,
         session: Types::AuthNSession
-    ) -> Result<Types::AuthNChan,
-                FlowsEntryCodecError<
-                    Types::EncoderCreateError,
-                    Types::DecoderCreateError
-                >> {
+    ) -> Result<
+        Types::AuthNChan,
+        FlowsEntryCodecError<
+            Types::EncoderCreateError,
+            Types::DecoderCreateError
+        >
+    > {
         let encoder = Types::Encoder::create(encoder_config.clone())
-            .map_err(|err| FlowsEntryCodecError::Encoder {
-                err: err
-            })?;
+            .map_err(|err| FlowsEntryCodecError::Encoder { err: err })?;
         let decoder = Types::Decoder::create(decoder_config.clone())
-            .map_err(|err| FlowsEntryCodecError::Decoder {
-                err: err
-            })?;
+            .map_err(|err| FlowsEntryCodecError::Decoder { err: err })?;
         let out = session.map(|stream| {
             let out = DatagramCodecStream::create(encoder, decoder, stream);
 
@@ -1843,17 +1844,20 @@ where
                         retry,
                         out_param,
                         endpoint
-                    ).map_err(|err| FlowsEntryReqFlowError::GetFlow {
+                    )
+                    .map_err(|err| FlowsEntryReqFlowError::GetFlow {
                         err: err
                     })?
                     .map_ok(|session| {
-                        session.map(|session| {
-                            self.session_to_chan(
-                                encoder_config,
-                                decoder_config,
-                                session,
-                            )
-                        }).transpose()
+                        session
+                            .map(|session| {
+                                self.session_to_chan(
+                                    encoder_config,
+                                    decoder_config,
+                                    session
+                                )
+                            })
+                            .transpose()
                             .map_err(|err| FlowsEntryReqFlowError::Codec {
                                 err: err
                             })
@@ -1877,17 +1881,18 @@ where
                     retry,
                     out_param,
                     endpoint
-                ).map_err(|err| FlowsEntryReqFlowError::GetFlow {
-                    err: err
-                })?
+                )
+                .map_err(|err| FlowsEntryReqFlowError::GetFlow { err: err })?
                 .map_ok(|session| {
-                    session.map(|session| {
-                        self.session_to_chan(
-                            encoder_config,
-                            decoder_config,
-                            session,
-                        )
-                    }).transpose()
+                    session
+                        .map(|session| {
+                            self.session_to_chan(
+                                encoder_config,
+                                decoder_config,
+                                session
+                            )
+                        })
+                        .transpose()
                         .map_err(|err| FlowsEntryReqFlowError::Codec {
                             err: err
                         })
@@ -2107,21 +2112,26 @@ where
                                 debug!(target: "flows-nego-state",
                                        "reporting completed session");
 
-                                let peer_addr = session.peer_addr()
-                                    .map_err(|err| SessionListenError::IO {
-                                        err: err
+                                let peer_addr =
+                                    session.peer_addr().map_err(|err| {
+                                        SessionListenError::IO { err: err }
                                     })?;
-                                let chan = self.session_to_chan(
-                                    encoder_config,
-                                    decoder_config,
-                                    session,
-                                ).map_err(|err| SessionListenError::Codec {
-                                    err: err
-                                })?;
+                                let chan = self
+                                    .session_to_chan(
+                                        encoder_config,
+                                        decoder_config,
+                                        session
+                                    )
+                                    .map_err(|err| {
+                                        SessionListenError::Codec { err: err }
+                                    })?;
 
                                 // Session negotiations complete; report it out.
-                                report_session(chan, self.param.clone(),
-                                               peer_addr);
+                                report_session(
+                                    chan,
+                                    self.param.clone(),
+                                    peer_addr
+                                );
                             }
                         }
                         Entry::Vacant(ent) => {
@@ -2156,21 +2166,26 @@ where
                                 debug!(target: "flows-nego-state",
                                        "reporting completed session");
 
-                                let peer_addr = session.peer_addr()
-                                    .map_err(|err| SessionListenError::IO {
-                                        err: err
+                                let peer_addr =
+                                    session.peer_addr().map_err(|err| {
+                                        SessionListenError::IO { err: err }
                                     })?;
-                                let chan = self.session_to_chan(
-                                    encoder_config,
-                                    decoder_config,
-                                    session,
-                                ).map_err(|err| SessionListenError::Codec {
-                                    err: err
-                                })?;
+                                let chan = self
+                                    .session_to_chan(
+                                        encoder_config,
+                                        decoder_config,
+                                        session
+                                    )
+                                    .map_err(|err| {
+                                        SessionListenError::Codec { err: err }
+                                    })?;
 
                                 // Session negotiations complete; report it out.
-                                report_session(chan, self.param.clone(),
-                                               peer_addr);
+                                report_session(
+                                    chan,
+                                    self.param.clone(),
+                                    peer_addr
+                                );
                             }
                         }
                     }
@@ -2220,17 +2235,18 @@ where
                         debug!(target: "flows-nego-state",
                                "reporting completed session");
 
-                        let peer_addr = session.peer_addr()
-                            .map_err(|err| SessionListenError::IO {
+                        let peer_addr = session.peer_addr().map_err(|err| {
+                            SessionListenError::IO { err: err }
+                        })?;
+                        let chan = self
+                            .session_to_chan(
+                                encoder_config,
+                                decoder_config,
+                                session
+                            )
+                            .map_err(|err| SessionListenError::Codec {
                                 err: err
                             })?;
-                        let chan = self.session_to_chan(
-                            encoder_config,
-                            decoder_config,
-                            session,
-                        ).map_err(|err| SessionListenError::Codec {
-                            err: err
-                        })?;
 
                         // Session negotiations complete; report it out.
                         report_session(chan, self.param.clone(), peer_addr);
@@ -2417,7 +2433,7 @@ where
                                     registry,
                                     session,
                                     token,
-                                    addr.clone(),
+                                    addr.clone()
                                 )
                                 .map_err(|err| AcquiredEntryCreateError::IO {
                                     err: err
@@ -2488,7 +2504,7 @@ where
                             registry,
                             session,
                             token,
-                            addr.clone(),
+                            addr.clone()
                         )
                         .map_err(|err| {
                             AcquiredEntryCreateError::IO { err: err }
@@ -2538,15 +2554,10 @@ where
                     )
                     .map_err(|err| AcquiredEntryCreateError::IO { err: err }),
                     None => {
-                        FlowsEntry::new(
-                            registry,
-                            session,
-                            token,
-                            param.clone(),
-                        )
-                        .map_err(|err| AcquiredEntryCreateError::IO {
-                            err: err
-                        })
+                        FlowsEntry::new(registry, session, token, param.clone())
+                            .map_err(|err| AcquiredEntryCreateError::IO {
+                                err: err
+                            })
                     }
                 }?;
 
@@ -3725,10 +3736,10 @@ where
     >
     where
         Ctx: RegistryCtx + TokensCtx {
-        let addr =
-            retry.get().peer_addr().map_err(|err| {
-                ChannelEntryShutdownFlowError::IO { err: err }
-            })?;
+        let addr = retry
+            .get()
+            .peer_addr()
+            .map_err(|err| ChannelEntryShutdownFlowError::IO { err: err })?;
 
         match self
             .acquired
@@ -4302,7 +4313,7 @@ where
 
 impl<Types> ChannelsID for FarChannels<Types>
 where
-    Types: FarChannelsTypes,
+    Types: FarChannelsTypes
 {
     type ChannelID = FarChannelID;
 
@@ -4496,12 +4507,7 @@ where
             match self.channels[id.0].listen(
                 ctx,
                 |chan, param, endpoint| {
-                    sessions.push((
-                        endpoint,
-                        id.clone(),
-                        param.clone(),
-                        chan
-                    ));
+                    sessions.push((endpoint, id.clone(), param.clone(), chan));
                 },
                 |endpoint, param| {
                     endpoints.push((
@@ -4690,7 +4696,8 @@ where
         mut self,
         ctx: &mut Ctx,
         live: &HashSet<Token>
-    ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError> {
+    ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError>
+    {
         let lives: Vec<FarChannelID> = self
             .tokens
             .iter()
@@ -4721,28 +4728,25 @@ where
                     match self.channels[id.0]
                         .listen(
                             ctx,
-                            |stream, param, endpoint| {
-                                match &mut sessions {
-                                    Some(sessions) => {
-                                        sessions.push((
-                                            endpoint,
-                                            id.clone(),
-                                            param.clone(),
-                                            stream
-                                        ));
-                                    }
-                                    None => {
-                                        let mut vec =
-                                            Vec::with_capacity(nlives);
+                            |stream, param, endpoint| match &mut sessions {
+                                Some(sessions) => {
+                                    sessions.push((
+                                        endpoint,
+                                        id.clone(),
+                                        param.clone(),
+                                        stream
+                                    ));
+                                }
+                                None => {
+                                    let mut vec = Vec::with_capacity(nlives);
 
-                                        vec.push((
-                                            endpoint,
-                                            id.clone(),
-                                            param.clone(),
-                                            stream
-                                        ));
-                                        sessions = Some(vec);
-                                    }
+                                    vec.push((
+                                        endpoint,
+                                        id.clone(),
+                                        param.clone(),
+                                        stream
+                                    ));
+                                    sessions = Some(vec);
                                 }
                             },
                             |endpoint, param| {
@@ -5050,7 +5054,7 @@ where
     AuthN: ScopedError,
     Flow: ScopedError,
     Start: ScopedError,
-    Shutdown: ScopedError,
+    Shutdown: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -5076,11 +5080,10 @@ where
     fn scope(&self) -> ErrorScope {
         match self {
             FlowsEntryReqFlowError::GetFlow { err } => err.scope(),
-            FlowsEntryReqFlowError::Codec { err } => err.scope(),
+            FlowsEntryReqFlowError::Codec { err } => err.scope()
         }
     }
 }
-
 
 impl<Enc, Dec> ScopedError for FlowsEntryCodecError<Enc, Dec>
 where
@@ -5090,7 +5093,7 @@ where
     fn scope(&self) -> ErrorScope {
         match self {
             FlowsEntryCodecError::Encoder { err } => err.scope(),
-            FlowsEntryCodecError::Decoder { err } => err.scope(),
+            FlowsEntryCodecError::Decoder { err } => err.scope()
         }
     }
 }
@@ -5249,7 +5252,7 @@ where
     AuthN: ScopedError,
     Shutdown: ScopedError,
     Enc: ScopedError,
-    Dec: ScopedError,
+    Dec: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -5257,14 +5260,21 @@ where
             SessionListenError::Flows { err } => err.scope(),
             SessionListenError::Start { err } => err.scope(),
             SessionListenError::Step { err } => err.scope(),
-            SessionListenError::IO { err } => err.scope(),
+            SessionListenError::IO { err } => err.scope()
         }
     }
 }
 
 impl<Refresh, Flows, Start, AuthN, Shutdown, Enc, Dec> ScopedError
-    for AcquiredEntryListenError<Refresh, Flows, Start,
-                                 AuthN, Shutdown, Enc, Dec>
+    for AcquiredEntryListenError<
+        Refresh,
+        Flows,
+        Start,
+        AuthN,
+        Shutdown,
+        Enc,
+        Dec
+    >
 where
     Refresh: ScopedError,
     Flows: ScopedError,
@@ -5272,7 +5282,7 @@ where
     AuthN: ScopedError,
     Shutdown: ScopedError,
     Enc: ScopedError,
-    Dec: ScopedError,
+    Dec: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
@@ -5518,7 +5528,7 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             FlowsEntryReqFlowError::GetFlow { err } => err.fmt(f),
-            FlowsEntryReqFlowError::Codec { err } => err.fmt(f),
+            FlowsEntryReqFlowError::Codec { err } => err.fmt(f)
         }
     }
 }
@@ -5534,7 +5544,7 @@ where
     ) -> Result<(), std::fmt::Error> {
         match self {
             FlowsEntryCodecError::Encoder { err } => err.fmt(f),
-            FlowsEntryCodecError::Decoder { err } => err.fmt(f),
+            FlowsEntryCodecError::Decoder { err } => err.fmt(f)
         }
     }
 }
@@ -5564,8 +5574,15 @@ where
 }
 
 impl<Refresh, Flows, Start, AuthN, Shutdown, Enc, Dec> Display
-    for AcquiredEntryListenError<Refresh, Flows, Start, AuthN,
-                                 Shutdown, Enc, Dec>
+    for AcquiredEntryListenError<
+        Refresh,
+        Flows,
+        Start,
+        AuthN,
+        Shutdown,
+        Enc,
+        Dec
+    >
 where
     Refresh: Display,
     Flows: Display,
@@ -5739,7 +5756,9 @@ where
             ChannelEntryShutdownFlowError::Pending => {
                 write!(f, "session negotiations are pending")
             }
-            ChannelEntryShutdownFlowError::None => write!(f, "no acquire state")
+            ChannelEntryShutdownFlowError::None => {
+                write!(f, "no acquire state")
+            }
         }
     }
 }
@@ -5906,16 +5925,18 @@ type TestFarChannelsTypes = CompoundFarChannelsTypes<
     >,
     BasicAuthNed<
         TestPrin,
-        RefCellStream<DatagramCodecStream<
-            Vec<u8>,
-            Vec<u8>,
-            CompoundFlow<
-                PassthruDatagramXfrm<UnixSocketPath>,
-                PassthruDatagramXfrm<SocketAddr>
-            >,
-            TestBytesCodec,
-            TestBytesCodec
-        >>
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                CompoundFlow<
+                    PassthruDatagramXfrm<UnixSocketPath>,
+                    PassthruDatagramXfrm<SocketAddr>
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
     >,
     PassthruDatagramXfrm<UnixSocketPath>,
     PassthruDatagramXfrm<SocketAddr>,
@@ -6304,7 +6325,7 @@ fn read_one<Ctx, Types>(
     ent: &mut ChannelEntry<Types>,
     ctx: &mut Ctx,
     poll: &mut Poll,
-    flow: &mut Types::AuthNSession,
+    flow: &mut Types::Flow,
     buf: &mut [u8],
     endpoint: &Types::PeerAddr
 ) -> Result<usize, Error>
@@ -6394,7 +6415,7 @@ fn write_one<Ctx, Types>(
     ent: &mut ChannelEntry<Types>,
     ctx: &mut Ctx,
     poll: &mut Poll,
-    flow: &mut Types::AuthNSession,
+    flow: &mut Types::Flow,
     buf: &[u8],
     endpoint: &Types::PeerAddr
 ) -> Result<usize, Error>
@@ -6485,12 +6506,10 @@ fn shutdown_session<Ctx, Types>(
     ctx: &mut Ctx,
     poll: &mut Poll,
     channel_param: &Types::ChannelParam,
-    session: Types::AuthNSession,
+    session: Types::Flow
 ) where
     Types: FarChannelsTypes,
     Ctx: NSNameCachesCtx {
-    let (_, session) = AuthNedDestruct::take(session);
-
     match ent
         .shutdown_flow(
             &mut TestCtx {
@@ -6687,13 +6706,7 @@ fn entry_test<Types, Ctx>(
         )
         .expect("Expected success");
         let mut endpoints: HashSet<Types::PeerAddr> = HashSet::new();
-        let mut sessions: Vec<DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::AuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >> = Vec::new();
+        let mut sessions: Vec<Types::AuthNChan> = Vec::new();
         let (mut entry, params, _) = get_acquired::<Types, _>(
             &mut server_nscaches,
             &mut poll,
@@ -6731,6 +6744,8 @@ fn entry_test<Types, Ctx>(
                 &mut endpoints
             )
         };
+        let (_, session) = AuthNedDestruct::take(session);
+        let session = session.into_inner().expect("Expected some");
         let mut session = session.into_inner();
         let peer_addr = session.peer_addr().expect("Expected success");
 
@@ -6801,13 +6816,7 @@ fn entry_test<Types, Ctx>(
         )
         .expect("Expected success");
         let mut endpoints: HashSet<Types::PeerAddr> = HashSet::new();
-        let mut sessions: Vec<DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::AuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        >> = Vec::new();
+        let mut sessions: Vec<Types::AuthNChan> = Vec::new();
         let (mut entry, params, _) = get_acquired::<Types, _>(
             &mut client_nscaches,
             &mut poll,
@@ -6833,13 +6842,7 @@ fn entry_test<Types, Ctx>(
             [param] => param,
             _ => panic!("Expected exactly one param")
         };
-        let session: DatagramCodecStream<
-            Types::OutMsg,
-            Types::Wrapper,
-            Types::AuthNSession,
-            Types::Encoder,
-            Types::Decoder
-        > = get_out_session(
+        let session: Types::AuthNChan = get_out_session(
             &mut entry,
             &mut client_nscaches,
             &mut poll,
@@ -6848,6 +6851,8 @@ fn entry_test<Types, Ctx>(
             &param,
             &out_param
         );
+        let (_, session) = AuthNedDestruct::take(session);
+        let session = session.into_inner().expect("Expected some");
         let mut session = session.into_inner();
         let peer_addr = session.peer_addr().expect("Expected success");
 

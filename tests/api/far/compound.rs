@@ -23,9 +23,9 @@ use std::sync::Barrier;
 use std::thread::spawn;
 
 use constellation_channels::config::CompoundFarChannelConfig;
+use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundOutboundNegotiatorParam;
 use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::DTLSOutboundParam;
 use constellation_channels::config::FlowsConfig;
 use constellation_channels::far::FarChannel;

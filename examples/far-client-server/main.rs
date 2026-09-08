@@ -170,7 +170,10 @@ fn client(
     endpoint: &str
 ) {
     let endpoint: ClientEndpoint = yaml_serde::from_str(endpoint).unwrap();
-    let ClientEndpoint { endpoint: server_addr, param: negoparam } = endpoint;
+    let ClientEndpoint {
+        endpoint: server_addr,
+        param: negoparam
+    } = endpoint;
     let client_config: CompoundFarChannelConfig =
         yaml_serde::from_str(conf).unwrap();
     let mut poll = Poll::new().expect("Expected success");
@@ -247,8 +250,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
-        eprintln!("Usage: {} [client <config> <endpoint>| server <config>]",
-                  args[0]);
+        eprintln!(
+            "Usage: {} [client <config> <endpoint>| server <config>]",
+            args[0]
+        );
         std::process::exit(1);
     }
 
@@ -260,12 +265,14 @@ fn main() {
     let conf = std::fs::read_to_string(&args[2]).unwrap();
 
     match args[1].as_str() {
-        "client" => if args.len() != 4 {
-        } else {
-            let endpoint = std::fs::read_to_string(&args[3]).unwrap();
+        "client" => {
+            if args.len() != 4 {
+            } else {
+                let endpoint = std::fs::read_to_string(&args[3]).unwrap();
 
-            client(&conf, &endpoint)
-        },
+                client(&conf, &endpoint)
+            }
+        }
         "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);

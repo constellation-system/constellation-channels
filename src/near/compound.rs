@@ -804,18 +804,16 @@ impl TryFrom<CompoundNearEndpoint> for CompoundNearConcreteAddr {
     ) -> Result<CompoundNearConcreteAddr, Self::Error> {
         match val {
             CompoundNearEndpoint::Unix { unix_stream } => {
-                let unix = unix_stream.try_into()
-                    .map_err(|err| CompoundNearEndpointConvertError::Unix {
-                        err: err
-                    })?;
+                let unix = unix_stream.try_into().map_err(|err| {
+                    CompoundNearEndpointConvertError::Unix { err: err }
+                })?;
 
                 Ok(CompoundNearConcreteAddr::Unix { unix: unix })
-            },
+            }
             CompoundNearEndpoint::TCP { tcp } => {
-                let tcp = tcp.try_into()
-                    .map_err(|err| CompoundNearEndpointConvertError::TCP {
-                        err: err
-                    })?;
+                let tcp = tcp.try_into().map_err(|err| {
+                    CompoundNearEndpointConvertError::TCP { err: err }
+                })?;
 
                 Ok(CompoundNearConcreteAddr::TCP { tcp: tcp })
             }
@@ -1046,10 +1044,12 @@ impl Display for CompoundNearEndpointConvertError {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            CompoundNearEndpointConvertError::Unix { err } =>
-                write!(f, "{}", err),
-            CompoundNearEndpointConvertError::TCP { err } =>
+            CompoundNearEndpointConvertError::Unix { err } => {
                 write!(f, "{}", err)
+            }
+            CompoundNearEndpointConvertError::TCP { err } => {
+                write!(f, "{}", err)
+            }
         }
     }
 }
@@ -1147,7 +1147,9 @@ impl Display for CompoundNearAcceptorCreateError {
                 write!(f, "{}", tcp)
             }
             #[cfg(feature = "tls")]
-            CompoundNearAcceptorCreateError::TLS { tls } => write!(f, "{}", tls)
+            CompoundNearAcceptorCreateError::TLS { tls } => {
+                write!(f, "{}", tls)
+            }
         }
     }
 }
@@ -1441,7 +1443,7 @@ impl Session for CompoundNearServerConn {
 impl From<CompoundNearCredential> for NullCred {
     #[inline]
     fn from(_val: CompoundNearCredential) -> NullCred {
-        NullCred::default()
+        NullCred
     }
 }
 

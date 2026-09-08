@@ -590,7 +590,8 @@ fn run_refresh_thread(
 impl<Party, Chans, Ctx> NSNameCachesCtx for PollThreadCtx<Party, Chans, Ctx>
 where
     Chans: Channels<Ctx>,
-    Ctx: NSNameCachesCtx {
+    Ctx: NSNameCachesCtx
+{
     type NameCaches = Ctx::NameCaches;
 
     #[inline]

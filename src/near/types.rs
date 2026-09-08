@@ -28,10 +28,10 @@ use constellation_auth::authn::AuthNedDestruct;
 use constellation_auth::authn::AuthNedMap;
 use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::CredentialsMut;
-use constellation_common::config::Create;
-use constellation_common::config::CreateWithParam;
 use constellation_common::codec::Decoder;
 use constellation_common::codec::Encoder;
+use constellation_common::config::Create;
+use constellation_common::config::CreateWithParam;
 use constellation_common::error::ScopedError;
 use constellation_common::net::NegotiatorStart;
 use constellation_common::net::Session;
@@ -46,9 +46,9 @@ use constellation_streams::threads::types::LargeObjSelectorPollTypes;
 use mio::event::Source;
 
 #[cfg(feature = "tls")]
-use crate::config::tls::TLSLoadClient;
-#[cfg(feature = "tls")]
 use crate::config::NearChannelsConfig;
+#[cfg(feature = "tls")]
+use crate::config::tls::TLSLoadClient;
 use crate::config::tls::TLSLoadServer;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
@@ -85,21 +85,29 @@ pub trait NearSessionNegoTypes {
     type DecoderConfig: Clone + Default;
     type DecoderCreateError: Debug + Display + ScopedError;
     type Decoder: Decoder<Self::Wrapper>
-        + Create<Config = Self::DecoderConfig,
-                 CreateError = Self::DecoderCreateError>;
+        + Create<
+            Config = Self::DecoderConfig,
+            CreateError = Self::DecoderCreateError
+        >;
     type EncoderConfig: Clone + Default;
     type EncoderCreateError: Debug + Display + ScopedError;
     type Encoder: Encoder<Self::OutMsg>
-        + Create<Config = Self::EncoderConfig,
-                 CreateError = Self::EncoderCreateError>;
+        + Create<
+            Config = Self::EncoderConfig,
+            CreateError = Self::EncoderCreateError
+        >;
     type Prin: Clone + Debug + Display + Eq + Hash;
     type AuthNConfig: Clone + Default;
     type AuthNPending;
-    type AuthNSession: Read + Write + AuthNed<Self::Prin>
+    type AuthNSession: Read
+        + Write
+        + AuthNed<Self::Prin>
         + Session<PeerAddr = Self::Endpoint>;
-    type AuthN: CreateWithParam<bool, Config = Self::AuthNConfig,
-                                CreateError = Self::AuthCreateError>
-        + SessionAuthN<
+    type AuthN: CreateWithParam<
+            bool,
+            Config = Self::AuthNConfig,
+            CreateError = Self::AuthCreateError
+        > + SessionAuthN<
             Self::Conn,
             Param = (),
             Pending = Self::AuthNPending,
@@ -154,45 +162,49 @@ pub trait NearDuplexNegoTypes {
     type DecoderConfig: Clone + Default;
     type DecoderCreateError: Debug + Display + ScopedError;
     type Decoder: Decoder<Self::Wrapper>
-        + Create<Config = Self::DecoderConfig,
-                 CreateError = Self::DecoderCreateError>;
+        + Create<
+            Config = Self::DecoderConfig,
+            CreateError = Self::DecoderCreateError
+        >;
     type EncoderConfig: Clone + Default;
     type EncoderCreateError: Debug + Display + ScopedError;
     type Encoder: Encoder<Self::OutMsg>
-        + Create<Config = Self::EncoderConfig,
-                 CreateError = Self::EncoderCreateError>;
+        + Create<
+            Config = Self::EncoderConfig,
+            CreateError = Self::EncoderCreateError
+        >;
     type AuthNChan: AuthNedDestruct<
             Self::Prin,
-            RefCellStream<DatagramCodecStream<
-                Self::OutMsg,
-                Self::Wrapper,
-                DuplexValue<
-                    Self::InConn,
-                    Self::OutConn,
-                >,
-                Self::Encoder,
-                Self::Decoder
-            >>
+            RefCellStream<
+                DatagramCodecStream<
+                    Self::OutMsg,
+                    Self::Wrapper,
+                    DuplexValue<Self::InConn, Self::OutConn>,
+                    Self::Encoder,
+                    Self::Decoder
+                >
+            >
         >;
     type InEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
     type InConfig;
     type InAuthNConfig: Clone + Default;
     type InAuthNPending;
-    type InAuthNSession: Read + Write
+    type InAuthNSession: Read
+        + Write
         + Session<PeerAddr = Self::InEndpoint>
         + AuthNedMap<
-            Self::Prin, Self::InConn,
-            RefCellStream<DatagramCodecStream<
-                Self::OutMsg,
-                Self::Wrapper,
-                DuplexValue<
-                    Self::InConn,
-                    Self::OutConn,
-                >,
-                Self::Encoder,
-                Self::Decoder
-            >>,
-            Self::AuthNChan,
+            Self::Prin,
+            Self::InConn,
+            RefCellStream<
+                DatagramCodecStream<
+                    Self::OutMsg,
+                    Self::Wrapper,
+                    DuplexValue<Self::InConn, Self::OutConn>,
+                    Self::Encoder,
+                    Self::Decoder
+                >
+            >,
+            Self::AuthNChan
         >;
     type InAuthN: CreateWithParam<
             bool,
@@ -285,21 +297,22 @@ pub trait NearDuplexNegoTypes {
         + From<Self::InEndpoint>;
     type OutAuthNConfig: Clone + Default;
     type OutAuthNPending;
-    type OutAuthNSession: Read + Write
+    type OutAuthNSession: Read
+        + Write
         + Session<PeerAddr = Self::OutEndpoint>
         + AuthNedMap<
-            Self::Prin, Self::OutConn,
-            RefCellStream<DatagramCodecStream<
-                Self::OutMsg,
-                Self::Wrapper,
-                DuplexValue<
-                    Self::InConn,
-                    Self::OutConn,
-                >,
-                Self::Encoder,
-                Self::Decoder
-            >>,
-            Self::AuthNChan,
+            Self::Prin,
+            Self::OutConn,
+            RefCellStream<
+                DatagramCodecStream<
+                    Self::OutMsg,
+                    Self::Wrapper,
+                    DuplexValue<Self::InConn, Self::OutConn>,
+                    Self::Encoder,
+                    Self::Decoder
+                >
+            >,
+            Self::AuthNChan
         >;
     type OutAuthN: CreateWithParam<
             bool,
@@ -399,70 +412,71 @@ pub struct SimpleNearDuplexNegoTypes<In, Out, AuthNChan>
 where
     In: NearSessionNegoTypes,
     Out: NearSessionNegoTypes<
-        Prin = In::Prin,
-        Wrapper = In::Wrapper,
-        OutMsg = In::OutMsg,
-        DecoderConfig = In::DecoderConfig,
-        DecoderCreateError = In::DecoderCreateError,
-        Decoder = In::Decoder,
-        EncoderConfig = In::EncoderConfig,
-        EncoderCreateError = In::EncoderCreateError,
-        Encoder = In::Encoder,
-    >,
+            Prin = In::Prin,
+            Wrapper = In::Wrapper,
+            OutMsg = In::OutMsg,
+            DecoderConfig = In::DecoderConfig,
+            DecoderCreateError = In::DecoderCreateError,
+            Decoder = In::Decoder,
+            EncoderConfig = In::EncoderConfig,
+            EncoderCreateError = In::EncoderCreateError,
+            Encoder = In::Encoder
+        >,
     AuthNChan: AuthNedDestruct<
             In::Prin,
-            RefCellStream<DatagramCodecStream<
-                In::OutMsg,
-                In::Wrapper,
-                DuplexValue<
-                    In::Conn,
-                    Out::Conn,
-                >,
-                In::Encoder,
-                Out::Decoder
-            >>
+            RefCellStream<
+                DatagramCodecStream<
+                    In::OutMsg,
+                    In::Wrapper,
+                    DuplexValue<In::Conn, Out::Conn>,
+                    In::Encoder,
+                    Out::Decoder
+                >
+            >
         >,
     Out::Endpoint: From<In::Endpoint>,
     In::Channel: NearChannelCreate + Source,
     Out::Channel: NearConnector
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
-    In::AuthNSession: Read + Write
+    In::AuthNSession: Read
+        + Write
         + Session<PeerAddr = In::Endpoint>
         + AuthNedMap<
-            In::Prin, In::Conn,
-            RefCellStream<DatagramCodecStream<
-                In::OutMsg,
-                In::Wrapper,
-                DuplexValue<
-                    In::Conn,
-                    Out::Conn,
-                >,
-                In::Encoder,
-                In::Decoder
-            >>,
-            AuthNChan,
+            In::Prin,
+            In::Conn,
+            RefCellStream<
+                DatagramCodecStream<
+                    In::OutMsg,
+                    In::Wrapper,
+                    DuplexValue<In::Conn, Out::Conn>,
+                    In::Encoder,
+                    In::Decoder
+                >
+            >,
+            AuthNChan
         >,
-    Out::AuthNSession: Read + Write
+    Out::AuthNSession: Read
+        + Write
         + Session<PeerAddr = Out::Endpoint>
         + AuthNedMap<
-            Out::Prin, Out::Conn,
-            RefCellStream<DatagramCodecStream<
-                Out::OutMsg,
-                Out::Wrapper,
-                DuplexValue<
-                    In::Conn,
-                    Out::Conn,
-                >,
-                Out::Encoder,
-                Out::Decoder
-            >>,
-            AuthNChan,
+            Out::Prin,
+            Out::Conn,
+            RefCellStream<
+                DatagramCodecStream<
+                    Out::OutMsg,
+                    Out::Wrapper,
+                    DuplexValue<In::Conn, Out::Conn>,
+                    Out::Encoder,
+                    Out::Decoder
+                >
+            >,
+            AuthNChan
         >,
     <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone,
     <Out::Channel as NearChannelCreateWithEndpoint>::Param: Clone + Debug {
     authn_chan: PhantomData<AuthNChan>,
-    intypes: In,
-    outypes: Out
+    intypes: PhantomData<In>,
+    outypes: PhantomData<Out>
 }
 
 /// A standard [NearSessionNegoTypes] object for [CompoundNearAcceptor]s.
@@ -518,13 +532,21 @@ where
     authn: PhantomData<AuthN>
 }
 
-pub type CompoundNearDuplexNegoTypes<InAuthN, OutAuthN, AuthNChan, InTLS,
-                                     OutTLS, OutMsg, Wrapper, Enc, Dec> =
-    SimpleNearDuplexNegoTypes<
-        CompoundAcceptorNegoTypes<InAuthN, InTLS, OutMsg, Wrapper, Enc, Dec>,
-        CompoundConnectorNegoTypes<OutAuthN, OutTLS, OutMsg, Wrapper, Enc, Dec>,
-        AuthNChan
-    >;
+pub type CompoundNearDuplexNegoTypes<
+    InAuthN,
+    OutAuthN,
+    AuthNChan,
+    InTLS,
+    OutTLS,
+    OutMsg,
+    Wrapper,
+    Enc,
+    Dec
+> = SimpleNearDuplexNegoTypes<
+    CompoundAcceptorNegoTypes<InAuthN, InTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundConnectorNegoTypes<OutAuthN, OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    AuthNChan
+>;
 
 pub type NearChannelsDatagramSelectorPollTypes<
     InMsg,
@@ -537,37 +559,38 @@ pub type NearChannelsDatagramSelectorPollTypes<
     Recv,
     Types,
     Ctx
-> =
-    DatagramSelectorPollTypes<
-        InMsg,
-        OutMsg,
-        Wrapper,
-        MsgAuth,
-        Epochs,
-        NearChannels<Types>,
-        NearChannelsConfig<
-            <Types as NearDuplexNegoTypes>::InConfig,
-            <Types as NearDuplexNegoTypes>::OutConfig,
-            <Types as NearDuplexNegoTypes>::InAuthNConfig,
-            <Types as NearDuplexNegoTypes>::OutAuthNConfig,
-            <Types as NearDuplexNegoTypes>::EncoderConfig,
-            <Types as NearDuplexNegoTypes>::DecoderConfig
-        >,
-        NearChannelsCreateError<
-            <Types as NearDuplexNegoTypes>::InAuthCreateError,
-            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
-            <Types as NearDuplexNegoTypes>::InChannelCreateError
-        >,
-        Resolve,
-        Msgs,
-        Recv,
-        Ctx
-    >;
+> = DatagramSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    NearChannels<Types>,
+    NearChannelsConfig<
+        <Types as NearDuplexNegoTypes>::InConfig,
+        <Types as NearDuplexNegoTypes>::OutConfig,
+        <Types as NearDuplexNegoTypes>::InAuthNConfig,
+        <Types as NearDuplexNegoTypes>::OutAuthNConfig,
+        <Types as NearDuplexNegoTypes>::EncoderConfig,
+        <Types as NearDuplexNegoTypes>::DecoderConfig
+    >,
+    NearChannelsCreateError<
+        <Types as NearDuplexNegoTypes>::InAuthCreateError,
+        <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+        <Types as NearDuplexNegoTypes>::InChannelCreateError
+    >,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+>;
 
 pub type CompoundNearChannelsDatagramSelectorPollTypes<
     InMsg,
     OutMsg,
-    Wrapper, Enc, Dec,
+    Wrapper,
+    Enc,
+    Dec,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -588,8 +611,17 @@ pub type CompoundNearChannelsDatagramSelectorPollTypes<
     Resolve,
     Msgs,
     Recv,
-    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, AuthNChan, InTLS,
-                                OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundNearDuplexNegoTypes<
+        InSessAuthN,
+        OutSessAuthN,
+        AuthNChan,
+        InTLS,
+        OutTLS,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >,
     Ctx
 >;
 
@@ -601,34 +633,35 @@ pub type NearChannelsLargeObjSelectorPollTypes<
     Types,
     LargeObjTypes,
     Ctx
-> =
-    LargeObjSelectorPollTypes<
-        InMsg,
-        OutMsg,
-        Epochs,
-        NearChannels<Types>,
-        NearChannelsConfig<
-            <Types as NearDuplexNegoTypes>::InConfig,
-            <Types as NearDuplexNegoTypes>::OutConfig,
-            <Types as NearDuplexNegoTypes>::InAuthNConfig,
-            <Types as NearDuplexNegoTypes>::OutAuthNConfig,
-            <Types as NearDuplexNegoTypes>::EncoderConfig,
-            <Types as NearDuplexNegoTypes>::DecoderConfig,
-        >,
-        NearChannelsCreateError<
-            <Types as NearDuplexNegoTypes>::InAuthCreateError,
-            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
-            <Types as NearDuplexNegoTypes>::InChannelCreateError
-        >,
-        Resolve,
-        LargeObjTypes,
-        Ctx
-    >;
+> = LargeObjSelectorPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    NearChannels<Types>,
+    NearChannelsConfig<
+        <Types as NearDuplexNegoTypes>::InConfig,
+        <Types as NearDuplexNegoTypes>::OutConfig,
+        <Types as NearDuplexNegoTypes>::InAuthNConfig,
+        <Types as NearDuplexNegoTypes>::OutAuthNConfig,
+        <Types as NearDuplexNegoTypes>::EncoderConfig,
+        <Types as NearDuplexNegoTypes>::DecoderConfig
+    >,
+    NearChannelsCreateError<
+        <Types as NearDuplexNegoTypes>::InAuthCreateError,
+        <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+        <Types as NearDuplexNegoTypes>::InChannelCreateError
+    >,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+>;
 
 pub type CompoundNearChannelsLargeObjSelectorPollTypes<
     InMsg,
     OutMsg,
-    Wrapper, Enc, Dec,
+    Wrapper,
+    Enc,
+    Dec,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -643,8 +676,17 @@ pub type CompoundNearChannelsLargeObjSelectorPollTypes<
     OutMsg,
     Epochs,
     Resolve,
-    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, AuthNChan, InTLS,
-                                OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundNearDuplexNegoTypes<
+        InSessAuthN,
+        OutSessAuthN,
+        AuthNChan,
+        InTLS,
+        OutTLS,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >,
     LargeObjTypes,
     Ctx
 >;
@@ -660,37 +702,38 @@ pub type NearChannelsDatagramDispatchTypes<
     Recv,
     Types,
     Ctx
-> =
-    DatagramDispatchTypes<
-        InMsg,
-        OutMsg,
-        Wrapper,
-        MsgAuth,
-        Epochs,
-        NearChannels<Types>,
-        NearChannelsConfig<
-            <Types as NearDuplexNegoTypes>::InConfig,
-            <Types as NearDuplexNegoTypes>::OutConfig,
-            <Types as NearDuplexNegoTypes>::InAuthNConfig,
-            <Types as NearDuplexNegoTypes>::OutAuthNConfig,
-            <Types as NearDuplexNegoTypes>::EncoderConfig,
-            <Types as NearDuplexNegoTypes>::DecoderConfig,
-        >,
-        NearChannelsCreateError<
-            <Types as NearDuplexNegoTypes>::InAuthCreateError,
-            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
-            <Types as NearDuplexNegoTypes>::InChannelCreateError
-        >,
-        Resolve,
-        Msgs,
-        Recv,
-        Ctx
-    >;
+> = DatagramDispatchTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    NearChannels<Types>,
+    NearChannelsConfig<
+        <Types as NearDuplexNegoTypes>::InConfig,
+        <Types as NearDuplexNegoTypes>::OutConfig,
+        <Types as NearDuplexNegoTypes>::InAuthNConfig,
+        <Types as NearDuplexNegoTypes>::OutAuthNConfig,
+        <Types as NearDuplexNegoTypes>::EncoderConfig,
+        <Types as NearDuplexNegoTypes>::DecoderConfig
+    >,
+    NearChannelsCreateError<
+        <Types as NearDuplexNegoTypes>::InAuthCreateError,
+        <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+        <Types as NearDuplexNegoTypes>::InChannelCreateError
+    >,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+>;
 
 pub type CompoundNearChannelsDatagramDispatchTypes<
     InMsg,
     OutMsg,
-    Wrapper, Enc, Dec,
+    Wrapper,
+    Enc,
+    Dec,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -711,8 +754,17 @@ pub type CompoundNearChannelsDatagramDispatchTypes<
     Resolve,
     Msgs,
     Recv,
-    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, AuthNChan, InTLS,
-                                OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundNearDuplexNegoTypes<
+        InSessAuthN,
+        OutSessAuthN,
+        AuthNChan,
+        InTLS,
+        OutTLS,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >,
     Ctx
 >;
 
@@ -724,34 +776,35 @@ pub type NearChannelsLargeObjDispatchTypes<
     Types,
     LargeObjTypes,
     Ctx
-> =
-    LargeObjDispatchTypes<
-        InMsg,
-        OutMsg,
-        Epochs,
-        NearChannels<Types>,
-        NearChannelsConfig<
-            <Types as NearDuplexNegoTypes>::InConfig,
-            <Types as NearDuplexNegoTypes>::OutConfig,
-            <Types as NearDuplexNegoTypes>::InAuthNConfig,
-            <Types as NearDuplexNegoTypes>::OutAuthNConfig,
-            <Types as NearDuplexNegoTypes>::EncoderConfig,
-            <Types as NearDuplexNegoTypes>::DecoderConfig
-        >,
-        NearChannelsCreateError<
-            <Types as NearDuplexNegoTypes>::InAuthCreateError,
-            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
-            <Types as NearDuplexNegoTypes>::InChannelCreateError
-        >,
-        Resolve,
-        LargeObjTypes,
-        Ctx
-    >;
+> = LargeObjDispatchTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    NearChannels<Types>,
+    NearChannelsConfig<
+        <Types as NearDuplexNegoTypes>::InConfig,
+        <Types as NearDuplexNegoTypes>::OutConfig,
+        <Types as NearDuplexNegoTypes>::InAuthNConfig,
+        <Types as NearDuplexNegoTypes>::OutAuthNConfig,
+        <Types as NearDuplexNegoTypes>::EncoderConfig,
+        <Types as NearDuplexNegoTypes>::DecoderConfig
+    >,
+    NearChannelsCreateError<
+        <Types as NearDuplexNegoTypes>::InAuthCreateError,
+        <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+        <Types as NearDuplexNegoTypes>::InChannelCreateError
+    >,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+>;
 
 pub type CompoundNearChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
-    Wrapper, Enc, Dec,
+    Wrapper,
+    Enc,
+    Dec,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -766,8 +819,17 @@ pub type CompoundNearChannelsLargeObjDispatchTypes<
     OutMsg,
     Epochs,
     Resolve,
-    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, AuthNChan, InTLS,
-                                OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundNearDuplexNegoTypes<
+        InSessAuthN,
+        OutSessAuthN,
+        AuthNChan,
+        InTLS,
+        OutTLS,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >,
     LargeObjTypes,
     Ctx
 >;
@@ -783,37 +845,38 @@ pub type NearChannelsDatagramMulticastPollTypes<
     Recv,
     Types,
     Ctx
-> =
-    DatagramMulticastPollTypes<
-        InMsg,
-        OutMsg,
-        Wrapper,
-        MsgAuth,
-        Epochs,
-        NearChannels<Types>,
-        NearChannelsConfig<
-            <Types as NearDuplexNegoTypes>::InConfig,
-            <Types as NearDuplexNegoTypes>::OutConfig,
-            <Types as NearDuplexNegoTypes>::InAuthNConfig,
-            <Types as NearDuplexNegoTypes>::OutAuthNConfig,
-            <Types as NearDuplexNegoTypes>::EncoderConfig,
-            <Types as NearDuplexNegoTypes>::DecoderConfig
-        >,
-        NearChannelsCreateError<
-            <Types as NearDuplexNegoTypes>::InAuthCreateError,
-            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
-            <Types as NearDuplexNegoTypes>::InChannelCreateError
-        >,
-        Resolve,
-        Msgs,
-        Recv,
-        Ctx
-    >;
+> = DatagramMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Wrapper,
+    MsgAuth,
+    Epochs,
+    NearChannels<Types>,
+    NearChannelsConfig<
+        <Types as NearDuplexNegoTypes>::InConfig,
+        <Types as NearDuplexNegoTypes>::OutConfig,
+        <Types as NearDuplexNegoTypes>::InAuthNConfig,
+        <Types as NearDuplexNegoTypes>::OutAuthNConfig,
+        <Types as NearDuplexNegoTypes>::EncoderConfig,
+        <Types as NearDuplexNegoTypes>::DecoderConfig
+    >,
+    NearChannelsCreateError<
+        <Types as NearDuplexNegoTypes>::InAuthCreateError,
+        <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+        <Types as NearDuplexNegoTypes>::InChannelCreateError
+    >,
+    Resolve,
+    Msgs,
+    Recv,
+    Ctx
+>;
 
 pub type CompoundNearChannelsDatagramMulticastPollTypes<
     InMsg,
     OutMsg,
-    Wrapper, Enc, Dec,
+    Wrapper,
+    Enc,
+    Dec,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -834,8 +897,17 @@ pub type CompoundNearChannelsDatagramMulticastPollTypes<
     Resolve,
     Msgs,
     Recv,
-    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, AuthNChan, InTLS,
-                                OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundNearDuplexNegoTypes<
+        InSessAuthN,
+        OutSessAuthN,
+        AuthNChan,
+        InTLS,
+        OutTLS,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >,
     Ctx
 >;
 
@@ -847,34 +919,35 @@ pub type NearChannelsLargeObjMulticastPollTypes<
     Types,
     LargeObjTypes,
     Ctx
-> =
-    LargeObjMulticastPollTypes<
-        InMsg,
-        OutMsg,
-        Epochs,
-        NearChannels<Types>,
-        NearChannelsConfig<
-            <Types as NearDuplexNegoTypes>::InConfig,
-            <Types as NearDuplexNegoTypes>::OutConfig,
-            <Types as NearDuplexNegoTypes>::InAuthNConfig,
-            <Types as NearDuplexNegoTypes>::OutAuthNConfig,
-            <Types as NearDuplexNegoTypes>::EncoderConfig,
-            <Types as NearDuplexNegoTypes>::DecoderConfig
-        >,
-        NearChannelsCreateError<
-            <Types as NearDuplexNegoTypes>::InAuthCreateError,
-            <Types as NearDuplexNegoTypes>::OutAuthCreateError,
-            <Types as NearDuplexNegoTypes>::InChannelCreateError
-        >,
-        Resolve,
-        LargeObjTypes,
-        Ctx
-    >;
+> = LargeObjMulticastPollTypes<
+    InMsg,
+    OutMsg,
+    Epochs,
+    NearChannels<Types>,
+    NearChannelsConfig<
+        <Types as NearDuplexNegoTypes>::InConfig,
+        <Types as NearDuplexNegoTypes>::OutConfig,
+        <Types as NearDuplexNegoTypes>::InAuthNConfig,
+        <Types as NearDuplexNegoTypes>::OutAuthNConfig,
+        <Types as NearDuplexNegoTypes>::EncoderConfig,
+        <Types as NearDuplexNegoTypes>::DecoderConfig
+    >,
+    NearChannelsCreateError<
+        <Types as NearDuplexNegoTypes>::InAuthCreateError,
+        <Types as NearDuplexNegoTypes>::OutAuthCreateError,
+        <Types as NearDuplexNegoTypes>::InChannelCreateError
+    >,
+    Resolve,
+    LargeObjTypes,
+    Ctx
+>;
 
 pub type CompoundNearChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
-    Wrapper, Enc, Dec,
+    Wrapper,
+    Enc,
+    Dec,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -889,8 +962,17 @@ pub type CompoundNearChannelsLargeObjMulticastPollTypes<
     OutMsg,
     Epochs,
     Resolve,
-    CompoundNearDuplexNegoTypes<InSessAuthN, OutSessAuthN, AuthNChan, InTLS,
-                                OutTLS, OutMsg, Wrapper, Enc, Dec>,
+    CompoundNearDuplexNegoTypes<
+        InSessAuthN,
+        OutSessAuthN,
+        AuthNChan,
+        InTLS,
+        OutTLS,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >,
     LargeObjTypes,
     Ctx
 >;
@@ -1025,19 +1107,13 @@ where
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundNearServerConn, Param = ()>,
     AuthN::Config: Clone + Default,
-    AuthN::AuthNSession: Read + Write + AuthNed<AuthN::Prin>
+    AuthN::AuthNSession: Read
+        + Write
+        + AuthNed<AuthN::Prin>
         + Session<PeerAddr = CompoundNearConcreteAddr>,
     AuthN::NegotiateError: ScopedError,
     TLS: Clone + Debug + TLSLoadServer
 {
-    type OutMsg = OutMsg;
-    type Wrapper = Wrapper;
-    type DecoderConfig = <Dec as Create>::Config;
-    type DecoderCreateError = <Dec as Create>::CreateError;
-    type Decoder = Dec;
-    type EncoderConfig = <Enc as Create>::Config;
-    type EncoderCreateError = <Enc as Create>::CreateError;
-    type Encoder = Enc;
     type AuthCreateError = AuthN::CreateError;
     type AuthN = AuthN;
     type AuthNConfig = AuthN::Config;
@@ -1049,7 +1125,14 @@ where
     type Conn = CompoundNearServerConn;
     type ConnPending = CompoundNearAcceptorNegotiatePending;
     type ConnState = CompoundNearAcceptorState;
+    type Decoder = Dec;
+    type DecoderConfig = <Dec as Create>::Config;
+    type DecoderCreateError = <Dec as Create>::CreateError;
+    type Encoder = Enc;
+    type EncoderConfig = <Enc as Create>::Config;
+    type EncoderCreateError = <Enc as Create>::CreateError;
     type Endpoint = CompoundNearConcreteAddr;
+    type OutMsg = OutMsg;
     type Prin = AuthN::Prin;
     type SessionNegoError = CompoundNearAcceptorNegotiateError;
     type SessionStartError = CompoundNearAcceptorStartError;
@@ -1060,6 +1143,7 @@ where
         CompoundNearShutdownNegotiatorPending<CompoundNearServerConn>;
     type ShutdownStartError = CompoundNegotiatorStartError;
     type ShutdownValue = CompoundNearAcceptorShutdownValue;
+    type Wrapper = Wrapper;
 }
 
 impl<AuthN, TLS, OutMsg, Wrapper, Enc, Dec> NearSessionNegoTypes
@@ -1074,19 +1158,13 @@ where
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundNearClientConn, Param = ()>,
     AuthN::Config: Clone + Default,
-    AuthN::AuthNSession: Read + Write + AuthNed<AuthN::Prin>
+    AuthN::AuthNSession: Read
+        + Write
+        + AuthNed<AuthN::Prin>
         + Session<PeerAddr = CompoundNearNameAddr>,
     AuthN::NegotiateError: ScopedError,
     TLS: Clone + Debug + TLSLoadClient
 {
-    type OutMsg = OutMsg;
-    type Wrapper = Wrapper;
-    type DecoderConfig = <Dec as Create>::Config;
-    type DecoderCreateError = <Dec as Create>::CreateError;
-    type Decoder = Dec;
-    type EncoderConfig = <Enc as Create>::Config;
-    type EncoderCreateError = <Enc as Create>::CreateError;
-    type Encoder = Enc;
     type AuthCreateError = AuthN::CreateError;
     type AuthN = AuthN;
     type AuthNConfig = <AuthN as CreateWithParam<bool>>::Config;
@@ -1098,7 +1176,14 @@ where
     type Conn = CompoundNearClientConn;
     type ConnPending = CompoundNearConnectorNegotiatePending;
     type ConnState = CompoundNearConnectorState;
+    type Decoder = Dec;
+    type DecoderConfig = <Dec as Create>::Config;
+    type DecoderCreateError = <Dec as Create>::CreateError;
+    type Encoder = Enc;
+    type EncoderConfig = <Enc as Create>::Config;
+    type EncoderCreateError = <Enc as Create>::CreateError;
     type Endpoint = CompoundNearNameAddr;
+    type OutMsg = OutMsg;
     type Prin = AuthN::Prin;
     type SessionNegoError = CompoundNearConnectorNegotiateError;
     type SessionStartError = CompoundNearConnectorStartError;
@@ -1109,6 +1194,7 @@ where
         CompoundNearShutdownNegotiatorPending<CompoundNearClientConn>;
     type ShutdownStartError = CompoundNegotiatorStartError;
     type ShutdownValue = CompoundNearConnectorShutdownValue;
+    type Wrapper = Wrapper;
 }
 
 impl<In, Out, AuthNChan> NearDuplexNegoTypes
@@ -1116,78 +1202,76 @@ impl<In, Out, AuthNChan> NearDuplexNegoTypes
 where
     In: NearSessionNegoTypes,
     Out: NearSessionNegoTypes<
-        Prin = In::Prin,
-        Wrapper = In::Wrapper,
-        OutMsg = In::OutMsg,
-        DecoderConfig = In::DecoderConfig,
-        DecoderCreateError = In::DecoderCreateError,
-        Decoder = In::Decoder,
-        EncoderConfig = In::EncoderConfig,
-        EncoderCreateError = In::EncoderCreateError,
-        Encoder = In::Encoder,
-    >,
+            Prin = In::Prin,
+            Wrapper = In::Wrapper,
+            OutMsg = In::OutMsg,
+            DecoderConfig = In::DecoderConfig,
+            DecoderCreateError = In::DecoderCreateError,
+            Decoder = In::Decoder,
+            EncoderConfig = In::EncoderConfig,
+            EncoderCreateError = In::EncoderCreateError,
+            Encoder = In::Encoder
+        >,
     AuthNChan: AuthNedDestruct<
             In::Prin,
-            RefCellStream<DatagramCodecStream<
-                In::OutMsg,
-                In::Wrapper,
-                DuplexValue<
-                    In::Conn,
-                    Out::Conn,
-                >,
-                In::Encoder,
-                In::Decoder
-            >>
+            RefCellStream<
+                DatagramCodecStream<
+                    In::OutMsg,
+                    In::Wrapper,
+                    DuplexValue<In::Conn, Out::Conn>,
+                    In::Encoder,
+                    In::Decoder
+                >
+            >
         >,
     Out::Endpoint: From<In::Endpoint>,
     In::Channel: NearChannelCreate + Source,
     Out::Channel: NearConnector
         + NearChannelCreateWithEndpoint<EndpointConfig = Out::Endpoint>,
-    In::AuthNSession: Read + Write
+    In::AuthNSession: Read
+        + Write
         + Session<PeerAddr = In::Endpoint>
         + AuthNedMap<
-            In::Prin, In::Conn,
-            RefCellStream<DatagramCodecStream<
-                In::OutMsg,
-                In::Wrapper,
-                DuplexValue<
-                    In::Conn,
-                    Out::Conn,
-                >,
-                In::Encoder,
-                In::Decoder
-            >>,
-            AuthNChan,
+            In::Prin,
+            In::Conn,
+            RefCellStream<
+                DatagramCodecStream<
+                    In::OutMsg,
+                    In::Wrapper,
+                    DuplexValue<In::Conn, Out::Conn>,
+                    In::Encoder,
+                    In::Decoder
+                >
+            >,
+            AuthNChan
         >,
-    Out::AuthNSession: Read + Write
+    Out::AuthNSession: Read
+        + Write
         + Session<PeerAddr = Out::Endpoint>
         + AuthNedMap<
-            Out::Prin, Out::Conn,
-            RefCellStream<DatagramCodecStream<
-                Out::OutMsg,
-                Out::Wrapper,
-                DuplexValue<
-                    In::Conn,
-                    Out::Conn,
-                >,
-                Out::Encoder,
-                Out::Decoder
-            >>,
-            AuthNChan,
+            Out::Prin,
+            Out::Conn,
+            RefCellStream<
+                DatagramCodecStream<
+                    Out::OutMsg,
+                    Out::Wrapper,
+                    DuplexValue<In::Conn, Out::Conn>,
+                    Out::Encoder,
+                    Out::Decoder
+                >
+            >,
+            AuthNChan
         >,
     <Out::Channel as NearChannelCreateWithEndpoint>::Config: Clone,
     <Out::Channel as NearChannelCreateWithEndpoint>::Param: Clone + Debug
 {
-    type Prin = In::Prin;
-    type Wrapper = In::Wrapper;
-    type OutMsg = In::OutMsg;
+    type AuthNChan = AuthNChan;
+    type Decoder = In::Decoder;
     type DecoderConfig = In::DecoderConfig;
     type DecoderCreateError = In::DecoderCreateError;
-    type Decoder = In::Decoder;
+    type Encoder = In::Encoder;
     type EncoderConfig = In::EncoderConfig;
     type EncoderCreateError = In::EncoderCreateError;
-    type Encoder = In::Encoder;
-    type AuthNChan = AuthNChan;
     type InAuthCreateError = In::AuthCreateError;
     type InAuthN = In::AuthN;
     type InAuthNConfig = In::AuthNConfig;
@@ -1226,6 +1310,7 @@ where
     type OutCreateError =
         <Out::Channel as NearChannelCreateWithEndpoint>::CreateError;
     type OutEndpoint = Out::Endpoint;
+    type OutMsg = In::OutMsg;
     type OutParam = <Out::Channel as NearChannelCreateWithEndpoint>::Param;
     type OutSessionNegoError = Out::SessionNegoError;
     type OutSessionStartError = Out::SessionStartError;
@@ -1236,4 +1321,6 @@ where
     type OutShutdownStartError = Out::ShutdownStartError;
     type OutShutdownValue = Out::ShutdownValue;
     type Outbound = Out;
+    type Prin = In::Prin;
+    type Wrapper = In::Wrapper;
 }

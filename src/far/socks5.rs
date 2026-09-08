@@ -1335,7 +1335,9 @@ where
             SOCKS5XfrmError::LostConn => {
                 write!(f, "lost SOCKS5 TCP connection")
             }
-            SOCKS5XfrmError::GetMut => write!(f, "get mutable reference failed")
+            SOCKS5XfrmError::GetMut => {
+                write!(f, "get mutable reference failed")
+            }
         }
     }
 }
