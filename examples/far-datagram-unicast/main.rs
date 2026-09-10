@@ -28,23 +28,25 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
-use constellation_auth::authn::AuthNed;
+use constellation_auth::authn::AuthNedDestruct;
 use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
+use constellation_auth::config::BasicAuthNConfig;
 use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundFarEndpoint;
+use constellation_channels::config::CompoundOutboundNegotiatorParam;
 use constellation_channels::config::CompoundXfrmCreateParam;
 use constellation_channels::config::FarChannelsConfig;
 use constellation_channels::config::ResolverConfig;
+use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::types::CompoundFarChannelsDatagramSelectorPollTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::codec::test::TestBytesCodec;
 use constellation_common::error::ErrorScope;
-use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::ids::AscendingCount;
 use constellation_common::net::PassthruDatagramXfrm;
@@ -52,9 +54,11 @@ use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::net::PrivateMsgs;
 use constellation_common::retry::Retry;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::PartyConfig;
 use constellation_streams::config::PollThreadConfig;
 use constellation_streams::config::PrivateDatagramModeConfig;
+use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
@@ -157,9 +161,9 @@ impl PrivateMsgs<Vec<u8>> for ExampleServerMsgs {
     }
 }
 
-impl<AuthMsg> AuthNMsgRecv<String, Vec<u8>, AuthMsg> for ExampleClientRecv
+impl<AuthMsg> AuthNMsgRecv<String, AuthMsg> for ExampleClientRecv
 where
-    AuthMsg: AuthNed<String, Vec<u8>>
+    AuthMsg: AuthNedDestruct<String, Vec<u8>>
 {
     type RecvError = Infallible;
 
@@ -167,20 +171,22 @@ where
         &mut self,
         msg: AuthMsg
     ) -> Result<(), Self::RecvError> {
+        let (prin, msg) = msg.take();
+
         info!(target: "client-recv",
-              "received {:?} from {}", msg.get(), msg.prin());
+              "received {:?} from {}", msg, prin);
 
         self.live.store(false, Ordering::Release);
 
-        assert_eq!(msg.get(), &FIRST_BYTES[..]);
+        assert_eq!(msg, &FIRST_BYTES[..]);
 
         Ok(())
     }
 }
 
-impl<AuthMsg> AuthNMsgRecv<String, Vec<u8>, AuthMsg> for ExampleServerRecv
+impl<AuthMsg> AuthNMsgRecv<String, AuthMsg> for ExampleServerRecv
 where
-    AuthMsg: AuthNed<String, Vec<u8>>
+    AuthMsg: AuthNedDestruct<String, Vec<u8>>
 {
     type RecvError = Infallible;
 
@@ -188,12 +194,14 @@ where
         &mut self,
         msg: AuthMsg
     ) -> Result<(), Self::RecvError> {
+        let (prin, msg) = msg.take();
+
         info!(target: "server-recv",
-              "received {:?} from {}", msg.get(), msg.prin());
+              "received {:?} from {}", msg, prin);
 
         self.live.store(true, Ordering::Release);
 
-        assert_eq!(msg.get(), &FIRST_BYTES[..]);
+        assert_eq!(msg, &FIRST_BYTES[..]);
 
         Ok(())
     }
@@ -261,6 +269,21 @@ type ExampleServerPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
+    BasicAuthNed<
+        String,
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                CompoundFlow<
+                    PassthruDatagramXfrm<UnixSocketPath>,
+                    PassthruDatagramXfrm<SocketAddr>
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
+    >,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -278,6 +301,21 @@ type ExampleClientPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
+    BasicAuthNed<
+        String,
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                CompoundFlow<
+                    PassthruDatagramXfrm<UnixSocketPath>,
+                    PassthruDatagramXfrm<SocketAddr>
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
+    >,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -293,7 +331,7 @@ fn server(conf: &str) {
     let poll_config: PollThreadConfig<
         FarChannelsConfig<
             CompoundFarChannelConfig,
-            (),
+            BasicAuthNConfig<String>,
             CompoundXfrmCreateParam<
                 PassthruDatagramXfrmParam,
                 PassthruDatagramXfrmParam
@@ -302,7 +340,13 @@ fn server(conf: &str) {
             ()
         >,
         PrivateDatagramModeConfig,
-        PartyConfig<ResolverConfig, (), String, CompoundFarEndpoint>,
+        PartyConfig<
+            ResolverConfig,
+            (),
+            String,
+            CompoundOutboundNegotiatorParam,
+            CompoundFarEndpoint
+        >,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
@@ -311,7 +355,7 @@ fn server(conf: &str) {
         live: live,
         sent: false
     };
-    let mut ctx = ExampleCtx {
+    let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new(),
         poll: Poll::new().expect("Expected success")
@@ -332,7 +376,7 @@ fn client(conf: &str) {
     let poll_config: PollThreadConfig<
         FarChannelsConfig<
             CompoundFarChannelConfig,
-            (),
+            BasicAuthNConfig<String>,
             CompoundXfrmCreateParam<
                 PassthruDatagramXfrmParam,
                 PassthruDatagramXfrmParam
@@ -341,22 +385,37 @@ fn client(conf: &str) {
             ()
         >,
         PrivateDatagramModeConfig,
-        PartyConfig<ResolverConfig, (), String, CompoundFarEndpoint>,
+        PartyConfig<
+            ResolverConfig,
+            (),
+            String,
+            CompoundOutboundNegotiatorParam,
+            CompoundFarEndpoint
+        >,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
-    let recv = ExampleServerRecv { live: live.clone() };
+    let recv = ExampleClientRecv { live: live.clone() };
     let msgs = ExampleClientMsgs {
         live: live,
         retry: Retry::default(),
         nretries: 0
     };
-    let mut ctx = ExampleCtx {
+    let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new(),
         poll: Poll::new().expect("Expected success")
     };
     let self_party: Option<String> = None;
+    let poll: JoinHandle<()> = PollThread::<
+        ExampleCtx<SharedNSNameCaches>,
+        ExampleClientPollTypes
+    >::start(
+        poll_config, self_party, ctx, recv, msgs
+    )
+    .unwrap();
+
+    poll.join().unwrap();
 }
 
 fn main() {
@@ -376,8 +435,8 @@ fn main() {
     let conf = std::fs::read_to_string(&args[2]).unwrap();
 
     match args[1].as_str() {
-        //        "client" => client(&conf),
-        //        "server" => server(&conf),
+        "client" => client(&conf),
+        "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);

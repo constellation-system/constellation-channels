@@ -222,7 +222,7 @@ where
     type Config = ResolverConfig;
     type CreateError =
         MixedResolverCreateError<<Resolution<Addr> as TryFrom<Origin>>::Error>;
-    type OriginConfig = IPEndpoint;
+    type OriginConfig = Origin;
 
     fn create<I>(
         ctx: &mut Ctx,
@@ -230,7 +230,7 @@ where
         origins: I
     ) -> Result<Self, Self::CreateError>
     where
-        I: Iterator<Item = IPEndpoint> {
+        I: Iterator<Item = Origin> {
         let (mut fixed, mut resolved) =
             if let (_, Some(hint)) = origins.size_hint() {
                 (Vec::with_capacity(hint), Vec::with_capacity(hint))
@@ -239,8 +239,6 @@ where
             };
 
         for origin in origins {
-            let origin = Origin::from(origin);
-
             match Resolution::try_from(origin.clone())
                 .map_err(|err| MixedResolverCreateError::Convert { err: err })?
             {

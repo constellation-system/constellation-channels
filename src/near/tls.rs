@@ -152,8 +152,7 @@ pub enum TLSSessionCreateError<Session, Channel> {
 /// const CONFIG: &'static str = concat!(
 ///     "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
 ///     "key: tests/data/certs/server/private/test_server_key.pem\n",
-///     "addr: ::0\n",
-///     "port: 8008\n"
+///     "addr: '[::0]:8008'\n"
 /// );
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
@@ -228,8 +227,7 @@ pub struct TLSNearAcceptor<A: NearChannel + Source, TLS: TLSLoadServer> {
 ///     "trust-root:\n",
 ///     "  root-certs:\n",
 ///     "    - tests/data/certs/server/ca_cert.pem\n",
-///     "addr: en.wikipedia.org\n",
-///     "port: 443\n"
+///     "addr: en.wikipedia.org:443\n"
 /// );
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();

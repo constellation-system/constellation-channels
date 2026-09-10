@@ -40,5 +40,8 @@ tls:
 
     verify-endpoint: test-server.nowhere.com
 
-    unix-stream:
-      path: near-client-server-example-server.sock
+#    unix-stream:
+#      path: near-client-server-example-server.sock
+
+    tcp:
+      addr: localhost:7227

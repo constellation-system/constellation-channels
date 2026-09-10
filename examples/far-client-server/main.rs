@@ -30,6 +30,8 @@ use constellation_channels::far::compound::CompoundFarChannel;
 use constellation_channels::far::compound::CompoundFarChannelAcquireState;
 use constellation_channels::far::compound::CompoundFarChannelParam;
 use constellation_channels::far::compound::CompoundFarChannelXfrm;
+use constellation_channels::far::compound::CompoundFarIPChannelAcquireState;
+use constellation_channels::far::compound::CompoundFarIPChannelParam;
 use constellation_channels::far::flows::accept_one;
 use constellation_channels::far::flows::connect_one;
 use constellation_channels::far::flows::read_one;
@@ -120,6 +122,11 @@ fn server(conf: &str) {
         CompoundFarChannelAcquireState::Unix { unix } => {
             CompoundFarChannelParam::Unix { unix: unix }
         }
+        CompoundFarChannelAcquireState::IP {
+            ip: CompoundFarIPChannelAcquireState::UDP { udp }
+        } => CompoundFarChannelParam::IP {
+            ip: CompoundFarIPChannelParam::UDP { udp: udp }
+        },
         _ => panic!("Expected Unix acquired")
     };
     let create_param: CompoundXfrmCreateParam<(), ()> =
@@ -195,6 +202,11 @@ fn client(
         CompoundFarChannelAcquireState::Unix { unix } => {
             CompoundFarChannelParam::Unix { unix: unix }
         }
+        CompoundFarChannelAcquireState::IP {
+            ip: CompoundFarIPChannelAcquireState::UDP { udp }
+        } => CompoundFarChannelParam::IP {
+            ip: CompoundFarIPChannelParam::UDP { udp: udp }
+        },
         _ => panic!("Expected Unix acquired")
     };
     let create_param: CompoundXfrmCreateParam<(), ()> =

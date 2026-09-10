@@ -4928,7 +4928,7 @@ where
                   name);
 
             // XXX have context carry parameters such as unsafe options.
-            let authn = Types::AuthN::create(authn_config, false)
+            let authn = Types::AuthN::create(authn_config, true)
                 .map_err(|err| FarChannelsCreateError::Auth { err: err })?;
             let channel = Types::Channel::create(ctx, channel)
                 .map_err(|err| FarChannelsCreateError::Channel { err: err })?;
@@ -6976,9 +6976,9 @@ fn test_compound_udp() {
     init();
 
     const SERVER_CONFIG: &'static str =
-        concat!("udp:\n", "  addr: ::0\n", "  port: 8200\n");
+        concat!("udp:\n", "  addr: '[::0]:8200'\n");
     const CLIENT_CONFIG: &'static str =
-        concat!("udp:\n", "  addr: ::0\n", "  port: 8201\n");
+        concat!("udp:\n", "  addr: '[::0]:8201'\n");
     let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
         "[::1]:8200".parse().expect("Expected success")
     );
@@ -7073,8 +7073,7 @@ fn test_compound_dtls_udp() {
         "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
         "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  udp:\n",
-        "    addr: ::0\n",
-        "    port: 8210\n"
+        "    addr: '[::0]:8210'\n"
     );
     const CLIENT_CONFIG: &'static str = concat!(
         "dtls:\n",
@@ -7092,8 +7091,7 @@ fn test_compound_dtls_udp() {
         "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
         "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  udp:\n",
-        "    addr: ::0\n",
-        "    port: 8211\n"
+        "    addr: '[::0]:8211'\n"
     );
     let server_endpoint = CompoundFarChannelXfrmPeerAddr::udp(
         "[::1]:8210".parse().expect("Expected success")

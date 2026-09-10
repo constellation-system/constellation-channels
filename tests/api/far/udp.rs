@@ -16,7 +16,6 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread::spawn;
@@ -45,8 +44,8 @@ use crate::init;
 fn test_send_recv() {
     init();
 
-    const CHANNEL_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7007\n");
-    const CLIENT_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7008\n");
+    const CHANNEL_CONFIG: &'static str = concat!("addr: '[::1]:7007'\n");
+    const CLIENT_CONFIG: &'static str = concat!("addr: '[::1]:7008'\n");
     const FIRST_BYTES: [u8; 8] =
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =
@@ -55,10 +54,8 @@ fn test_send_recv() {
         yaml_serde::from_str(CHANNEL_CONFIG).unwrap();
     let client_config: UDPFarChannelConfig =
         yaml_serde::from_str(CLIENT_CONFIG).unwrap();
-    let server_addr =
-        SocketAddr::new(server_config.addr().clone(), server_config.port());
-    let client_addr =
-        SocketAddr::new(client_config.addr().clone(), client_config.port());
+    let server_addr = server_config.addr().clone();
+    let client_addr = client_config.addr().clone();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 

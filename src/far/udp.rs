@@ -93,8 +93,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
-///     "addr: ::1\n",
-///     "port: 7006\n",
+///     "addr: '[::1]:7006'\n",
 /// );
 /// let udp_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
@@ -357,19 +356,19 @@ impl FarChannelCreate for UDPFarChannel {
     ) -> Result<Self, Self::CreateError>
     where
         Ctx: NSNameCachesCtx + TokensCtx {
-        let (addr, port, unsafe_opts) = config.take();
+        let (addr, unsafe_opts) = config.take();
 
         if unsafe_opts.allow_ip_addr_creds() {
             warn!(target: "udp-far-channel",
-                  concat!("unsafe option allow_ip_addr_creds enabled for ",
-                          "UDP far channel on {}:{} (this allows for trivial ",
-                          "spoofing of channel credentials)"),
-            addr, port)
+                  "unsafe option allow_ip_addr_creds enabled for UDP far \
+                   channel on {}:{} (this allows for trivial spoofing of \
+                   channel credentials)",
+            addr.ip(), addr.port())
         }
 
         Ok(UDPFarChannel {
             unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
-            bind: SocketAddr::new(addr, port)
+            bind: addr
         })
     }
 }

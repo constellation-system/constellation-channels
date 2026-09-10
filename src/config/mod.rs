@@ -53,7 +53,6 @@ use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
 use std::marker::PhantomData;
-use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
@@ -190,7 +189,7 @@ where
     #[serde(default)]
     default_resolve: AddrsConfig,
     /// Default authentication config.
-    default_authn: AuthN,
+    default_session_authn: AuthN,
     /// Context creation parameters.
     #[serde(default)]
     default_xfrm_params: Xfrm,
@@ -208,31 +207,6 @@ where
     default_retry: Retry,
     #[serde(default)]
     default_flows_size_hint: Option<usize>
-}
-
-/// Configuration parameters for stream creation for
-/// [FarChannelRegistry](crate::far::registry::FarChannelRegistry).
-///
-/// This is a configuration object used to configure the stream
-/// creation for
-/// [FarChannelRegistry](crate::far::registry::FarChannelRegistry).
-///
-/// # YAML Format
-///
-/// The YAML format has one field:
-///
-///  - `codec`: Parameters used to create the
-///    [DatagramCodec](constellation_common::codec::DatagramCodec) instances
-///    used to encode and decode messages.
-#[derive(
-    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename = "channels")]
-#[serde(rename_all = "kebab-case")]
-pub struct FarChannelRegistryChannelsConfig<Codec>
-where
-    Codec: Default {
-    codec: Codec
 }
 
 /// Entry for a single channel in the channel registry.
@@ -273,7 +247,7 @@ where
     #[serde(
         default = "FarChannelEntryConfig::<Channel, AuthN, Xfrm, Enc, Dec>::default_authn"
     )]
-    authn: Option<AuthN>,
+    session_authn: Option<AuthN>,
     /// Resolver configuration.
     #[serde(default)]
     resolve: Option<AddrsConfig>,
@@ -614,8 +588,7 @@ pub enum CompoundFarIPChannelConfig {
 ///           addr: proxy.example.com
 ///           port: 8888
 ///       target:
-///         addr: tor.nowhere.com
-///         port: 9050
+///         addr: tor.nowhere.com:9050
 ///       auth: gssapi
 ///   auth:
 ///     username: test
@@ -623,8 +596,7 @@ pub enum CompoundFarIPChannelConfig {
 ///   socks5-udp:
 ///     proxy:
 ///       tcp:
-///         addr: proxy.example.com
-///         port: 8888
+///         addr: proxy.example.com:8888
 ///     auth: gssapi
 ///     udp:
 ///       addr: ::0
@@ -858,9 +830,7 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 ///     proxy:
 ///       unix-stream:
 ///         path: /var/run/proxy/proxy.sock
-///     target:
-///       addr: en.wikipedia.org
-///       port: 443
+///     target: en.wikipedia.org:443
 /// ```
 ///
 /// ### TLS Over Secured Remote SOCKS5
@@ -1949,11 +1919,8 @@ pub struct SOCKS5AssocConfig<Proxy, Datagram> {
 ///       factor: 400
 ///       exp-base: 2.0
 ///       exp-factor: 2.0
-///   addr: proxy.example.com
-///   port: 9050
-/// target:
-///   addr: en.wikipedia.org
-///   port: 443
+///   addr: proxy.example.com:9050
+/// target: en.wikipedia.org:443
 /// password:
 ///   username: user
 ///   password: abc123
@@ -1966,11 +1933,8 @@ pub struct SOCKS5AssocConfig<Proxy, Datagram> {
 ///
 /// ```yaml
 /// proxy:
-///   addr: proxy.example.com
-///   port: 9050
-/// target:
-///   addr: en.wikipedia.org
-///   port: 443
+///   addr: proxy.example.com:9050
+/// target: en.wikipedia.org:443
 /// auth:
 ///   password:
 ///     username: user
@@ -2094,22 +2058,20 @@ pub struct TCPNearChannelConfigUnsafe {
 /// - `addr`: The IP address at which to listen.  Note that this cannot be a
 ///   domain name.
 ///
-/// - `port`: The port on which to listen.
+/// - `unsafe`: Unsafe options.
 ///
 /// ## Examples
 ///
 /// The following is an example of the YAML format:
 ///
 /// ```yaml
-/// addr: 0.0.0.0
-/// port: 5004
+/// addr: 0.0.0.0:5004
 /// ```
 ///
 /// The following is an IPv6-based configuration:
 ///
 /// ```yaml
-/// addr: ::0
-/// port: 5005
+/// addr: '[::0]:5005'
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -2117,8 +2079,7 @@ pub struct TCPNearAcceptorConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: TCPNearChannelConfigUnsafe,
-    addr: IpAddr,
-    port: u16
+    addr: SocketAddr
 }
 
 /// TCP socket near-link connector configuration.
@@ -2152,8 +2113,7 @@ pub struct TCPNearAcceptorConfig {
 /// represented:
 ///
 /// ```yaml
-/// addr: test.example.com
-/// port: 5006
+/// addr: test.example.com:5006
 /// retry:
 ///   factor: 100
 ///   exp-base: 2.0
@@ -2178,8 +2138,7 @@ pub struct TCPNearAcceptorConfig {
 /// The following is a minimal configuration:
 ///
 /// ```yaml
-/// addr: test.example.com
-/// port: 5007
+/// addr: test.example.com:5007
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -2187,8 +2146,7 @@ pub struct TCPResolvingNearConnectorConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: TCPNearChannelConfigUnsafe,
-    #[serde(flatten)]
-    endpoint: IPEndpoint,
+    addr: IPEndpoint,
     /// Retry spec.
     #[serde(default)]
     retry: Retry,
@@ -2459,8 +2417,7 @@ pub struct UDPFarChannelConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: UDPFarChannelConfigUnsafe,
-    addr: IpAddr,
-    port: u16
+    addr: SocketAddr
 }
 
 /// Unix socket far-link configuration.
@@ -2832,7 +2789,7 @@ where
         id: String,
         channel: Channel,
         resolve: Option<AddrsConfig>,
-        authn_config: Option<AuthN>,
+        session_authn: Option<AuthN>,
         flows_params: Option<FlowsConfig>,
         xfrm_params: Option<Xfrm>,
         encoder: Option<Enc>,
@@ -2844,7 +2801,7 @@ where
             id: id,
             channel: channel,
             resolve: resolve,
-            authn: authn_config,
+            session_authn: session_authn,
             flows_params: flows_params,
             xfrm_params: xfrm_params,
             encoder: encoder,
@@ -2861,8 +2818,8 @@ where
     }
 
     #[inline]
-    pub fn authn(&self) -> Option<&AuthN> {
-        self.authn.as_ref()
+    pub fn session_authn(&self) -> Option<&AuthN> {
+        self.session_authn.as_ref()
     }
 
     /// Get the channel configuration.
@@ -2930,7 +2887,7 @@ where
             self.id,
             self.channel,
             self.resolve,
-            self.authn,
+            self.session_authn,
             self.flows_params,
             self.xfrm_params,
             self.encoder,
@@ -2942,35 +2899,6 @@ where
 
     fn default_authn() -> Option<AuthN> {
         None
-    }
-}
-
-impl<Codec> FarChannelRegistryChannelsConfig<Codec>
-where
-    Codec: Default
-{
-    /// Create a [ChannelRegistryChannelsConfig] from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    #[inline]
-    pub fn new(codec: Codec) -> Self {
-        FarChannelRegistryChannelsConfig { codec: codec }
-    }
-
-    /// Get the configuration parameters used to create
-    /// [DatagramCodec](constellation_common::codec::DatagramCodec)s.
-    #[inline]
-    pub fn codec(&self) -> &Codec {
-        &self.codec
-    }
-
-    /// Decompose this into its components.
-    ///
-    /// This produces the codec parameters.
-    #[inline]
-    pub fn take(self) -> Codec {
-        self.codec
     }
 }
 
@@ -2998,7 +2926,7 @@ where
         FarChannelsConfig {
             channels: channels,
             default_resolve: resolve,
-            default_authn: authn_config,
+            default_session_authn: authn_config,
             default_flows_params: flows_params,
             default_xfrm_params: xfrm_params,
             default_encoder: encoder,
@@ -3073,7 +3001,7 @@ where
         (
             self.channels,
             self.default_resolve,
-            self.default_authn,
+            self.default_session_authn,
             self.default_flows_params,
             self.default_xfrm_params,
             self.default_encoder,
@@ -4066,11 +3994,8 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     /// # use std::path::PathBuf;
     /// #
     /// let yaml = concat!("proxy:\n",
-    ///                    "  addr: test.example.com\n",
-    ///                    "  port: 9050\n",
-    ///                    "target:\n",
-    ///                    "  addr: en.wikipedia.org\n",
-    ///                    "  port: 443\n",
+    ///                    "  addr: test.example.com:9050\n",
+    ///                    "target: en.wikipedia.org:443\n",
     ///                    "auth:\n",
     ///                    "  username: user\n",
     ///                    "  password: pass\n");
@@ -4162,8 +4087,7 @@ impl<Proxy> SOCKS5ConnectPartialConfig<Proxy> {
     /// # use std::path::PathBuf;
     /// #
     /// let yaml = concat!("proxy:\n",
-    ///                    "  addr: test.example.com\n",
-    ///                    "  port: 9050\n",
+    ///                    "  addr: test.example.com:9050\n",
     ///                    "auth:\n",
     ///                    "  username: user\n",
     ///                    "  password: pass\n");
@@ -4246,11 +4170,9 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     /// # use std::path::PathBuf;
     /// # use std::net::SocketAddr;
     /// #
-    /// let yaml = concat!("addr: 0.0.0.0\n",
-    ///                    "port: 0\n",
+    /// let yaml = concat!("addr: 0.0.0.0:0\n",
     ///                    "proxy:\n",
-    ///                    "  addr: test.example.com\n",
-    ///                    "  port: 9050\n",
+    ///                    "  addr: test.example.com:9050\n",
     ///                    "auth:\n",
     ///                    "  username: user\n",
     ///                    "  password: pass\n");
@@ -4260,7 +4182,7 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     ///                                                  AddrsConfig::default(),
     ///                                                  Retry::default());
     /// let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-    /// let bind = UDPFarChannelConfig::new(addr.ip(), addr.port());
+    /// let bind = UDPFarChannelConfig::new(addr);
     /// let auth = SOCKS5AuthNConfig::Password {
     ///     username: String::from("user"),
     ///     password: String::from("pass")
@@ -4350,52 +4272,36 @@ impl TCPNearAcceptorConfig {
     /// # use constellation_channels::config::TCPNearAcceptorConfig;
     /// # use std::net::IpAddr;
     /// # use std::net::Ipv6Addr;
+    /// # use std::net::SocketAddr;
     /// #
-    /// let yaml = concat!("addr: ::0\n",
-    ///                    "port: 5014\n");
+    /// let yaml = concat!("addr: '[::0]:5014'\n");
+    /// let expected = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5014);
     ///
     /// assert_eq!(
-    ///     TCPNearAcceptorConfig::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5014),
+    ///     TCPNearAcceptorConfig::new(expected),
     ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
-    pub fn new(
-        addr: IpAddr,
-        port: u16
-    ) -> Self {
-        Self::new_with_unsafe(addr, port, TCPNearChannelConfigUnsafe::default())
+    pub fn new(addr: SocketAddr) -> Self {
+        Self::new_with_unsafe(addr, TCPNearChannelConfigUnsafe::default())
     }
 
     #[inline]
     pub fn new_with_unsafe(
-        addr: IpAddr,
-        port: u16,
+        addr: SocketAddr,
         unsafe_opts: TCPNearChannelConfigUnsafe
     ) -> Self {
         TCPNearAcceptorConfig {
             unsafe_opts: unsafe_opts,
-            addr: addr,
-            port: port
+            addr: addr
         }
     }
 
     /// Get the listen address as a [SocketAddr].
     #[inline]
     pub fn socket_addr(&self) -> SocketAddr {
-        SocketAddr::new(self.addr, self.port)
-    }
-
-    /// Get the IP address at which this acceptor listens.
-    #[inline]
-    pub fn ip_addr(&self) -> IpAddr {
         self.addr
-    }
-
-    /// Get the port on which this acceptor listens.
-    #[inline]
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// Get the unsafe options.
@@ -4427,8 +4333,7 @@ impl TCPResolvingNearConnectorConfig {
     /// # use std::path::PathBuf;
     /// # use std::time::Duration;
     /// #
-    /// let yaml = concat!("addr: test.example.com\n",
-    ///                    "port: 5015\n",
+    /// let yaml = concat!("addr: test.example.com:5015\n",
     ///                    "resolve:\n",
     ///                    "  addr-policy:\n",
     ///                    "    - ipv6\n",
@@ -4482,14 +4387,14 @@ impl TCPResolvingNearConnectorConfig {
 
     #[inline]
     pub fn new_with_unsafe(
-        endpoint: IPEndpoint,
+        addr: IPEndpoint,
         resolve: AddrsConfig,
         retry: Retry,
         unsafe_opts: TCPNearChannelConfigUnsafe
     ) -> Self {
         TCPResolvingNearConnectorConfig {
             unsafe_opts: unsafe_opts,
-            endpoint: endpoint,
+            addr: addr,
             resolve: resolve,
             retry: retry
         }
@@ -4499,7 +4404,7 @@ impl TCPResolvingNearConnectorConfig {
     /// attempts to connect.
     #[inline]
     pub fn endpoint(&self) -> &IPEndpoint {
-        &self.endpoint
+        &self.addr
     }
 
     /// Get the [AddrsConfig] for resolving names into IP addresses.
@@ -4535,7 +4440,7 @@ impl TCPResolvingNearConnectorConfig {
     pub(crate) fn take(
         self
     ) -> (IPEndpoint, AddrsConfig, Retry, TCPNearChannelConfigUnsafe) {
-        (self.endpoint, self.resolve, self.retry, self.unsafe_opts)
+        (self.addr, self.resolve, self.retry, self.unsafe_opts)
     }
 }
 
@@ -4799,46 +4704,34 @@ impl UDPFarChannelConfig {
     /// # use constellation_channels::config::UDPFarChannelConfigUnsafe;
     /// # use std::net::SocketAddr;
     /// #
-    /// let yaml = concat!("addr: 0.0.0.0\n",
-    ///                    "port: 5016\n");
+    /// let yaml = concat!("addr: 0.0.0.0:5016\n");
     /// let addr: SocketAddr = "0.0.0.0:5016".parse().unwrap();
     ///
     /// assert_eq!(
-    ///     UDPFarChannelConfig::new(addr.ip(), addr.port()),
+    ///     UDPFarChannelConfig::new(addr),
     ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
-    pub fn new(
-        addr: IpAddr,
-        port: u16
-    ) -> Self {
-        Self::new_with_unsafe(addr, port, UDPFarChannelConfigUnsafe::default())
+    pub fn new(addr: SocketAddr) -> Self {
+        Self::new_with_unsafe(addr, UDPFarChannelConfigUnsafe::default())
     }
 
     #[inline]
     pub fn new_with_unsafe(
-        addr: IpAddr,
-        port: u16,
+        addr: SocketAddr,
         unsafe_opts: UDPFarChannelConfigUnsafe
     ) -> Self {
         UDPFarChannelConfig {
             unsafe_opts: unsafe_opts,
-            addr: addr,
-            port: port
+            addr: addr
         }
     }
 
     /// Get the IP address to which the socket will be bound.
     #[inline]
-    pub fn addr(&self) -> &IpAddr {
+    pub fn addr(&self) -> &SocketAddr {
         &self.addr
-    }
-
-    /// Get the port to which the socket will be bound.
-    #[inline]
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// Get the unsafe options.
@@ -4849,8 +4742,8 @@ impl UDPFarChannelConfig {
 
     /// Decompose this `UDPFarChannelConfig` into its components.
     #[inline]
-    pub(crate) fn take(self) -> (IpAddr, u16, UDPFarChannelConfigUnsafe) {
-        (self.addr, self.port, self.unsafe_opts)
+    pub(crate) fn take(self) -> (SocketAddr, UDPFarChannelConfigUnsafe) {
+        (self.addr, self.unsafe_opts)
     }
 }
 
@@ -4981,6 +4874,8 @@ impl Display for CompoundFarEndpoint {
 }
 
 #[cfg(test)]
+use std::net::IpAddr;
+#[cfg(test)]
 use std::net::Ipv4Addr;
 
 #[cfg(test)]
@@ -4999,11 +4894,10 @@ fn test_deserialize_unix_cfg() {
 
 #[test]
 fn test_deserialize_tcp_cfg() {
-    let yaml = concat!("addr: 10.10.10.10\n", "port: 6000");
+    let yaml = concat!("addr: 10.10.10.10:6000");
     let expected = TCPNearAcceptorConfig {
         unsafe_opts: TCPNearChannelConfigUnsafe::default(),
-        addr: IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10)),
-        port: 6000
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10)), 6000)
     };
     let actual = yaml_serde::from_str(yaml).unwrap();
 
@@ -5013,15 +4907,14 @@ fn test_deserialize_tcp_cfg() {
 #[test]
 fn test_deserialize_tcp_connector_cfg() {
     let yaml = concat!(
-        "addr: example.com\n",
-        "port: 6001\n",
+        "addr: example.com:6001\n",
         "resolve:\n",
         "  addr-policy: [ ipv6 ]\n",
         "  renewal: 3600000"
     );
     let expected = TCPResolvingNearConnectorConfig {
         unsafe_opts: TCPNearChannelConfigUnsafe::default(),
-        endpoint: IPEndpoint::new(
+        addr: IPEndpoint::new(
             IPEndpointAddr::Name(String::from("example.com")),
             6001
         ),

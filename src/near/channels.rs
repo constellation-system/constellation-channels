@@ -7368,7 +7368,7 @@ fn test_tcp() {
     init();
 
     const SERVER_CONF: &'static str =
-        concat!("tcp:\n", "  addr: ::0\n", "  port: 8100\n");
+        concat!("tcp:\n", "  addr: '[::0]:8100'\n");
     const CLIENT_CONF: &'static str = concat!("tcp:",);
     let endpoint = CompoundNearNameAddr::TCP {
         tcp: "[::1]:8100".parse().expect("Expected success")
@@ -7448,8 +7448,7 @@ fn test_tls_tcp() {
         "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
         "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  tcp:\n",
-        "    addr: ::0\n",
-        "    port: 8101\n"
+        "    addr: '[::0]:8101'\n"
     );
     const CLIENT_CONF: &'static str = concat!(
         "tls:\n",

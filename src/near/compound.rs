@@ -561,8 +561,7 @@ pub enum CompoundNearCredential {
 ///     "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
 ///     "  key: tests/data/certs/server/private/test_server_key.pem\n",
 ///     "  tcp:\n",
-///     "    addr: ::0\n",
-///     "    port: 8001\n"
+///     "    addr: '[::0]:8001'\n"
 /// );
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
@@ -627,8 +626,7 @@ pub enum CompoundNearAcceptor<TLS: Clone + Debug + TLSLoadServer> {
 ///     "    root-certs:\n",
 ///     "      - tests/data/certs/server/ca_cert.pem\n",
 ///     "  tcp:\n",
-///     "    addr: en.wikipedia.org\n",
-///     "    port: 443\n"
+///     "    addr: en.wikipedia.org:443\n"
 /// );
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();

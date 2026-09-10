@@ -128,8 +128,7 @@ use crate::tls::TLSStartError;
 /// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
-///     "addr: ::1\n",
-///     "port: 8281\n",
+///     "addr: '[::1]:8281'\n",
 ///     "trust-root:\n",
 ///     "  root-certs:\n",
 ///     "    - tests/data/certs/client/ca_cert.pem\n",

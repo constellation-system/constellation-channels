@@ -144,12 +144,9 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = concat!(
-///     "target:\n",
-///     "  addr: en.wikipedia.org\n",
-///     "  port: 443\n",
+///     "target: en.wikipedia.org:443\n",
 ///     "proxy:\n",
-///     "  addr: test.example.com\n",
-///     "  port: 9050\n",
+///     "  addr: test.example.com:9050\n",
 ///     "auth:\n",
 ///     "  username: test\n",
 ///     "  password: abc123\n"

@@ -41,9 +41,8 @@ use crate::init;
 fn test_send_recv() {
     init();
 
-    const SERVER_CONFIG: &'static str = concat!("addr: ::1\n", "port: 8006\n");
-    const CLIENT_CONFIG: &'static str =
-        concat!("addr: localhost\n", "port: 8006\n");
+    const SERVER_CONFIG: &'static str = concat!("addr: '[::1]:8006'\n");
+    const CLIENT_CONFIG: &'static str = concat!("addr: localhost:8006\n");
     const FIRST_BYTES: [u8; 8] =
         [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     const SECOND_BYTES: [u8; 8] =

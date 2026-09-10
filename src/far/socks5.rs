@@ -235,11 +235,9 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
-///     "addr: 0.0.0.0\n",
-///     "port: 0\n",
+///     "addr: 0.0.0.0:0\n",
 ///     "proxy:\n",
-///     "  addr: test.example.com\n",
-///     "  port: 9050\n",
+///     "  addr: test.example.com:9050\n",
 ///     "auth:\n",
 ///     "  username: test\n",
 ///     "  password: abc123\n"

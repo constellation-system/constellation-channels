@@ -293,8 +293,7 @@ fn test_compound_dtls_udp() {
         "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
         "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  udp:\n",
-        "    addr: ::1\n",
-        "    port: 7003\n"
+        "    addr: '[::1]:7003'\n"
     );
 
     const CLIENT_CONFIG: &'static str = concat!(
@@ -313,8 +312,7 @@ fn test_compound_dtls_udp() {
         "  cert: tests/data/certs/client/certs/test_client_cert.pem\n",
         "  key: tests/data/certs/client/private/test_client_key.pem\n",
         "  udp:\n",
-        "    addr: ::1\n",
-        "    port: 7004\n"
+        "    addr: '[::1]:7004'\n"
     );
 
     const FIRST_BYTES: [u8; 8] =

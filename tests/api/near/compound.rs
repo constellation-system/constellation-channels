@@ -199,8 +199,7 @@ fn test_compound_tls_tcp() {
         "  cert: tests/data/certs/server/certs/test_server_cert.pem\n",
         "  key: tests/data/certs/server/private/test_server_key.pem\n",
         "  tcp:\n",
-        "    addr: ::0\n",
-        "    port: 8002\n"
+        "    addr: '[::0]:8002'"
     );
 
     const CLIENT_CONF: &'static str = concat!(
@@ -219,8 +218,7 @@ fn test_compound_tls_tcp() {
         "  client-key: tests/data/certs/client/private/test_client_key.pem\n",
         "  verify-endpoint: test-server.nowhere.com\n",
         "  tcp:\n",
-        "    addr: localhost\n",
-        "    port: 8002\n"
+        "    addr: localhost:8002\n"
     );
 
     test_compound(SERVER_CONF, CLIENT_CONF)
@@ -262,8 +260,7 @@ fn test_compound_double_tls() {
         "    cert: tests/data/certs/server/certs/test_server_cert.pem\n",
         "    key: tests/data/certs/server/private/test_server_key.pem\n",
         "    tcp:\n",
-        "      addr: ::0\n",
-        "      port: 8003\n"
+        "      addr: \'[::0]:8003\'",
     );
 
     const CLIENT_CONF: &'static str = concat!(
@@ -296,8 +293,7 @@ fn test_compound_double_tls() {
         "    client-key: tests/data/certs/client/private/test_client_key.pem\n",
         "    verify-endpoint: test-server.nowhere.com\n",
         "    tcp:\n",
-        "      addr: localhost\n",
-        "      port: 8003\n"
+        "      addr: localhost:8003"
     );
 
     test_compound(SERVER_CONF, CLIENT_CONF)

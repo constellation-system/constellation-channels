@@ -101,8 +101,7 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_channels::near::tcp::TCPNearAcceptor;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
-/// const CONFIG: &'static str = concat!("addr: ::0\n",
-///                                      "port: 8005\n");
+/// const CONFIG: &'static str = concat!("addr: '[::0]:8005'\n");
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
@@ -150,8 +149,7 @@ pub struct TCPNearAcceptor {
 /// # use constellation_channels::near::tcp::TCPResolvingNearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
-/// const CONFIG: &'static str = concat!("addr: en.wikipedia.org\n",
-///                                      "port: 443\n");
+/// const CONFIG: &'static str = concat!("addr: en.wikipedia.org:443\n");
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///

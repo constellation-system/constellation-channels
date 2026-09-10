@@ -1,0 +1,39 @@
+default-session-authn:
+  rules:
+    - prin: client
+      cred:
+        unix: far-threads-example-client-datagram.sock
+
+    - prin: client
+      cred:
+        unsafe:
+          ip: '[::1]:7117'
+
+  unsafe:
+    allow-unsafe-ip-creds: true
+
+channels:
+  - id: server-udp
+    udp:
+      addr: '[::0]:7227'
+
+  - id: server-unix
+    unix-datagram:
+      path: far-threads-example-server-datagram.sock
+
+connections:
+  - channel-names:
+      - server-udp
+
+    endpoints:
+      - addr:
+          udp: '[::1]:7117'
+
+  - channel-names:
+      - server-unix
+
+    endpoints:
+      - addr:
+          unix-datagram: far-threads-example-client-datagram.sock
+
+msg-authn: null

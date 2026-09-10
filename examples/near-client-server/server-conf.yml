@@ -42,5 +42,8 @@ tls:
 
     key: tests/data/certs/server/private/test_server_key.pem
 
-    unix-stream:
-      path: near-client-server-example-server.sock
+#    unix-stream:
+#      path: near-client-server-example-server.sock
+
+    tcp:
+      addr: '[::0]:7227'

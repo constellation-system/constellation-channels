@@ -16,7 +16,6 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread::spawn;
@@ -47,8 +46,7 @@ use crate::init;
 
 #[cfg(test)]
 const CHANNEL_CONFIG: &'static str = concat!(
-    "addr: ::1\n",
-    "port: 8281\n",
+    "addr: '[::1]:8281'\n",
     "cipher-suites:\n",
     "  - TLS_AES_256_GCM_SHA384\n",
     "  - TLS_CHACHA20_POLY1305_SHA256\n",
@@ -66,8 +64,7 @@ const CHANNEL_CONFIG: &'static str = concat!(
 
 #[cfg(test)]
 const CLIENT_CONFIG: &'static str = concat!(
-    "addr: ::1\n",
-    "port: 8282\n",
+    "addr: '[::1]:8282'\n",
     "cipher-suites:\n",
     "  - TLS_AES_256_GCM_SHA384\n",
     "  - TLS_CHACHA20_POLY1305_SHA256\n",
@@ -95,14 +92,8 @@ fn test_send_recv() {
         yaml_serde::from_str(CHANNEL_CONFIG).unwrap();
     let client_config: DTLSFarChannelConfig<UDPFarChannelConfig> =
         yaml_serde::from_str(CLIENT_CONFIG).unwrap();
-    let server_addr = SocketAddr::new(
-        server_config.tls().underlying().addr().clone(),
-        server_config.tls().underlying().port()
-    );
-    let client_addr = SocketAddr::new(
-        client_config.tls().underlying().addr().clone(),
-        client_config.tls().underlying().port()
-    );
+    let server_addr = server_config.tls().underlying().addr().clone();
+    let client_addr = client_config.tls().underlying().addr().clone();
     let nscaches = SharedNSNameCaches::new();
     let barrier = Arc::new(Barrier::new(2));
 

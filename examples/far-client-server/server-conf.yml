@@ -38,5 +38,8 @@ dtls:
 
     key: tests/data/certs/server/private/test_server_key.pem
 
-    unix-datagram:
-      path: far-client-server-example-server.sock
+#    unix-datagram:
+#      path: far-client-server-example-server.sock
+
+    udp: 
+      addr: '[::0]:7227'

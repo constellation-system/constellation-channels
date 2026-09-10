@@ -1,7 +1,7 @@
 param:
 
 addr:
-  udp: "[::1]:7117"
+  udp: '[::1]:7117'
 
 #addr:
 #  unix-datagram: far-channels-example-server.sock

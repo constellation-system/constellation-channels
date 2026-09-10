@@ -234,8 +234,7 @@ pub enum CompoundFarIPChannel {
 ///     "  cert: test/data/certs/client/certs/test_client_cert.pem\n",
 ///     "  key: test/data/certs/client/private/test_client_key.pem\n",
 ///     "  udp:\n",
-///     "    addr: ::0\n",
-///     "    port: 7002\n"
+///     "    addr: '[::0]:7002'\n"
 /// );
 /// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
