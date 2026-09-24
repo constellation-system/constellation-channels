@@ -2378,6 +2378,7 @@ pub struct TLSParam<Inner> {
 #[serde(rename_all = "kebab-case")]
 pub struct UDPFarChannelConfigUnsafe {
     /// Allow IP addresses as credentials on this channel.
+    #[serde(rename = "allow-ip-addr-creds")]
     unsafe_allow_ip_addr_creds: bool
 }
 

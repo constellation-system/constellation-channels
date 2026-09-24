@@ -62,6 +62,7 @@ use constellation_streams::stream::LargeObjOfferStream;
 use constellation_streams::stream::LargeObjStream;
 use constellation_streams::stream::Parties;
 use constellation_streams::stream::PullStream;
+use constellation_streams::stream::PullStreamsOutput;
 use constellation_streams::stream::PushStream;
 use constellation_streams::stream::PushStreamAdd;
 use constellation_streams::stream::PushStreamPartyID;
@@ -5544,6 +5545,13 @@ where
     }
 }
 
+impl<Accept, Conn> PullStreamsOutput for DuplexValue<Accept, Conn>
+where
+    Accept: PullStreamsOutput,
+    Conn: PullStreamsOutput<PullStreams = Accept::PullStreams> {
+    type PullStreams = Accept::PullStreams;
+}
+
 impl<Accept, Conn, Ctx> PushStreamPrivate<Ctx> for DuplexValue<Accept, Conn>
 where
     Accept: PushStreamPrivate<Ctx>,
@@ -5564,6 +5572,7 @@ where
             FinishBatchRetry = Accept::FinishBatchRetry,
             ReportError = Accept::ReportError,
             StartBatchStreamBatches = Accept::StartBatchStreamBatches,
+            PullStreams = Accept::PullStreams,
             StreamFlags = Accept::StreamFlags
         >
 {
@@ -5593,7 +5602,8 @@ where
         &mut self,
         ctx: &mut Ctx,
         selections: &mut Self::Selections
-    ) -> Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>
+    ) -> (Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
+          Option<Self::PullStreams>)
     {
         match self {
             DuplexValue::Conn(conn) => conn.select(ctx, selections),
@@ -5606,7 +5616,8 @@ where
         ctx: &mut Ctx,
         selections: &mut Self::Selections,
         retry: Self::SelectRetry
-    ) -> Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>
+    ) -> (Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
+          Option<Self::PullStreams>)
     {
         match self {
             DuplexValue::Conn(conn) => {
@@ -5623,7 +5634,8 @@ where
         ctx: &mut Ctx,
         selections: &mut Self::Selections,
         err: <Self::SelectError as RecoverableError>::Completable
-    ) -> Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>
+    ) -> (Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
+          Option<Self::PullStreams>)
     {
         match self {
             DuplexValue::Conn(conn) => {
@@ -5697,10 +5709,10 @@ where
     fn start_batch(
         &mut self,
         ctx: &mut Ctx
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
         Self::StartBatchError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => conn.start_batch(ctx),
             DuplexValue::Accept(accept) => accept.start_batch(ctx)
@@ -5711,10 +5723,10 @@ where
         &mut self,
         ctx: &mut Ctx,
         retry: Self::StartBatchRetry
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
         Self::StartBatchError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => conn.retry_start_batch(ctx, retry),
             DuplexValue::Accept(accept) => accept.retry_start_batch(ctx, retry)
@@ -5725,10 +5737,10 @@ where
         &mut self,
         ctx: &mut Ctx,
         err: <Self::StartBatchError as RecoverableError>::Completable
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
         Self::StartBatchError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => conn.complete_start_batch(ctx, err),
             DuplexValue::Accept(accept) => accept.complete_start_batch(ctx, err)
@@ -5834,6 +5846,7 @@ where
             FinishBatchRetry = Accept::FinishBatchRetry,
             ReportError = Accept::ReportError,
             StartBatchStreamBatches = Accept::StartBatchStreamBatches,
+            PullStreams = Accept::PullStreams,
             StreamFlags = Accept::StreamFlags
         >
 {
@@ -5846,7 +5859,8 @@ where
         &mut self,
         ctx: &mut Ctx,
         msg: &T
-    ) -> Result<RetryIndefResult<Self::BatchID, Self::PushRetry>, Self::PushError>
+    ) -> (Result<RetryIndefResult<Self::BatchID, Self::PushRetry>,
+                 Self::PushError>, Option<Self::PullStreams>)
     {
         match self {
             DuplexValue::Conn(conn) => conn.push(ctx, msg),
@@ -5859,7 +5873,8 @@ where
         ctx: &mut Ctx,
         msg: &T,
         retry: Self::PushRetry
-    ) -> Result<RetryIndefResult<Self::BatchID, Self::PushRetry>, Self::PushError>
+    ) -> (Result<RetryIndefResult<Self::BatchID, Self::PushRetry>,
+                 Self::PushError>, Option<Self::PullStreams>)
     {
         match self {
             DuplexValue::Conn(conn) => conn.retry_push(ctx, msg, retry),
@@ -5872,7 +5887,8 @@ where
         ctx: &mut Ctx,
         msg: &T,
         err: <Self::PushError as RecoverableError>::Completable
-    ) -> Result<RetryIndefResult<Self::BatchID, Self::PushRetry>, Self::PushError>
+    ) -> (Result<RetryIndefResult<Self::BatchID, Self::PushRetry>,
+                 Self::PushError>, Option<Self::PullStreams>)
     {
         match self {
             DuplexValue::Conn(conn) => conn.complete_push(ctx, msg, err),
@@ -5924,6 +5940,7 @@ where
             Ctx,
             Frags = Accept::Frags,
             Parties = Accept::Parties,
+            PullStreams = Accept::PullStreams,
             PushFragError = Accept::PushFragError,
             PushFragRetry = Accept::PushFragRetry
         >
@@ -5938,14 +5955,14 @@ where
         ctx: &mut Ctx,
         id: LargeObjID,
         frags: &mut Self::Frags
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<
             (Option<Instant>, Accept::Parties),
             Self::PushFragRetry,
             Parties<Accept::Parties>
         >,
         Self::PushFragError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => conn.push_frags(ctx, id, frags),
             DuplexValue::Accept(accept) => accept.push_frags(ctx, id, frags)
@@ -5958,14 +5975,14 @@ where
         id: LargeObjID,
         frags: &mut Self::Frags,
         retry: Self::PushFragRetry
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<
             (Option<Instant>, Accept::Parties),
             Self::PushFragRetry,
             Parties<Accept::Parties>
         >,
         Self::PushFragError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.retry_push_frags(ctx, id, frags, retry)
@@ -5982,14 +5999,14 @@ where
         id: LargeObjID,
         frags: &mut Self::Frags,
         err: <Self::PushFragError as RecoverableError>::Completable
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<
             (Option<Instant>, Accept::Parties),
             Self::PushFragRetry,
             Parties<Accept::Parties>
         >,
         Self::PushFragError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.complete_push_frags(ctx, id, frags, err)
@@ -6011,6 +6028,7 @@ where
             Ctx,
             Frags = Accept::Frags,
             Parties = Accept::Parties,
+            PullStreams = Accept::PullStreams,
             PushFragError = Accept::PushFragError,
             PushFragRetry = Accept::PushFragRetry,
             PushOfferError = Accept::PushOfferError,
@@ -6025,14 +6043,14 @@ where
         ctx: &mut Ctx,
         hash: H,
         frags: &mut Self::Frags
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<
             (Option<Instant>, Self::Parties),
             Self::PushOfferRetry,
             Parties<Self::Parties>
         >,
         Self::PushOfferError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => conn.push_offer(ctx, hash, frags),
             DuplexValue::Accept(accept) => accept.push_offer(ctx, hash, frags)
@@ -6045,14 +6063,14 @@ where
         hash: H,
         frags: &mut Self::Frags,
         retry: Self::PushOfferRetry
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<
             (Option<Instant>, Self::Parties),
             Self::PushOfferRetry,
             Parties<Self::Parties>
         >,
         Self::PushOfferError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.retry_push_offer(ctx, hash, frags, retry)
@@ -6069,14 +6087,14 @@ where
         hash: H,
         frags: &mut Self::Frags,
         err: <Self::PushOfferError as RecoverableError>::Completable
-    ) -> Result<
+    ) -> (Result<
         RetryIndefResult<
             (Option<Instant>, Self::Parties),
             Self::PushOfferRetry,
             Parties<Self::Parties>
         >,
         Self::PushOfferError
-    > {
+    >, Option<Self::PullStreams>) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.complete_push_offer(ctx, hash, frags, err)

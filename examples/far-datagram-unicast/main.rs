@@ -22,6 +22,7 @@ use std::fmt::Error;
 use std::fmt::Formatter;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
@@ -47,6 +48,7 @@ use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::codec::test::TestBytesCodec;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::ids::AscendingCount;
 use constellation_common::net::PassthruDatagramXfrm;
@@ -59,16 +61,15 @@ use constellation_streams::config::PartyConfig;
 use constellation_streams::config::PollThreadConfig;
 use constellation_streams::config::PrivateDatagramModeConfig;
 use constellation_streams::stream::RefCellStream;
-use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
+use constellation_streams::threads::poll::MsgsWaker;
 use constellation_streams::threads::poll::PollThread;
 use log::LevelFilter;
 use log::debug;
 use log::info;
-use mio::Poll;
-use mio::Registry;
 use mio::Token;
+use mio::Waker;
 
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
@@ -78,30 +79,65 @@ where
     Ctx: NSNameCachesCtx {
     inner: Ctx,
     tokens: Tokens,
-    poll: Poll
 }
 
 struct ExampleClientMsgs {
-    retry: Retry,
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
     nretries: usize,
-    live: Arc<AtomicBool>
+    retry: Retry,
 }
 
 struct ExampleServerMsgs {
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
     live: Arc<AtomicBool>,
     sent: bool
 }
 
 struct ExampleClientRecv {
-    live: Arc<AtomicBool>
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
 }
 
 struct ExampleServerRecv {
-    live: Arc<AtomicBool>
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
 struct FinishedErr;
+
+impl MsgsWaker for ExampleServerMsgs {
+    type Error = MutexPoison;
+
+    fn set_waker(
+        &mut self,
+        waker: Arc<Waker>
+    ) -> Result<(), Self::Error> {
+        let mut guard = self.waker.lock()
+            .map_err(|_| MutexPoison)?;
+
+        *guard = Some(waker);
+
+        Ok(())
+    }
+}
+
+impl MsgsWaker for ExampleClientMsgs {
+    type Error = MutexPoison;
+
+    fn set_waker(
+        &mut self,
+        waker: Arc<Waker>
+    ) -> Result<(), Self::Error> {
+        let mut guard = self.waker.lock()
+            .map_err(|_| MutexPoison)?;
+
+        *guard = Some(waker);
+
+        Ok(())
+    }
+}
 
 impl PrivateMsgs<Vec<u8>> for ExampleClientMsgs {
     type MsgsError = FinishedErr;
@@ -178,7 +214,19 @@ where
 
         self.live.store(false, Ordering::Release);
 
-        assert_eq!(msg, &FIRST_BYTES[..]);
+        if let Ok(mut guard) = self.waker.lock() {
+            if let Some(waker) = &mut *guard {
+                if let Err(err) = waker.wake() {
+                    panic!("error waking: {}", err)
+                }
+            } else {
+                panic!("waker should not be None")
+            }
+        } else {
+            panic!("lock failed")
+        }
+
+        assert_eq!(msg, &SECOND_BYTES[..]);
 
         Ok(())
     }
@@ -201,6 +249,18 @@ where
 
         self.live.store(true, Ordering::Release);
 
+        if let Ok(mut guard) = self.waker.lock() {
+            if let Some(waker) = &mut *guard {
+                if let Err(err) = waker.wake() {
+                    panic!("error waking: {}", err)
+                }
+            } else {
+                panic!("waker should not be None")
+            }
+        } else {
+            panic!("lock failed")
+        }
+
         assert_eq!(msg, &FIRST_BYTES[..]);
 
         Ok(())
@@ -220,16 +280,6 @@ impl Display for FinishedErr {
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         write!(f, "finished")
-    }
-}
-
-impl<Ctx> RegistryCtx for ExampleCtx<Ctx>
-where
-    Ctx: NSNameCachesCtx
-{
-    #[inline]
-    fn registry(&self) -> &Registry {
-        self.poll.registry()
     }
 }
 
@@ -350,15 +400,16 @@ fn server(conf: &str) {
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
-    let recv = ExampleServerRecv { live: live.clone() };
+    let waker = Arc::new(Mutex::new(None));
+    let recv = ExampleServerRecv { waker: waker.clone(), live: live.clone() };
     let msgs = ExampleServerMsgs {
+        waker: waker,
         live: live,
         sent: false
     };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new(),
-        poll: Poll::new().expect("Expected success")
     };
     let self_party: Option<String> = None;
     let poll: JoinHandle<()> = PollThread::<
@@ -395,16 +446,17 @@ fn client(conf: &str) {
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
-    let recv = ExampleClientRecv { live: live.clone() };
+    let waker = Arc::new(Mutex::new(None));
+    let recv = ExampleClientRecv { waker: waker.clone(), live: live.clone() };
     let msgs = ExampleClientMsgs {
         live: live,
-        retry: Retry::default(),
+        waker: waker,
+        retry: Retry::TERRESTRIAL_NETWORK_DEFAULT.clone(),
         nretries: 0
     };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new(),
-        poll: Poll::new().expect("Expected success")
     };
     let self_party: Option<String> = None;
     let poll: JoinHandle<()> = PollThread::<

@@ -40,6 +40,7 @@ use constellation_common::retry::Retry;
 use constellation_common::retry::next_retry_definite;
 use constellation_common::shutdown::ShutdownFlag;
 use constellation_streams::channels::Channels;
+use constellation_streams::threads::ThreadInnerCtx;
 use constellation_streams::threads::WithTokens;
 use constellation_streams::threads::poll::PollThreadCtx;
 use log::debug;
@@ -589,7 +590,19 @@ fn run_refresh_thread(
 
 impl<Party, Chans, Ctx> NSNameCachesCtx for PollThreadCtx<Party, Chans, Ctx>
 where
-    Chans: Channels<Ctx>,
+    Chans: Channels<ThreadInnerCtx<Ctx>>,
+    Ctx: NSNameCachesCtx
+{
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Ctx::NameCaches {
+        self.inner_mut().name_caches()
+    }
+}
+
+impl<Ctx> NSNameCachesCtx for ThreadInnerCtx<Ctx>
+where
     Ctx: NSNameCachesCtx
 {
     type NameCaches = Ctx::NameCaches;

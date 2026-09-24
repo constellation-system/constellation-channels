@@ -45,6 +45,9 @@ use constellation_common::net::Socket;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::channels::ChannelParam;
 use constellation_streams::codec::DatagramCodecStream;
+use constellation_streams::large_obj::LargeObjMsg;
+use constellation_streams::large_obj::LargeObjMsgCodec;
+use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::types::DatagramDispatchTypes;
 use constellation_streams::threads::types::DatagramMulticastPollTypes;
@@ -457,6 +460,8 @@ pub type CompoundFarChannelsDatagramSelectorPollTypes<
 pub type FarChannelsLargeObjSelectorPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     Types,
@@ -466,6 +471,8 @@ pub type FarChannelsLargeObjSelectorPollTypes<
     LargeObjSelectorPollTypes<
         InMsg,
         OutMsg,
+        LargeObjWrapper,
+        LargeObjMsgAuth,
         Epochs,
         FarChannels<Types>,
         FarChannelsConfig<
@@ -510,9 +517,8 @@ pub type FarChannelsLargeObjSelectorPollTypes<
 pub type CompoundFarChannelsLargeObjSelectorPollTypes<
     InMsg,
     OutMsg,
-    Wrapper,
-    Enc,
-    Dec,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     AuthNChan,
     SessAuthN,
     Unix,
@@ -524,6 +530,8 @@ pub type CompoundFarChannelsLargeObjSelectorPollTypes<
 > = FarChannelsLargeObjSelectorPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     CompoundFarChannelsTypes<
@@ -531,10 +539,18 @@ pub type CompoundFarChannelsLargeObjSelectorPollTypes<
         AuthNChan,
         Unix,
         UDP,
-        OutMsg,
-        Wrapper,
-        Enc,
-        Dec
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >
     >,
     LargeObjTypes,
     Ctx

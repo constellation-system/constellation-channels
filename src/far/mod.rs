@@ -191,7 +191,6 @@ pub mod compound;
 #[cfg(feature = "dtls")]
 pub mod dtls;
 pub mod flows;
-// pub mod registry;
 #[cfg(feature = "socks5")]
 pub mod socks5;
 pub mod types;

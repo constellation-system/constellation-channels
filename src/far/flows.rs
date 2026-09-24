@@ -974,12 +974,12 @@ where
         {
             // Copied transformation.
             Ok((Some(buf), addr)) => {
+                let addr = Sock::Addr::try_from(addr)
+                    .map_err(|err| Error::other(err.to_string()))?;
+
                 trace!(target: "flows",
                        "sending {} byte message to {}",
                        buf.len(), addr);
-
-                let addr = Sock::Addr::try_from(addr)
-                    .map_err(|err| Error::other(err.to_string()))?;
 
                 self.socket
                     .try_borrow_mut()

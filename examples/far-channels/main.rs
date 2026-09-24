@@ -315,6 +315,7 @@ fn server(conf: &str) {
 
     stream
         .push(&mut ctx, &SECOND_BYTES.to_vec())
+        .0
         .expect("Expected success");
 
     assert_eq!(FIRST_BYTES.len(), buf.len());
@@ -409,6 +410,7 @@ fn client(
 
     stream
         .push(&mut ctx, &FIRST_BYTES.to_vec())
+        .0
         .expect("Expected success");
 
     info!(target: "client",

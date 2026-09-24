@@ -1511,7 +1511,7 @@ where
         match &self.state {
             // This is what we expect.
             Some(SessionState::Active) => {
-                error!(target: "flows-nego-state",
+                trace!(target: "flows-nego-state",
                        "shutting down active session with {}",
                        addr);
 
@@ -4698,6 +4698,9 @@ where
         live: &HashSet<Token>
     ) -> Result<Option<(Self, Option<Instant>)>, Self::ShutdownListenError>
     {
+        debug!(target: "far-channels",
+               "listening for shutdown");
+
         let lives: Vec<FarChannelID> = self
             .tokens
             .iter()
@@ -4725,6 +4728,10 @@ where
             if !self.channels[id.0].is_shutdown() {
                 // Listen if we need to.
                 if !self.channels[id.0].is_shutdown_safe() {
+                    trace!(target: "far-channels",
+                           "listening for shutdown on {}",
+                           id);
+
                     match self.channels[id.0]
                         .listen(
                             ctx,
@@ -4790,28 +4797,6 @@ where
                         }
                     }
                 }
-
-                // See if we can shut down the acquired.
-                if self.channels[id.0].is_shutdown_safe() {
-                    // Try to shut down the acquired.
-                    let mut deletes = Vec::new();
-
-                    self.channels[id.0]
-                        .shutdown(&mut deletes, ctx.registry())
-                        .map_err(|err| {
-                            FarChannelsShutdownListenError::Shutdown {
-                                err: err
-                            }
-                        })?;
-
-                    for token in deletes {
-                        if self.tokens.remove(&token).is_none() {
-                            error!(target: "far-channels",
-                                   "token {:?} was not in tokens",
-                                   token);
-                        }
-                    }
-                }
             } else {
                 error!(target: "far-channels",
                        "ignoring traffic on shut down channel {}",
@@ -4819,8 +4804,53 @@ where
             }
         }
 
-        // See if we can shut down all channels.
-        if self.channels.iter().all(|ent| ent.is_shutdown()) {
+        trace!(target: "far-channels",
+               "shutting down remaining acquireds");
+
+        // Try to shut down *all* acquireds.
+        for (i, ent) in self.channels.iter_mut().enumerate() {
+            // See if we can shut down the acquired.
+            if ent.is_shutdown_safe() {
+                trace!(target: "far-channels",
+                       "shutting down acquired for channel {}",
+                       i);
+
+                // Try to shut down the acquired.
+                let mut deletes = Vec::new();
+
+                ent
+                    .shutdown(&mut deletes, ctx.registry())
+                    .map_err(|err| {
+                        FarChannelsShutdownListenError::Shutdown {
+                            err: err
+                        }
+                    })?;
+
+                for token in deletes {
+                    if self.tokens.remove(&token).is_none() {
+                        error!(target: "far-channels",
+                               "token {:?} was not in tokens",
+                               token);
+                    }
+                }
+            }
+        }
+
+        // See if all channels are shut down.
+        if self.channels
+            .iter()
+            .enumerate()
+            .all(|(i, ent)| {
+                let out = ent.is_shutdown();
+
+                if !out {
+                    trace!(target: "far-channels",
+                           "channel {} is still live",
+                           i);
+                }
+
+                out
+            }) {
             Ok(None)
         } else {
             // There are still live channels.
