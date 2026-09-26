@@ -16,7 +16,473 @@
 // License along with this program.  If not, see
 // <https://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::fmt::Display;
+use std::fmt::Error;
+use std::fmt::Formatter;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
+use std::thread::JoinHandle;
+use std::time::Instant;
+
+use constellation_auth::authn::AuthNMsgRecv;
+use constellation_auth::authn::AuthNedDestruct;
+use constellation_auth::authn::BasicAuthNed;
+use constellation_auth::authn::PassthruMsgAuthN;
+use constellation_auth::authn::basic::BasicAuthN;
+use constellation_auth::config::BasicAuthNConfig;
+use constellation_channels::config::CompoundNearAcceptorConfig;
+use constellation_channels::config::CompoundNearConnectorPartialConfig;
+use constellation_channels::config::CompoundNearConnectorParam;
+use constellation_channels::config::CompoundNearEndpoint;
+use constellation_channels::config::NearChannelsConfig;
+use constellation_channels::config::ResolverConfig;
+use constellation_channels::config::tls::TLSClientConfig;
+use constellation_channels::config::tls::TLSServerConfig;
+use constellation_channels::near::channels::DuplexValue;
+use constellation_channels::near::compound::CompoundNearClientConn;
+use constellation_channels::near::compound::CompoundNearNameAddr;
+use constellation_channels::near::compound::CompoundNearServerConn;
+use constellation_channels::near::types::CompoundNearChannelsDatagramMulticastPollTypes;
+use constellation_channels::resolve::MixedResolver;
+use constellation_channels::resolve::cache::NSNameCachesCtx;
+use constellation_channels::resolve::cache::SharedNSNameCaches;
+use constellation_common::codec::test::TestBytesCodec;
+use constellation_common::error::ErrorScope;
+use constellation_common::error::MutexPoison;
+use constellation_common::error::ScopedError;
+use constellation_common::ids::AscendingCount;
+use constellation_common::net::SharedMsgs;
+use constellation_common::retry::Retry;
+use constellation_streams::codec::DatagramCodecStream;
+use constellation_streams::config::PartyConfig;
+use constellation_streams::config::PollThreadConfig;
+use constellation_streams::config::SharedDatagramModeConfig;
+use constellation_streams::config::StreamMulticasterConfig;
+use constellation_streams::stream::RefCellStream;
+use constellation_streams::threads::Tokens;
+use constellation_streams::threads::TokensCtx;
+use constellation_streams::threads::poll::MsgsWaker;
+use constellation_streams::threads::poll::PollThread;
 use log::LevelFilter;
+use log::debug;
+use log::info;
+use mio::Token;
+use mio::Waker;
+
+const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
+
+struct ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx {
+    inner: Ctx,
+    tokens: Tokens,
+}
+
+struct ExampleClientMsgs {
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
+    nretries: usize,
+    retry: Retry,
+}
+
+struct ExampleServerMsgs {
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
+    sent: bool
+}
+
+struct ExampleClientRecv {
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
+}
+
+struct ExampleServerRecv {
+    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    live: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct FinishedErr;
+
+impl MsgsWaker for ExampleServerMsgs {
+    type Error = MutexPoison;
+
+    fn set_waker(
+        &mut self,
+        waker: Arc<Waker>
+    ) -> Result<(), Self::Error> {
+        let mut guard = self.waker.lock()
+            .map_err(|_| MutexPoison)?;
+
+        *guard = Some(waker);
+
+        Ok(())
+    }
+}
+
+impl MsgsWaker for ExampleClientMsgs {
+    type Error = MutexPoison;
+
+    fn set_waker(
+        &mut self,
+        waker: Arc<Waker>
+    ) -> Result<(), Self::Error> {
+        let mut guard = self.waker.lock()
+            .map_err(|_| MutexPoison)?;
+
+        *guard = Some(waker);
+
+        Ok(())
+    }
+}
+
+impl<Party> SharedMsgs<Party, Vec<u8>> for ExampleClientMsgs
+where Party: Clone {
+    type MsgsError = FinishedErr;
+
+    fn msgs(
+        &mut self,
+        live: &HashSet<Party>,
+        now: Instant
+    ) -> Result<(Option<Vec<(Vec<Party>, Vec<Vec<u8>>)>>, Option<Instant>),
+                Self::MsgsError> {
+        if self.live.load(Ordering::Acquire) {
+            let parties = live.iter().cloned().collect();
+            let next = self.retry.retry_delay(self.nretries);
+            let msg = FIRST_BYTES.to_vec();
+
+            self.nretries += 1;
+
+            info!(target: "client-msgs",
+                  "sending {:?}", msg);
+
+            Ok((Some(vec![(parties, vec![msg])]), Some(now + next)))
+        } else {
+            debug!(target: "client-msgs",
+                  "msgs are finished");
+
+            Err(FinishedErr)
+        }
+    }
+}
+
+impl<Party> SharedMsgs<Party, Vec<u8>> for ExampleServerMsgs
+where Party: Clone {
+    type MsgsError = FinishedErr;
+
+    fn msgs(
+        &mut self,
+        live: &HashSet<Party>,
+        now: Instant
+    ) -> Result<(Option<Vec<(Vec<Party>, Vec<Vec<u8>>)>>, Option<Instant>),
+                Self::MsgsError> {
+        if self.live.load(Ordering::Acquire) {
+            if !self.sent {
+                let parties = live.iter().cloned().collect();
+                let msg = SECOND_BYTES.to_vec();
+
+                self.sent = true;
+
+                info!(target: "server-msgs",
+                      "sending {:?}", msg);
+
+                Ok((Some(vec![(parties, vec![msg])]), Some(now)))
+            } else {
+                debug!(target: "server-msgs",
+                      "msgs are finished");
+
+                Err(FinishedErr)
+            }
+        } else {
+            debug!(target: "server-msgs",
+                   "msgs are not started");
+
+            Ok((None, None))
+        }
+    }
+}
+
+impl<AuthMsg> AuthNMsgRecv<String, AuthMsg> for ExampleClientRecv
+where
+    AuthMsg: AuthNedDestruct<String, Vec<u8>>
+{
+    type RecvError = Infallible;
+
+    fn recv_auth_msg(
+        &mut self,
+        msg: AuthMsg
+    ) -> Result<(), Self::RecvError> {
+        let (prin, msg) = msg.take();
+
+        info!(target: "client-recv",
+              "received {:?} from {}", msg, prin);
+
+        self.live.store(false, Ordering::Release);
+
+        if let Ok(mut guard) = self.waker.lock() {
+            if let Some(waker) = &mut *guard {
+                if let Err(err) = waker.wake() {
+                    panic!("error waking: {}", err)
+                }
+            } else {
+                panic!("waker should not be None")
+            }
+        } else {
+            panic!("lock failed")
+        }
+
+        assert_eq!(msg, &SECOND_BYTES[..]);
+
+        Ok(())
+    }
+}
+
+impl<AuthMsg> AuthNMsgRecv<String, AuthMsg> for ExampleServerRecv
+where
+    AuthMsg: AuthNedDestruct<String, Vec<u8>>
+{
+    type RecvError = Infallible;
+
+    fn recv_auth_msg(
+        &mut self,
+        msg: AuthMsg
+    ) -> Result<(), Self::RecvError> {
+        let (prin, msg) = msg.take();
+
+        info!(target: "server-recv",
+              "received {:?} from {}", msg, prin);
+
+        self.live.store(true, Ordering::Release);
+
+        if let Ok(mut guard) = self.waker.lock() {
+            if let Some(waker) = &mut *guard {
+                if let Err(err) = waker.wake() {
+                    panic!("error waking: {}", err)
+                }
+            } else {
+                panic!("waker should not be None")
+            }
+        } else {
+            panic!("lock failed")
+        }
+
+        assert_eq!(msg, &FIRST_BYTES[..]);
+
+        Ok(())
+    }
+}
+
+impl ScopedError for FinishedErr {
+    #[inline]
+    fn scope(&self) -> ErrorScope {
+        ErrorScope::Shutdown
+    }
+}
+
+impl Display for FinishedErr {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "finished")
+    }
+}
+
+impl<Ctx> NSNameCachesCtx for ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx
+{
+    type NameCaches = Ctx::NameCaches;
+
+    #[inline]
+    fn name_caches(&mut self) -> &mut Self::NameCaches {
+        self.inner.name_caches()
+    }
+}
+
+impl<Ctx> TokensCtx for ExampleCtx<Ctx>
+where
+    Ctx: NSNameCachesCtx
+{
+    #[inline]
+    fn token(&mut self) -> Token {
+        self.tokens.token()
+    }
+
+    #[inline]
+    fn free_token(
+        &mut self,
+        token: Token
+    ) {
+        self.tokens.free_token(token)
+    }
+}
+
+type ExampleServerPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec,
+    BasicAuthNed<
+        String,
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                DuplexValue<
+                    CompoundNearServerConn,
+                    CompoundNearClientConn
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
+    >,
+    BasicAuthN<String>,
+    TLSServerConfig,
+    BasicAuthN<String>,
+    TLSClientConfig,
+    PassthruMsgAuthN<Vec<u8>, String>,
+    AscendingCount<u128>,
+    MixedResolver<CompoundNearNameAddr, CompoundNearEndpoint>,
+    ExampleServerMsgs,
+    ExampleServerRecv,
+    ExampleCtx<SharedNSNameCaches>
+>;
+
+type ExampleClientPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    TestBytesCodec,
+    TestBytesCodec,
+    BasicAuthNed<
+        String,
+        RefCellStream<
+            DatagramCodecStream<
+                Vec<u8>,
+                Vec<u8>,
+                DuplexValue<
+                    CompoundNearServerConn,
+                    CompoundNearClientConn
+                >,
+                TestBytesCodec,
+                TestBytesCodec
+            >
+        >
+    >,
+    BasicAuthN<String>,
+    TLSServerConfig,
+    BasicAuthN<String>,
+    TLSClientConfig,
+    PassthruMsgAuthN<Vec<u8>, String>,
+    AscendingCount<u128>,
+    MixedResolver<CompoundNearNameAddr, CompoundNearEndpoint>,
+    ExampleClientMsgs,
+    ExampleClientRecv,
+    ExampleCtx<SharedNSNameCaches>
+>;
+
+fn server(conf: &str) {
+    let poll_config: PollThreadConfig<
+        NearChannelsConfig<
+            CompoundNearAcceptorConfig<TLSServerConfig>,
+            CompoundNearConnectorPartialConfig<TLSClientConfig>,
+            BasicAuthNConfig<String>,
+            BasicAuthNConfig<String>,
+            (),
+            ()
+        >,
+        SharedDatagramModeConfig,
+        StreamMulticasterConfig<
+            String,
+            PartyConfig<
+                ResolverConfig,
+                (),
+                String,
+                Option<CompoundNearConnectorParam>,
+                CompoundNearEndpoint
+            >
+        >,
+        ()
+    > = yaml_serde::from_str(conf).unwrap();
+    let live = Arc::new(AtomicBool::new(false));
+    let waker = Arc::new(Mutex::new(None));
+    let recv = ExampleServerRecv { waker: waker.clone(), live: live.clone() };
+    let msgs = ExampleServerMsgs {
+        waker: waker,
+        live: live,
+        sent: false
+    };
+    let ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new(),
+    };
+    let self_party: Option<String> = Some(String::from("server"));
+    let poll: JoinHandle<()> = PollThread::<
+        ExampleCtx<SharedNSNameCaches>,
+        ExampleServerPollTypes
+    >::start(
+        poll_config, self_party, ctx, recv, msgs
+    )
+    .unwrap();
+
+    poll.join().unwrap();
+}
+
+fn client(conf: &str) {
+    let poll_config: PollThreadConfig<
+        NearChannelsConfig<
+            CompoundNearAcceptorConfig<TLSServerConfig>,
+            CompoundNearConnectorPartialConfig<TLSClientConfig>,
+            BasicAuthNConfig<String>,
+            BasicAuthNConfig<String>,
+            (),
+            ()
+        >,
+        SharedDatagramModeConfig,
+        StreamMulticasterConfig<
+            String,
+            PartyConfig<
+                ResolverConfig,
+                (),
+                String,
+                Option<CompoundNearConnectorParam>,
+                CompoundNearEndpoint
+            >
+        >,
+        ()
+    > = yaml_serde::from_str(conf).unwrap();
+    let live = Arc::new(AtomicBool::new(true));
+    let waker = Arc::new(Mutex::new(None));
+    let recv = ExampleClientRecv { waker: waker.clone(), live: live.clone() };
+    let msgs = ExampleClientMsgs {
+        live: live,
+        waker: waker,
+        retry: Retry::TERRESTRIAL_NETWORK_DEFAULT.clone(),
+        nretries: 0
+    };
+    let ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new(),
+    };
+    let self_party: Option<String> = Some(String::from("client"));
+    let poll: JoinHandle<()> = PollThread::<
+        ExampleCtx<SharedNSNameCaches>,
+        ExampleClientPollTypes
+    >::start(
+        poll_config, self_party, ctx, recv, msgs
+    )
+    .unwrap();
+
+    poll.join().unwrap();
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -38,15 +504,8 @@ fn main() {
     let conf = std::fs::read_to_string(&args[2]).unwrap();
 
     match args[1].as_str() {
-        "client" => {
-            if args.len() != 4 {
-            } else {
-                let endpoint = std::fs::read_to_string(&args[3]).unwrap();
-
-                //            client(&conf, &endpoint)
-            }
-        }
-        //        "server" => server(&conf),
+        "client" => client(&conf),
+        "server" => server(&conf),
         _ => {
             eprintln!("Usage: {} [client | server]", args[0]);
             std::process::exit(1);
