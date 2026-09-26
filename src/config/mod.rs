@@ -308,7 +308,9 @@ pub struct CompoundXfrmCreateParam<Unix, UDP> {
     udp: UDP
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename_all = "kebab-case")]
 #[serde(untagged)]
 pub enum CompoundNearConnectorParam {
@@ -1517,9 +1519,7 @@ where
     /// Configuration of all channels.
     channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
     /// Default authentication configuration.
-    #[serde(default)]
     default_inbound_authn: InAuthN,
-    #[serde(default)]
     default_outbound_authn: OutAuthN,
     #[serde(default)]
     default_encoder: Enc,
@@ -2043,6 +2043,7 @@ pub struct ThreadedNSNameCachesConfig {
 #[serde(rename_all = "kebab-case")]
 pub struct TCPNearChannelConfigUnsafe {
     /// Allow IP addresses as credentials on this channel.
+    #[serde(rename = "allow-ip-addr-creds")]
     unsafe_allow_ip_addr_creds: bool
 }
 
@@ -2353,7 +2354,15 @@ pub type TLSNearConnectorConfig<Endpoint> =
     TLSChannelConfig<TLSClientConfig, Endpoint>;
 
 #[derive(
-    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+    Clone,
+    Debug,
+    Default,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    PartialOrd,
+    Serialize,
 )]
 #[serde(rename_all = "kebab-case")]
 #[serde(default)]
@@ -4870,6 +4879,20 @@ impl Display for CompoundFarEndpoint {
                 write!(f, "unix-datagram://{}", unix_datagram.to_string_lossy())
             }
             CompoundFarEndpoint::UDP { udp } => write!(f, "udp://{}", udp)
+        }
+    }
+}
+
+impl Display for CompoundNearEndpoint {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundNearEndpoint::Unix { unix_stream } => {
+                write!(f, "unix-stream://{}", unix_stream.to_string_lossy())
+            }
+            CompoundNearEndpoint::TCP { tcp } => write!(f, "tcp://{}", tcp)
         }
     }
 }

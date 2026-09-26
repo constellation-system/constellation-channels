@@ -78,14 +78,14 @@ struct ExampleCtx<Ctx>
 where
     Ctx: NSNameCachesCtx {
     inner: Ctx,
-    tokens: Tokens,
+    tokens: Tokens
 }
 
 struct ExampleClientMsgs {
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
     live: Arc<AtomicBool>,
     nretries: usize,
-    retry: Retry,
+    retry: Retry
 }
 
 struct ExampleServerMsgs {
@@ -96,12 +96,12 @@ struct ExampleServerMsgs {
 
 struct ExampleClientRecv {
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
-    live: Arc<AtomicBool>,
+    live: Arc<AtomicBool>
 }
 
 struct ExampleServerRecv {
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
-    live: Arc<AtomicBool>,
+    live: Arc<AtomicBool>
 }
 
 #[derive(Debug)]
@@ -114,8 +114,7 @@ impl MsgsWaker for ExampleServerMsgs {
         &mut self,
         waker: Arc<Waker>
     ) -> Result<(), Self::Error> {
-        let mut guard = self.waker.lock()
-            .map_err(|_| MutexPoison)?;
+        let mut guard = self.waker.lock().map_err(|_| MutexPoison)?;
 
         *guard = Some(waker);
 
@@ -130,8 +129,7 @@ impl MsgsWaker for ExampleClientMsgs {
         &mut self,
         waker: Arc<Waker>
     ) -> Result<(), Self::Error> {
-        let mut guard = self.waker.lock()
-            .map_err(|_| MutexPoison)?;
+        let mut guard = self.waker.lock().map_err(|_| MutexPoison)?;
 
         *guard = Some(waker);
 
@@ -401,7 +399,10 @@ fn server(conf: &str) {
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
     let waker = Arc::new(Mutex::new(None));
-    let recv = ExampleServerRecv { waker: waker.clone(), live: live.clone() };
+    let recv = ExampleServerRecv {
+        waker: waker.clone(),
+        live: live.clone()
+    };
     let msgs = ExampleServerMsgs {
         waker: waker,
         live: live,
@@ -409,7 +410,7 @@ fn server(conf: &str) {
     };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
-        tokens: Tokens::new(),
+        tokens: Tokens::new()
     };
     let self_party: Option<String> = None;
     let poll: JoinHandle<()> = PollThread::<
@@ -447,7 +448,10 @@ fn client(conf: &str) {
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
     let waker = Arc::new(Mutex::new(None));
-    let recv = ExampleClientRecv { waker: waker.clone(), live: live.clone() };
+    let recv = ExampleClientRecv {
+        waker: waker.clone(),
+        live: live.clone()
+    };
     let msgs = ExampleClientMsgs {
         live: live,
         waker: waker,
@@ -456,7 +460,7 @@ fn client(conf: &str) {
     };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
-        tokens: Tokens::new(),
+        tokens: Tokens::new()
     };
     let self_party: Option<String> = None;
     let poll: JoinHandle<()> = PollThread::<

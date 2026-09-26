@@ -38,6 +38,7 @@ use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::AuthNedDestruct;
 use constellation_auth::authn::AuthNedMap;
 use constellation_auth::authn::SessionAuthN;
+use constellation_auth::cred::Credentials;
 use constellation_common::config::Create;
 use constellation_common::config::CreateWithParam;
 use constellation_common::error::ErrorScope;
@@ -5068,7 +5069,7 @@ where
                           name);
 
                     // XXX have context carry parameters such as unsafe options.
-                    let authn = Types::OutAuthN::create(authn, false).map_err(
+                    let authn = Types::OutAuthN::create(authn, true).map_err(
                         |err| NearChannelsCreateError::OutAuth { err: err }
                     )?;
                     let channel = match nsessions {
@@ -5114,9 +5115,10 @@ where
                           name);
 
                     // XXX have context carry parameters such as unsafe options.
-                    let authn = Types::InAuthN::create(authn, false).map_err(
-                        |err| NearChannelsCreateError::InAuth { err: err }
-                    )?;
+                    let authn =
+                        Types::InAuthN::create(authn, true).map_err(|err| {
+                            NearChannelsCreateError::InAuth { err: err }
+                        })?;
                     let mut acceptor = Types::InChannel::create(ctx, listen)
                         .map_err(|err| NearChannelsCreateError::Inbound {
                             err: err
@@ -5181,12 +5183,12 @@ where
                           name);
 
                     // XXX have context carry parameters such as unsafe options.
-                    let out_authn = Types::OutAuthN::create(out_authn, false)
-                        .map_err(|err| {
-                        NearChannelsCreateError::OutAuth { err: err }
-                    })?;
+                    let out_authn = Types::OutAuthN::create(out_authn, true)
+                        .map_err(|err| NearChannelsCreateError::OutAuth {
+                            err: err
+                        })?;
                     // XXX have context carry parameters such as unsafe options.
-                    let in_authn = Types::InAuthN::create(in_authn, false)
+                    let in_authn = Types::InAuthN::create(in_authn, true)
                         .map_err(|err| NearChannelsCreateError::InAuth {
                             err: err
                         })?;
@@ -5238,6 +5240,22 @@ where
             channels: channels,
             tokens: tokens
         })
+    }
+}
+
+impl<Accept, Conn> Credentials for DuplexValue<Accept, Conn>
+where
+    Conn: Credentials,
+    Accept: Credentials<Cred = Conn::Cred, CredError = Conn::CredError>
+{
+    type Cred = Conn::Cred;
+    type CredError = Conn::CredError;
+
+    fn creds(&self) -> Result<Option<Conn::Cred>, Conn::CredError> {
+        match self {
+            DuplexValue::Conn(conn) => conn.creds(),
+            DuplexValue::Accept(accept) => accept.creds()
+        }
     }
 }
 
@@ -5548,7 +5566,8 @@ where
 impl<Accept, Conn> PullStreamsOutput for DuplexValue<Accept, Conn>
 where
     Accept: PullStreamsOutput,
-    Conn: PullStreamsOutput<PullStreams = Accept::PullStreams> {
+    Conn: PullStreamsOutput<PullStreams = Accept::PullStreams>
+{
     type PullStreams = Accept::PullStreams;
 }
 
@@ -5602,9 +5621,10 @@ where
         &mut self,
         ctx: &mut Ctx,
         selections: &mut Self::Selections
-    ) -> (Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
-          Option<Self::PullStreams>)
-    {
+    ) -> (
+        Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.select(ctx, selections),
             DuplexValue::Accept(accept) => accept.select(ctx, selections)
@@ -5616,9 +5636,10 @@ where
         ctx: &mut Ctx,
         selections: &mut Self::Selections,
         retry: Self::SelectRetry
-    ) -> (Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
-          Option<Self::PullStreams>)
-    {
+    ) -> (
+        Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.retry_select(ctx, selections, retry)
@@ -5634,9 +5655,10 @@ where
         ctx: &mut Ctx,
         selections: &mut Self::Selections,
         err: <Self::SelectError as RecoverableError>::Completable
-    ) -> (Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
-          Option<Self::PullStreams>)
-    {
+    ) -> (
+        Result<RetryIndefResult<(), Self::SelectRetry>, Self::SelectError>,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.complete_select(ctx, selections, err)
@@ -5709,10 +5731,13 @@ where
     fn start_batch(
         &mut self,
         ctx: &mut Ctx
-    ) -> (Result<
-        RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
-        Self::StartBatchError
-    >, Option<Self::PullStreams>) {
+    ) -> (
+        Result<
+            RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
+            Self::StartBatchError
+        >,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.start_batch(ctx),
             DuplexValue::Accept(accept) => accept.start_batch(ctx)
@@ -5723,10 +5748,13 @@ where
         &mut self,
         ctx: &mut Ctx,
         retry: Self::StartBatchRetry
-    ) -> (Result<
-        RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
-        Self::StartBatchError
-    >, Option<Self::PullStreams>) {
+    ) -> (
+        Result<
+            RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
+            Self::StartBatchError
+        >,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.retry_start_batch(ctx, retry),
             DuplexValue::Accept(accept) => accept.retry_start_batch(ctx, retry)
@@ -5737,10 +5765,13 @@ where
         &mut self,
         ctx: &mut Ctx,
         err: <Self::StartBatchError as RecoverableError>::Completable
-    ) -> (Result<
-        RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
-        Self::StartBatchError
-    >, Option<Self::PullStreams>) {
+    ) -> (
+        Result<
+            RetryIndefResult<Self::BatchID, Self::StartBatchRetry>,
+            Self::StartBatchError
+        >,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.complete_start_batch(ctx, err),
             DuplexValue::Accept(accept) => accept.complete_start_batch(ctx, err)
@@ -5859,9 +5890,13 @@ where
         &mut self,
         ctx: &mut Ctx,
         msg: &T
-    ) -> (Result<RetryIndefResult<Self::BatchID, Self::PushRetry>,
-                 Self::PushError>, Option<Self::PullStreams>)
-    {
+    ) -> (
+        Result<
+            RetryIndefResult<Self::BatchID, Self::PushRetry>,
+            Self::PushError
+        >,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.push(ctx, msg),
             DuplexValue::Accept(accept) => accept.push(ctx, msg)
@@ -5873,9 +5908,13 @@ where
         ctx: &mut Ctx,
         msg: &T,
         retry: Self::PushRetry
-    ) -> (Result<RetryIndefResult<Self::BatchID, Self::PushRetry>,
-                 Self::PushError>, Option<Self::PullStreams>)
-    {
+    ) -> (
+        Result<
+            RetryIndefResult<Self::BatchID, Self::PushRetry>,
+            Self::PushError
+        >,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.retry_push(ctx, msg, retry),
             DuplexValue::Accept(accept) => accept.retry_push(ctx, msg, retry)
@@ -5887,9 +5926,13 @@ where
         ctx: &mut Ctx,
         msg: &T,
         err: <Self::PushError as RecoverableError>::Completable
-    ) -> (Result<RetryIndefResult<Self::BatchID, Self::PushRetry>,
-                 Self::PushError>, Option<Self::PullStreams>)
-    {
+    ) -> (
+        Result<
+            RetryIndefResult<Self::BatchID, Self::PushRetry>,
+            Self::PushError
+        >,
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.complete_push(ctx, msg, err),
             DuplexValue::Accept(accept) => accept.complete_push(ctx, msg, err)
@@ -5955,14 +5998,17 @@ where
         ctx: &mut Ctx,
         id: LargeObjID,
         frags: &mut Self::Frags
-    ) -> (Result<
-        RetryIndefResult<
-            (Option<Instant>, Accept::Parties),
-            Self::PushFragRetry,
-            Parties<Accept::Parties>
+    ) -> (
+        Result<
+            RetryIndefResult<
+                (Option<Instant>, Accept::Parties),
+                Self::PushFragRetry,
+                Parties<Accept::Parties>
+            >,
+            Self::PushFragError
         >,
-        Self::PushFragError
-    >, Option<Self::PullStreams>) {
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.push_frags(ctx, id, frags),
             DuplexValue::Accept(accept) => accept.push_frags(ctx, id, frags)
@@ -5975,14 +6021,17 @@ where
         id: LargeObjID,
         frags: &mut Self::Frags,
         retry: Self::PushFragRetry
-    ) -> (Result<
-        RetryIndefResult<
-            (Option<Instant>, Accept::Parties),
-            Self::PushFragRetry,
-            Parties<Accept::Parties>
+    ) -> (
+        Result<
+            RetryIndefResult<
+                (Option<Instant>, Accept::Parties),
+                Self::PushFragRetry,
+                Parties<Accept::Parties>
+            >,
+            Self::PushFragError
         >,
-        Self::PushFragError
-    >, Option<Self::PullStreams>) {
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.retry_push_frags(ctx, id, frags, retry)
@@ -5999,14 +6048,17 @@ where
         id: LargeObjID,
         frags: &mut Self::Frags,
         err: <Self::PushFragError as RecoverableError>::Completable
-    ) -> (Result<
-        RetryIndefResult<
-            (Option<Instant>, Accept::Parties),
-            Self::PushFragRetry,
-            Parties<Accept::Parties>
+    ) -> (
+        Result<
+            RetryIndefResult<
+                (Option<Instant>, Accept::Parties),
+                Self::PushFragRetry,
+                Parties<Accept::Parties>
+            >,
+            Self::PushFragError
         >,
-        Self::PushFragError
-    >, Option<Self::PullStreams>) {
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.complete_push_frags(ctx, id, frags, err)
@@ -6043,14 +6095,17 @@ where
         ctx: &mut Ctx,
         hash: H,
         frags: &mut Self::Frags
-    ) -> (Result<
-        RetryIndefResult<
-            (Option<Instant>, Self::Parties),
-            Self::PushOfferRetry,
-            Parties<Self::Parties>
+    ) -> (
+        Result<
+            RetryIndefResult<
+                (Option<Instant>, Self::Parties),
+                Self::PushOfferRetry,
+                Parties<Self::Parties>
+            >,
+            Self::PushOfferError
         >,
-        Self::PushOfferError
-    >, Option<Self::PullStreams>) {
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => conn.push_offer(ctx, hash, frags),
             DuplexValue::Accept(accept) => accept.push_offer(ctx, hash, frags)
@@ -6063,14 +6118,17 @@ where
         hash: H,
         frags: &mut Self::Frags,
         retry: Self::PushOfferRetry
-    ) -> (Result<
-        RetryIndefResult<
-            (Option<Instant>, Self::Parties),
-            Self::PushOfferRetry,
-            Parties<Self::Parties>
+    ) -> (
+        Result<
+            RetryIndefResult<
+                (Option<Instant>, Self::Parties),
+                Self::PushOfferRetry,
+                Parties<Self::Parties>
+            >,
+            Self::PushOfferError
         >,
-        Self::PushOfferError
-    >, Option<Self::PullStreams>) {
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.retry_push_offer(ctx, hash, frags, retry)
@@ -6087,14 +6145,17 @@ where
         hash: H,
         frags: &mut Self::Frags,
         err: <Self::PushOfferError as RecoverableError>::Completable
-    ) -> (Result<
-        RetryIndefResult<
-            (Option<Instant>, Self::Parties),
-            Self::PushOfferRetry,
-            Parties<Self::Parties>
+    ) -> (
+        Result<
+            RetryIndefResult<
+                (Option<Instant>, Self::Parties),
+                Self::PushOfferRetry,
+                Parties<Self::Parties>
+            >,
+            Self::PushOfferError
         >,
-        Self::PushOfferError
-    >, Option<Self::PullStreams>) {
+        Option<Self::PullStreams>
+    ) {
         match self {
             DuplexValue::Conn(conn) => {
                 conn.complete_push_offer(ctx, hash, frags, err)
@@ -6298,7 +6359,7 @@ impl Display for NearChannelParam {
         &self,
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
-        write!(f, "near channel param")
+        write!(f, "n/a")
     }
 }
 
@@ -6651,7 +6712,7 @@ use crate::near::compound::CompoundNearAcceptor;
 #[cfg(test)]
 use crate::near::compound::CompoundNearClientConn;
 #[cfg(test)]
-use crate::near::compound::CompoundNearCredential;
+use crate::near::compound::CompoundNearCred;
 #[cfg(test)]
 use crate::near::compound::CompoundNearNameAddr;
 #[cfg(test)]
@@ -6775,9 +6836,9 @@ where
 }
 
 #[cfg(test)]
-impl From<CompoundNearCredential> for TestPrin {
+impl From<CompoundNearCred> for TestPrin {
     #[inline]
-    fn from(_val: CompoundNearCredential) -> TestPrin {
+    fn from(_val: CompoundNearCred) -> TestPrin {
         TestPrin
     }
 }

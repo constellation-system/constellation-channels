@@ -13,26 +13,26 @@ default-session-authn:
     allow-ip-addr-creds: true
 
 channels:
-  - id: server-udp
+  - id: client-udp
     udp:
       addr: '[::0]:7227'
       unsafe:
         allow-ip-addr-creds: true
 
-  - id: server-unix
+  - id: client-unix
     unix-datagram:
       path: far-threads-example-client-datagram.sock
 
 connections:
   - channel-names:
-      - server-udp
+      - client-udp
 
     endpoints:
       - addr:
           udp: '[::1]:7117'
 
   - channel-names:
-      - server-unix
+      - client-unix
 
     endpoints:
       - addr:

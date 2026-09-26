@@ -7,6 +7,8 @@ channels:
   - inbound:
       id: example-server-unix
       unix-stream:
-        path: near-channels-example-server.sock
+        path: near-channels-example-server-stream.sock
 
-default-authn:
+default-inbound-authn:
+
+default-outbound-authn:

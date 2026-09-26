@@ -100,7 +100,7 @@ pub trait NearSessionNegoTypes {
             CreateError = Self::EncoderCreateError
         >;
     type Prin: Clone + Debug + Display + Eq + Hash;
-    type AuthNConfig: Clone + Default;
+    type AuthNConfig: Clone;
     type AuthNPending;
     type AuthNSession: Read
         + Write
@@ -190,7 +190,7 @@ pub trait NearDuplexNegoTypes {
         >;
     type InEndpoint: Clone + Debug + Display + Eq + Hash + Sized;
     type InConfig;
-    type InAuthNConfig: Clone + Default;
+    type InAuthNConfig: Clone;
     type InAuthNPending;
     type InAuthNSession: Read
         + Write
@@ -298,7 +298,7 @@ pub trait NearDuplexNegoTypes {
         + Hash
         + Sized
         + From<Self::InEndpoint>;
-    type OutAuthNConfig: Clone + Default;
+    type OutAuthNConfig: Clone;
     type OutAuthNPending;
     type OutAuthNSession: Read
         + Write
@@ -1122,7 +1122,7 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundNearServerConn, Param = ()>,
-    AuthN::Config: Clone + Default,
+    AuthN::Config: Clone,
     AuthN::AuthNSession: Read
         + Write
         + AuthNed<AuthN::Prin>
@@ -1173,7 +1173,7 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundNearClientConn, Param = ()>,
-    AuthN::Config: Clone + Default,
+    AuthN::Config: Clone,
     AuthN::AuthNSession: Read
         + Write
         + AuthNed<AuthN::Prin>

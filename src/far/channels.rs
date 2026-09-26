@@ -4818,13 +4818,9 @@ where
                 // Try to shut down the acquired.
                 let mut deletes = Vec::new();
 
-                ent
-                    .shutdown(&mut deletes, ctx.registry())
-                    .map_err(|err| {
-                        FarChannelsShutdownListenError::Shutdown {
-                            err: err
-                        }
-                    })?;
+                ent.shutdown(&mut deletes, ctx.registry()).map_err(|err| {
+                    FarChannelsShutdownListenError::Shutdown { err: err }
+                })?;
 
                 for token in deletes {
                     if self.tokens.remove(&token).is_none() {
@@ -4837,20 +4833,17 @@ where
         }
 
         // See if all channels are shut down.
-        if self.channels
-            .iter()
-            .enumerate()
-            .all(|(i, ent)| {
-                let out = ent.is_shutdown();
+        if self.channels.iter().enumerate().all(|(i, ent)| {
+            let out = ent.is_shutdown();
 
-                if !out {
-                    trace!(target: "far-channels",
+            if !out {
+                trace!(target: "far-channels",
                            "channel {} is still live",
                            i);
-                }
+            }
 
-                out
-            }) {
+            out
+        }) {
             Ok(None)
         } else {
             // There are still live channels.

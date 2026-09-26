@@ -38,6 +38,8 @@ use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 
+use constellation_auth::authn::basic::BasicCred;
+use constellation_auth::authn::basic::BasicCredFromSSLError;
 use constellation_auth::cred::Credentials;
 use constellation_auth::cred::CredentialsMut;
 #[cfg(feature = "tls")]
@@ -120,6 +122,7 @@ use crate::near::tls::TLSSessionCreateError;
 use crate::near::unix::UnixNearAcceptor;
 #[cfg(feature = "unix")]
 use crate::near::unix::UnixNearConnector;
+use crate::resolve::Resolution;
 use crate::resolve::cache::NSNameCachesCtx;
 use crate::tls::SSLStream;
 use crate::tls::TLSShutdownError;
@@ -393,7 +396,7 @@ pub enum CompoundNearConnectorNegotiatePending {
 
 /// Errors that can happen while harvesting credentials.
 #[derive(Debug)]
-pub enum CompoundNearCredentialError {
+pub enum CompoundNearCredError {
     Unix { err: Error },
     TCP { err: Error }
 }
@@ -504,7 +507,7 @@ pub enum CompoundNearAcceptorState {
 }
 
 /// Credentials harvested by [Credentials]
-pub enum CompoundNearCredential {
+pub enum CompoundNearCred {
     #[cfg(feature = "unix")]
     Unix { unix: UnixSocketCred<()> },
     /// TCP counterparty address (unsafe) "credential".
@@ -518,9 +521,7 @@ pub enum CompoundNearCredential {
         unsafe_tcp: SocketAddr
     },
     #[cfg(feature = "tls")]
-    TLS {
-        tls: Box<SSLCred<CompoundNearCredential>>
-    }
+    TLS { tls: Box<SSLCred<CompoundNearCred>> }
 }
 
 /// Versatile server-side near-link channel.
@@ -819,6 +820,59 @@ impl TryFrom<CompoundNearEndpoint> for CompoundNearConcreteAddr {
     }
 }
 
+#[derive(Debug)]
+pub enum CompoundNearChannelSessionCredToBasicCredError {
+    SSL {
+        err: Box<
+            BasicCredFromSSLError<
+                CompoundNearChannelSessionCredToBasicCredError
+            >
+        >
+    },
+    IO {
+        err: std::io::Error
+    }
+}
+
+impl TryFrom<CompoundNearEndpoint> for Resolution<CompoundNearNameAddr> {
+    type Error = Error;
+
+    fn try_from(
+        val: CompoundNearEndpoint
+    ) -> Result<Resolution<CompoundNearNameAddr>, Error> {
+        match val {
+            CompoundNearEndpoint::TCP { tcp } => {
+                let (tcp, port) = tcp.take();
+
+                match tcp {
+                    IPEndpointAddr::Name(name) => Ok(Resolution::NSLookup {
+                        name: name,
+                        port: port
+                    }),
+                    IPEndpointAddr::Addr(addr) => Ok(Resolution::Static {
+                        addr: CompoundNearNameAddr::from(SocketAddr::new(
+                            addr, port
+                        ))
+                    })
+                }
+            }
+            CompoundNearEndpoint::Unix { unix_stream } => {
+                Ok(Resolution::Static {
+                    addr: CompoundNearNameAddr::Unix {
+                        unix: UnixSocketAddr::try_from(unix_stream)?
+                    }
+                })
+            }
+        }
+    }
+}
+
+impl From<SocketAddr> for CompoundNearNameAddr {
+    fn from(addr: SocketAddr) -> CompoundNearNameAddr {
+        CompoundNearNameAddr::TCP { tcp: addr }
+    }
+}
+
 impl TryFrom<CompoundNearEndpoint> for CompoundNearNameAddr {
     type Error = CompoundNearEndpointConvertError;
 
@@ -865,6 +919,19 @@ impl<'a> TryFrom<CompoundNearNameAddrRef<'a>> for CompoundNearNameAddr {
                 Ok(CompoundNearNameAddr::SOCKS5 {
                     socks5: socks5.clone()
                 })
+            }
+        }
+    }
+}
+
+impl ScopedError for CompoundNearChannelSessionCredToBasicCredError {
+    fn scope(&self) -> ErrorScope {
+        match self {
+            CompoundNearChannelSessionCredToBasicCredError::SSL { err } => {
+                err.scope()
+            }
+            CompoundNearChannelSessionCredToBasicCredError::IO { err } => {
+                err.scope()
             }
         }
     }
@@ -990,12 +1057,12 @@ impl ScopedError for CompoundNearConnectorNegotiateError {
     }
 }
 
-impl ScopedError for CompoundNearCredentialError {
+impl ScopedError for CompoundNearCredError {
     fn scope(&self) -> ErrorScope {
         match self {
             #[cfg(feature = "unix")]
-            CompoundNearCredentialError::Unix { err } => err.scope(),
-            CompoundNearCredentialError::TCP { err } => err.scope()
+            CompoundNearCredError::Unix { err } => err.scope(),
+            CompoundNearCredError::TCP { err } => err.scope()
         }
     }
 }
@@ -1033,6 +1100,22 @@ impl ScopedError for Box<CompoundNegotiatorStartError> {
     #[inline]
     fn scope(&self) -> ErrorScope {
         self.as_ref().scope()
+    }
+}
+
+impl Display for CompoundNearChannelSessionCredToBasicCredError {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundNearChannelSessionCredToBasicCredError::SSL { err } => {
+                write!(f, "{}", err)
+            }
+            CompoundNearChannelSessionCredToBasicCredError::IO { err } => {
+                write!(f, "{}", err)
+            }
+        }
     }
 }
 
@@ -1080,17 +1163,17 @@ impl Display for CompoundShutdownError {
     }
 }
 
-impl Display for CompoundNearCredentialError {
+impl Display for CompoundNearCredError {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
             #[cfg(feature = "unix")]
-            CompoundNearCredentialError::Unix { err } => {
+            CompoundNearCredError::Unix { err } => {
                 write!(f, "{}", err)
             }
-            CompoundNearCredentialError::TCP { err } => {
+            CompoundNearCredError::TCP { err } => {
                 write!(f, "{}", err)
             }
         }
@@ -1438,43 +1521,74 @@ impl Session for CompoundNearServerConn {
     }
 }
 
-impl From<CompoundNearCredential> for NullCred {
+impl TryFrom<CompoundNearCred> for BasicCred {
+    type Error = CompoundNearChannelSessionCredToBasicCredError;
+
     #[inline]
-    fn from(_val: CompoundNearCredential) -> NullCred {
+    fn try_from(
+        val: CompoundNearCred
+    ) -> Result<BasicCred, CompoundNearChannelSessionCredToBasicCredError> {
+        match val {
+            #[cfg(feature = "unix")]
+            CompoundNearCred::Unix { unix } => {
+                let path =
+                    UnixSocketPath::try_from(unix.peer()).map_err(|err| {
+                        CompoundNearChannelSessionCredToBasicCredError::IO {
+                            err: err
+                        }
+                    })?;
+
+                Ok(BasicCred::Unix { addr: path })
+            }
+            CompoundNearCred::UnsafeTCP { unsafe_tcp } => Ok(BasicCred::IP {
+                unsafe_addr: IPEndpoint::from(unsafe_tcp)
+            }),
+            #[cfg(feature = "tls")]
+            CompoundNearCred::TLS { tls } => {
+                BasicCred::try_from(*tls).map_err(|err| {
+                    CompoundNearChannelSessionCredToBasicCredError::SSL {
+                        err: Box::new(err)
+                    }
+                })
+            }
+        }
+    }
+}
+
+impl From<CompoundNearCred> for NullCred {
+    #[inline]
+    fn from(_val: CompoundNearCred) -> NullCred {
         NullCred
     }
 }
 
 impl Credentials for CompoundNearClientConn {
-    type Cred = CompoundNearCredential;
-    type CredError = CompoundNearCredentialError;
+    type Cred = CompoundNearCred;
+    type CredError = CompoundNearCredError;
 
     #[inline]
-    fn creds(
-        &self
-    ) -> Result<Option<CompoundNearCredential>, CompoundNearCredentialError>
-    {
+    fn creds(&self) -> Result<Option<CompoundNearCred>, CompoundNearCredError> {
         match self {
             CompoundNearClientConn::Unix { unix } => {
-                let cred = unix.creds().map_err(|err| {
-                    CompoundNearCredentialError::Unix { err: err }
-                })?;
+                let cred = unix
+                    .creds()
+                    .map_err(|err| CompoundNearCredError::Unix { err: err })?;
 
-                Ok(cred.map(|cred| CompoundNearCredential::Unix { unix: cred }))
+                Ok(cred.map(|cred| CompoundNearCred::Unix { unix: cred }))
             }
             CompoundNearClientConn::TCP { tcp } => {
-                let cred = tcp.creds().map_err(|err| {
-                    CompoundNearCredentialError::Unix { err: err }
-                })?;
+                let cred = tcp
+                    .creds()
+                    .map_err(|err| CompoundNearCredError::Unix { err: err })?;
 
-                Ok(cred.map(|cred| CompoundNearCredential::UnsafeTCP {
+                Ok(cred.map(|cred| CompoundNearCred::UnsafeTCP {
                     unsafe_tcp: cred
                 }))
             }
             CompoundNearClientConn::TLS { tls } => {
                 let cred = tls.creds()?;
 
-                Ok(cred.map(|cred| CompoundNearCredential::TLS {
+                Ok(cred.map(|cred| CompoundNearCred::TLS {
                     tls: Box::new(cred)
                 }))
             }
@@ -1484,56 +1598,59 @@ impl Credentials for CompoundNearClientConn {
 }
 
 impl CredentialsMut for CompoundNearClientConn {
-    type Cred = CompoundNearCredential;
-    type CredError = CompoundNearCredentialError;
+    type Cred = CompoundNearCred;
+    type CredError = CompoundNearCredError;
 
     #[inline]
     fn creds(
         &mut self
-    ) -> Result<Option<CompoundNearCredential>, CompoundNearCredentialError>
-    {
+    ) -> Result<Option<CompoundNearCred>, CompoundNearCredError> {
         <Self as Credentials>::creds(self)
     }
 }
 
 impl Credentials for CompoundNearServerConn {
-    type Cred = CompoundNearCredential;
-    type CredError = CompoundNearCredentialError;
+    type Cred = CompoundNearCred;
+    type CredError = CompoundNearCredError;
 
     #[inline]
-    fn creds(
-        &self
-    ) -> Result<Option<CompoundNearCredential>, CompoundNearCredentialError>
-    {
+    fn creds(&self) -> Result<Option<CompoundNearCred>, CompoundNearCredError> {
         match self {
             CompoundNearServerConn::Unix { unix } => {
-                let cred = unix.creds().map_err(|err| {
-                    CompoundNearCredentialError::Unix { err: err }
-                })?;
+                let cred = unix
+                    .creds()
+                    .map_err(|err| CompoundNearCredError::Unix { err: err })?;
 
-                Ok(cred.map(|cred| CompoundNearCredential::Unix { unix: cred }))
+                Ok(cred.map(|cred| CompoundNearCred::Unix { unix: cred }))
+            }
+            CompoundNearServerConn::TCP { tcp } => {
+                let cred = tcp
+                    .creds()
+                    .map_err(|err| CompoundNearCredError::Unix { err: err })?;
+
+                Ok(cred.map(|cred| CompoundNearCred::UnsafeTCP {
+                    unsafe_tcp: cred
+                }))
             }
             CompoundNearServerConn::TLS { tls } => {
                 let cred = tls.creds()?;
 
-                Ok(cred.map(|cred| CompoundNearCredential::TLS {
+                Ok(cred.map(|cred| CompoundNearCred::TLS {
                     tls: Box::new(cred)
                 }))
             }
-            _ => Ok(None)
         }
     }
 }
 
 impl CredentialsMut for CompoundNearServerConn {
-    type Cred = CompoundNearCredential;
-    type CredError = CompoundNearCredentialError;
+    type Cred = CompoundNearCred;
+    type CredError = CompoundNearCredError;
 
     #[inline]
     fn creds(
         &mut self
-    ) -> Result<Option<CompoundNearCredential>, CompoundNearCredentialError>
-    {
+    ) -> Result<Option<CompoundNearCred>, CompoundNearCredError> {
         <Self as Credentials>::creds(self)
     }
 }
