@@ -839,6 +839,8 @@ pub type CompoundFarChannelsDatagramMulticastPollTypes<
 pub type FarChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     Types,
@@ -848,6 +850,8 @@ pub type FarChannelsLargeObjMulticastPollTypes<
     LargeObjMulticastPollTypes<
         InMsg,
         OutMsg,
+        LargeObjWrapper,
+        LargeObjMsgAuth,
         Epochs,
         FarChannels<Types>,
         FarChannelsConfig<
@@ -892,9 +896,8 @@ pub type FarChannelsLargeObjMulticastPollTypes<
 pub type CompoundFarChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
-    Wrapper,
-    Enc,
-    Dec,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     AuthNChan,
     SessAuthN,
     Unix,
@@ -906,6 +909,8 @@ pub type CompoundFarChannelsLargeObjMulticastPollTypes<
 > = FarChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     CompoundFarChannelsTypes<
@@ -913,10 +918,18 @@ pub type CompoundFarChannelsLargeObjMulticastPollTypes<
         AuthNChan,
         Unix,
         UDP,
-        OutMsg,
-        Wrapper,
-        Enc,
-        Dec
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >
     >,
     LargeObjTypes,
     Ctx

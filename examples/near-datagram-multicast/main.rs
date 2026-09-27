@@ -21,9 +21,9 @@ use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -35,8 +35,8 @@ use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
 use constellation_channels::config::CompoundNearAcceptorConfig;
-use constellation_channels::config::CompoundNearConnectorPartialConfig;
 use constellation_channels::config::CompoundNearConnectorParam;
+use constellation_channels::config::CompoundNearConnectorPartialConfig;
 use constellation_channels::config::CompoundNearEndpoint;
 use constellation_channels::config::NearChannelsConfig;
 use constellation_channels::config::ResolverConfig;
@@ -80,14 +80,14 @@ struct ExampleCtx<Ctx>
 where
     Ctx: NSNameCachesCtx {
     inner: Ctx,
-    tokens: Tokens,
+    tokens: Tokens
 }
 
 struct ExampleClientMsgs {
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
     live: Arc<AtomicBool>,
     nretries: usize,
-    retry: Retry,
+    retry: Retry
 }
 
 struct ExampleServerMsgs {
@@ -98,12 +98,12 @@ struct ExampleServerMsgs {
 
 struct ExampleClientRecv {
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
-    live: Arc<AtomicBool>,
+    live: Arc<AtomicBool>
 }
 
 struct ExampleServerRecv {
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
-    live: Arc<AtomicBool>,
+    live: Arc<AtomicBool>
 }
 
 #[derive(Debug)]
@@ -116,8 +116,7 @@ impl MsgsWaker for ExampleServerMsgs {
         &mut self,
         waker: Arc<Waker>
     ) -> Result<(), Self::Error> {
-        let mut guard = self.waker.lock()
-            .map_err(|_| MutexPoison)?;
+        let mut guard = self.waker.lock().map_err(|_| MutexPoison)?;
 
         *guard = Some(waker);
 
@@ -132,8 +131,7 @@ impl MsgsWaker for ExampleClientMsgs {
         &mut self,
         waker: Arc<Waker>
     ) -> Result<(), Self::Error> {
-        let mut guard = self.waker.lock()
-            .map_err(|_| MutexPoison)?;
+        let mut guard = self.waker.lock().map_err(|_| MutexPoison)?;
 
         *guard = Some(waker);
 
@@ -142,15 +140,19 @@ impl MsgsWaker for ExampleClientMsgs {
 }
 
 impl<Party> SharedMsgs<Party, Vec<u8>> for ExampleClientMsgs
-where Party: Clone {
+where
+    Party: Clone
+{
     type MsgsError = FinishedErr;
 
     fn msgs(
         &mut self,
         live: &HashSet<Party>,
         now: Instant
-    ) -> Result<(Option<Vec<(Vec<Party>, Vec<Vec<u8>>)>>, Option<Instant>),
-                Self::MsgsError> {
+    ) -> Result<
+        (Option<Vec<(Vec<Party>, Vec<Vec<u8>>)>>, Option<Instant>),
+        Self::MsgsError
+    > {
         if self.live.load(Ordering::Acquire) {
             let parties = live.iter().cloned().collect();
             let next = self.retry.retry_delay(self.nretries);
@@ -172,15 +174,19 @@ where Party: Clone {
 }
 
 impl<Party> SharedMsgs<Party, Vec<u8>> for ExampleServerMsgs
-where Party: Clone {
+where
+    Party: Clone
+{
     type MsgsError = FinishedErr;
 
     fn msgs(
         &mut self,
         live: &HashSet<Party>,
         now: Instant
-    ) -> Result<(Option<Vec<(Vec<Party>, Vec<Vec<u8>>)>>, Option<Instant>),
-                Self::MsgsError> {
+    ) -> Result<
+        (Option<Vec<(Vec<Party>, Vec<Vec<u8>>)>>, Option<Instant>),
+        Self::MsgsError
+    > {
         if self.live.load(Ordering::Acquire) {
             if !self.sent {
                 let parties = live.iter().cloned().collect();
@@ -335,10 +341,7 @@ type ExampleServerPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
             DatagramCodecStream<
                 Vec<u8>,
                 Vec<u8>,
-                DuplexValue<
-                    CompoundNearServerConn,
-                    CompoundNearClientConn
-                >,
+                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
                 TestBytesCodec,
                 TestBytesCodec
             >
@@ -368,10 +371,7 @@ type ExampleClientPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
             DatagramCodecStream<
                 Vec<u8>,
                 Vec<u8>,
-                DuplexValue<
-                    CompoundNearServerConn,
-                    CompoundNearClientConn
-                >,
+                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
                 TestBytesCodec,
                 TestBytesCodec
             >
@@ -414,7 +414,10 @@ fn server(conf: &str) {
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
     let waker = Arc::new(Mutex::new(None));
-    let recv = ExampleServerRecv { waker: waker.clone(), live: live.clone() };
+    let recv = ExampleServerRecv {
+        waker: waker.clone(),
+        live: live.clone()
+    };
     let msgs = ExampleServerMsgs {
         waker: waker,
         live: live,
@@ -422,7 +425,7 @@ fn server(conf: &str) {
     };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
-        tokens: Tokens::new(),
+        tokens: Tokens::new()
     };
     let self_party: Option<String> = Some(String::from("server"));
     let poll: JoinHandle<()> = PollThread::<
@@ -461,7 +464,10 @@ fn client(conf: &str) {
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
     let waker = Arc::new(Mutex::new(None));
-    let recv = ExampleClientRecv { waker: waker.clone(), live: live.clone() };
+    let recv = ExampleClientRecv {
+        waker: waker.clone(),
+        live: live.clone()
+    };
     let msgs = ExampleClientMsgs {
         live: live,
         waker: waker,
@@ -470,7 +476,7 @@ fn client(conf: &str) {
     };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
-        tokens: Tokens::new(),
+        tokens: Tokens::new()
     };
     let self_party: Option<String> = Some(String::from("client"));
     let poll: JoinHandle<()> = PollThread::<

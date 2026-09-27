@@ -930,6 +930,8 @@ pub type CompoundNearChannelsDatagramMulticastPollTypes<
 pub type NearChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     Types,
@@ -938,6 +940,8 @@ pub type NearChannelsLargeObjMulticastPollTypes<
 > = LargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     NearChannels<Types>,
     NearChannelsConfig<
@@ -961,9 +965,8 @@ pub type NearChannelsLargeObjMulticastPollTypes<
 pub type CompoundNearChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
-    Wrapper,
-    Enc,
-    Dec,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -976,6 +979,8 @@ pub type CompoundNearChannelsLargeObjMulticastPollTypes<
 > = NearChannelsLargeObjMulticastPollTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     CompoundNearDuplexNegoTypes<
@@ -984,10 +989,18 @@ pub type CompoundNearChannelsLargeObjMulticastPollTypes<
         AuthNChan,
         InTLS,
         OutTLS,
-        OutMsg,
-        Wrapper,
-        Enc,
-        Dec
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >
     >,
     LargeObjTypes,
     Ctx
