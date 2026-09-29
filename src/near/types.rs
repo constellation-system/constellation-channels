@@ -787,6 +787,8 @@ pub type CompoundNearChannelsDatagramDispatchTypes<
 pub type NearChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     Types,
@@ -795,6 +797,8 @@ pub type NearChannelsLargeObjDispatchTypes<
 > = LargeObjDispatchTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     NearChannels<Types>,
     NearChannelsConfig<
@@ -818,9 +822,8 @@ pub type NearChannelsLargeObjDispatchTypes<
 pub type CompoundNearChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
-    Wrapper,
-    Enc,
-    Dec,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     AuthNChan,
     InSessAuthN,
     InTLS,
@@ -833,6 +836,8 @@ pub type CompoundNearChannelsLargeObjDispatchTypes<
 > = NearChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     CompoundNearDuplexNegoTypes<
@@ -841,10 +846,18 @@ pub type CompoundNearChannelsLargeObjDispatchTypes<
         AuthNChan,
         InTLS,
         OutTLS,
-        OutMsg,
-        Wrapper,
-        Enc,
-        Dec
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >
     >,
     LargeObjTypes,
     Ctx

@@ -656,6 +656,8 @@ pub type CompoundFarChannelsDatagramDispatchTypes<
 pub type FarChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     Types,
@@ -665,6 +667,8 @@ pub type FarChannelsLargeObjDispatchTypes<
     LargeObjDispatchTypes<
         InMsg,
         OutMsg,
+        LargeObjWrapper,
+        LargeObjMsgAuth,
         Epochs,
         FarChannels<Types>,
         FarChannelsConfig<
@@ -709,9 +713,8 @@ pub type FarChannelsLargeObjDispatchTypes<
 pub type CompoundFarChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
-    Wrapper,
-    Enc,
-    Dec,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     AuthNChan,
     SessAuthN,
     Unix,
@@ -723,6 +726,8 @@ pub type CompoundFarChannelsLargeObjDispatchTypes<
 > = FarChannelsLargeObjDispatchTypes<
     InMsg,
     OutMsg,
+    LargeObjWrapper,
+    LargeObjMsgAuth,
     Epochs,
     Resolve,
     CompoundFarChannelsTypes<
@@ -730,10 +735,18 @@ pub type CompoundFarChannelsLargeObjDispatchTypes<
         AuthNChan,
         Unix,
         UDP,
-        OutMsg,
-        Wrapper,
-        Enc,
-        Dec
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsg<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::HashID
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >,
+        LargeObjMsgCodec<
+            <LargeObjTypes as LargeObjProtoTypes<InMsg, OutMsg>>::Hash
+        >
     >,
     LargeObjTypes,
     Ctx
