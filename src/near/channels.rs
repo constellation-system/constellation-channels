@@ -4808,7 +4808,7 @@ where
         Types::EncoderCreateError,
         Types::DecoderCreateError
     >;
-    type ShutdownStreamError = ChannelEntryShutdownError<
+    type StreamShutdownError = ChannelEntryShutdownError<
         DuplexValue<
             SessionEntryShutdownError<
                 Types::InShutdownStartError,
@@ -4821,7 +4821,7 @@ where
         >,
         Types::OutEndpoint
     >;
-    type ShutdownStreamRetry = Infallible;
+    type StreamShutdownRetry = Infallible;
 
     fn shutdown_stream(
         &mut self,
@@ -4832,9 +4832,9 @@ where
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
-            Self::ShutdownStreamRetry
+            Self::StreamShutdownRetry
         >,
-        Self::ShutdownStreamError
+        Self::StreamShutdownError
     > {
         let (_, session) = AuthNedDestruct::take(chan);
 
@@ -4870,13 +4870,13 @@ where
         _ctx: &mut Ctx,
         _channel: &NearChannelID,
         _param: &Self::Param,
-        _retry: Self::ShutdownStreamRetry
+        _retry: Self::StreamShutdownRetry
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
-            Self::ShutdownStreamRetry
+            Self::StreamShutdownRetry
         >,
-        Self::ShutdownStreamError
+        Self::StreamShutdownError
     > {
         error!(target: "near-channels",
                "should never call retry_shutdown_stream");

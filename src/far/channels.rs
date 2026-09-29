@@ -4630,7 +4630,7 @@ where
         Types::AcquireNegoError,
         Types::AcquireShutdownNegoError
     >;
-    type ShutdownStreamError = ChannelEntryShutdownFlowError<
+    type StreamShutdownError = ChannelEntryShutdownFlowError<
         AcquiredEntryShutdownError<
             FarChannelFlowsError<
                 Types::SocketError,
@@ -4641,7 +4641,7 @@ where
             Types::WrapError
         >
     >;
-    type ShutdownStreamRetry = WithRetryWhen<Types::Flow>;
+    type StreamShutdownRetry = WithRetryWhen<Types::Flow>;
 
     #[inline]
     fn shutdown_stream(
@@ -4653,9 +4653,9 @@ where
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
-            Self::ShutdownStreamRetry
+            Self::StreamShutdownRetry
         >,
-        Self::ShutdownStreamError
+        Self::StreamShutdownError
     > {
         let (_, session) = AuthNedDestruct::take(session);
 
@@ -4681,13 +4681,13 @@ where
         ctx: &mut Ctx,
         channel: &FarChannelID,
         param: &Types::ChannelParam,
-        retry: Self::ShutdownStreamRetry
+        retry: Self::StreamShutdownRetry
     ) -> Result<
         RetryResult<
             (Option<Vec<Self::Param>>, Option<Instant>),
-            Self::ShutdownStreamRetry
+            Self::StreamShutdownRetry
         >,
-        Self::ShutdownStreamError
+        Self::StreamShutdownError
     > {
         self.channels[channel.0].retry_shutdown_flow(ctx, param, retry)
     }
