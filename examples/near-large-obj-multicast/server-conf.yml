@@ -1,0 +1,64 @@
+default-inbound-authn:
+  rules:
+    - prin: client
+      cred:
+        unix: near-threads-example-client-stream.sock
+
+    - prin: client
+      cred:
+        unsafe:
+          ip: '[::1]:*'
+
+  unsafe:
+    allow-ip-addr-creds: true
+
+default-outbound-authn:
+  rules: []
+
+channels:
+  - inbound:
+      id: server-tcp
+      tcp:
+        addr: '[::0]:8118'
+        unsafe:
+          allow-ip-addr-creds: true
+
+  - inbound:
+      id: server-unix
+      unix-stream:
+        path: near-threads-example-server-stream.sock
+
+parties:
+  - party: client
+    connections:
+      - channel-names:
+          - server-tcp
+
+        endpoints:
+          - addr:
+              tcp: '[::1]:8228'
+
+      - channel-names:
+          - server-unix
+
+        endpoints:
+          - addr:
+              unix-stream: near-threads-example-client-stream.sock
+
+  - party: server
+    connections:
+      - channel-names:
+          - server-tcp
+
+        endpoints:
+          - addr:
+              tcp: '[::1]:8118'
+
+      - channel-names:
+          - server-unix
+
+        endpoints:
+          - addr:
+              unix-stream: near-threads-example-server-stream.sock
+
+msg-authn: null
