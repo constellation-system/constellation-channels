@@ -36,10 +36,8 @@ use constellation_auth::authn::MsgAuthNTypes;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundNearAcceptorConfig;
-use constellation_channels::config::CompoundNearConnectorPartialConfig;
+use constellation_channels::config::CompoundNearDispatchThreadConfig;
 use constellation_channels::config::CompoundNearEndpoint;
-use constellation_channels::config::NearChannelsConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
 use constellation_channels::near::channels::DuplexValue;
@@ -48,6 +46,7 @@ use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
 use constellation_channels::near::compound::CompoundNearServerConn;
 use constellation_channels::near::types::CompoundNearChannelsLargeObjDispatchTypes;
+use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedLargeObjChan;
 use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -65,9 +64,7 @@ use constellation_common::hashid::SHA3ID;
 use constellation_common::ids::AscendingCount;
 use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::DispatchConfig;
-use constellation_streams::config::DispatchThreadConfig;
 use constellation_streams::config::LargeObjProtoConfig;
 use constellation_streams::config::PrivateLargeObjModeConfig;
 use constellation_streams::frags::Frags;
@@ -81,7 +78,6 @@ use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::large_obj::LargeObjSender;
 use constellation_streams::select::dispatch::DispatchSelector;
 use constellation_streams::select::dispatch::DispatchSelectorCreateError;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::dispatch::Dispatch;
@@ -311,20 +307,10 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
                 CompoundNearDuplexNegoTypes<
                     BasicAuthN<String>,
                     BasicAuthN<String>,
-                    BasicAuthNed<
+                    CompoundNearChannelsBasicAuthNedLargeObjChan<
                         String,
-                        RefCellStream<
-                            DatagramCodecStream<
-                                LargeObjMsg<SHA3ID>,
-                                LargeObjMsg<SHA3ID>,
-                                DuplexValue<
-                                    CompoundNearServerConn,
-                                    CompoundNearClientConn
-                                >,
-                                LargeObjMsgCodec<SHA3Algo>,
-                                LargeObjMsgCodec<SHA3Algo>
-                            >
-                        >
+                        SHA3Algo,
+                        SHA3ID
                     >,
                     TLSServerConfig,
                     TLSClientConfig,
@@ -383,17 +369,10 @@ type ExampleDispatchTypes = CompoundNearChannelsLargeObjDispatchTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    BasicAuthNed<
+    CompoundNearChannelsBasicAuthNedLargeObjChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                LargeObjMsg<SHA3ID>,
-                LargeObjMsg<SHA3ID>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                LargeObjMsgCodec<SHA3Algo>,
-                LargeObjMsgCodec<SHA3Algo>
-            >
-        >
+        SHA3Algo,
+        SHA3ID
     >,
     BasicAuthN<String>,
     TLSServerConfig,
@@ -406,15 +385,11 @@ type ExampleDispatchTypes = CompoundNearChannelsLargeObjDispatchTypes<
 >;
 
 fn run(conf: &str) {
-    let dispatch_config: DispatchThreadConfig<
-        NearChannelsConfig<
-            CompoundNearAcceptorConfig<TLSServerConfig>,
-            CompoundNearConnectorPartialConfig<TLSClientConfig>,
-            BasicAuthNConfig<String>,
-            BasicAuthNConfig<String>,
-            (),
-            ()
-        >,
+    let dispatch_config: CompoundNearDispatchThreadConfig<
+        BasicAuthNConfig<String>,
+        BasicAuthNConfig<String>,
+        (),
+        (),
         PrivateLargeObjModeConfig
     > = yaml_serde::from_str(conf).unwrap();
     let ctx = ExampleCtx {

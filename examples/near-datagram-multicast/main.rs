@@ -30,23 +30,17 @@ use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
 use constellation_auth::authn::AuthNedDestruct;
-use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundNearAcceptorConfig;
-use constellation_channels::config::CompoundNearConnectorParam;
-use constellation_channels::config::CompoundNearConnectorPartialConfig;
+use constellation_channels::config::CompoundNearMulticastPollThreadConfig;
 use constellation_channels::config::CompoundNearEndpoint;
-use constellation_channels::config::NearChannelsConfig;
 use constellation_channels::config::ResolverConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
-use constellation_channels::near::channels::DuplexValue;
-use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
-use constellation_channels::near::compound::CompoundNearServerConn;
 use constellation_channels::near::types::CompoundNearChannelsDatagramMulticastPollTypes;
+use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedDatagramChan;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -57,12 +51,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::ids::AscendingCount;
 use constellation_common::net::SharedMsgs;
 use constellation_common::retry::Retry;
-use constellation_streams::codec::DatagramCodecStream;
-use constellation_streams::config::PartyConfig;
-use constellation_streams::config::PollThreadConfig;
 use constellation_streams::config::SharedDatagramModeConfig;
-use constellation_streams::config::StreamMulticasterConfig;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::poll::MsgsWaker;
@@ -335,17 +324,12 @@ type ExampleServerPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
-    BasicAuthNed<
+    CompoundNearChannelsBasicAuthNedDatagramChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     BasicAuthN<String>,
     TLSServerConfig,
@@ -365,17 +349,12 @@ type ExampleClientPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
-    BasicAuthNed<
+    CompoundNearChannelsBasicAuthNedDatagramChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     BasicAuthN<String>,
     TLSServerConfig,
@@ -390,26 +369,16 @@ type ExampleClientPollTypes = CompoundNearChannelsDatagramMulticastPollTypes<
 >;
 
 fn server(conf: &str) {
-    let poll_config: PollThreadConfig<
-        NearChannelsConfig<
-            CompoundNearAcceptorConfig<TLSServerConfig>,
-            CompoundNearConnectorPartialConfig<TLSClientConfig>,
-            BasicAuthNConfig<String>,
-            BasicAuthNConfig<String>,
-            (),
-            ()
-        >,
+    let poll_config: CompoundNearMulticastPollThreadConfig<
+        BasicAuthNConfig<String>,
+        BasicAuthNConfig<String>,
+        (),
+        (),
         SharedDatagramModeConfig,
-        StreamMulticasterConfig<
-            String,
-            PartyConfig<
-                ResolverConfig,
-                (),
-                String,
-                Option<CompoundNearConnectorParam>,
-                CompoundNearEndpoint
-            >
-        >,
+        String,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
@@ -440,26 +409,16 @@ fn server(conf: &str) {
 }
 
 fn client(conf: &str) {
-    let poll_config: PollThreadConfig<
-        NearChannelsConfig<
-            CompoundNearAcceptorConfig<TLSServerConfig>,
-            CompoundNearConnectorPartialConfig<TLSClientConfig>,
-            BasicAuthNConfig<String>,
-            BasicAuthNConfig<String>,
-            (),
-            ()
-        >,
+    let poll_config: CompoundNearMulticastPollThreadConfig<
+        BasicAuthNConfig<String>,
+        BasicAuthNConfig<String>,
+        (),
+        (),
         SharedDatagramModeConfig,
-        StreamMulticasterConfig<
-            String,
-            PartyConfig<
-                ResolverConfig,
-                (),
-                String,
-                Option<CompoundNearConnectorParam>,
-                CompoundNearEndpoint
-            >
-        >,
+        String,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));

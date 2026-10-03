@@ -2,7 +2,7 @@ default-inbound-authn:
   rules:
     - prin: client
       cred:
-        unix: near-threads-example-client-stream.sock
+        unix: near-threads-example-client-large-obj.sock
 
     - prin: client
       cred:
@@ -19,13 +19,13 @@ channels:
   - inbound:
       id: server-tcp
       tcp:
-        addr: '[::0]:8118'
+        addr: '[::0]:8338'
         unsafe:
           allow-ip-addr-creds: true
 
   - inbound:
       id: server-unix
       unix-stream:
-        path: near-threads-example-server-stream.sock
+        path: near-threads-example-server-large-obj.sock
 
 msg-authn: null

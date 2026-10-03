@@ -2,12 +2,12 @@ default-session-authn:
   rules:
     - prin: server
       cred:
-        unix: far-threads-example-server-datagram.sock
+        unix: far-threads-example-server-large-obj.sock
 
     - prin: server
       cred:
         unsafe:
-          ip: '[::1]:7117'
+          ip: '[::1]:7337'
 
   unsafe:
     allow-ip-addr-creds: true
@@ -15,13 +15,13 @@ default-session-authn:
 channels:
   - id: client-udp
     udp:
-      addr: '[::0]:7227'
+      addr: '[::0]:7447'
       unsafe:
         allow-ip-addr-creds: true
 
   - id: client-unix
     unix-datagram:
-      path: far-threads-example-client-datagram.sock
+      path: far-threads-example-client-large-obj.sock
 
 parties:
   - party: client
@@ -31,14 +31,14 @@ parties:
 
         endpoints:
           - addr:
-              udp: '[::1]:7227'
+              udp: '[::1]:7447'
 
       - channel-names:
           - client-unix
 
         endpoints:
           - addr:
-              unix-datagram: far-threads-example-client-datagram.sock
+              unix-datagram: far-threads-example-client-large-obj.sock
 
   - party: server
     connections:
@@ -47,13 +47,13 @@ parties:
 
         endpoints:
           - addr:
-              udp: '[::1]:7117'
+              udp: '[::1]:7337'
 
       - channel-names:
           - client-unix
 
         endpoints:
           - addr:
-              unix-datagram: far-threads-example-server-datagram.sock
+              unix-datagram: far-threads-example-server-large-obj.sock
 
 msg-authn: null

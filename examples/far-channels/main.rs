@@ -20,19 +20,17 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::TrivialAuthN;
 use constellation_auth::cred::NullCred;
-use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundOutboundNegotiatorParam;
-use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::FarChannelsConfig;
+use constellation_channels::config::CompoundFarChannelsConfig;
 use constellation_channels::far::channels::FarChannelID;
 use constellation_channels::far::channels::FarChannels;
 use constellation_channels::far::compound::CompoundFarChannelParam;
 use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::types::CompoundFarChannelsTypes;
+use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedDatagramChan;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::codec::test::TestBytesCodec;
@@ -47,10 +45,8 @@ use constellation_common::unix::UnixSocketPath;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::stream::PullStream;
 use constellation_streams::stream::PushStreamPrivateSingle;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
@@ -91,20 +87,14 @@ type ExampleFarChannelsTypes = CompoundFarChannelsTypes<
             PassthruDatagramXfrm<SocketAddr>
         >
     >,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedDatagramChan<
         NullCred,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     PassthruDatagramXfrm<UnixSocketPath>,
     PassthruDatagramXfrm<SocketAddr>,
@@ -158,20 +148,14 @@ fn read(
     ctx: &mut ExampleCtx<SharedNSNameCaches>,
     events: &mut Events,
     channels: &mut FarChannels<ExampleFarChannelsTypes>,
-    stream: &mut BasicAuthNed<
+    stream: &mut CompoundFarChannelsBasicAuthNedDatagramChan<
         NullCred,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     addr: CompoundFarChannelXfrmPeerAddr,
     channel_id: FarChannelID,
@@ -241,13 +225,10 @@ fn read(
 }
 
 fn server(conf: &str) {
-    let server_config: FarChannelsConfig<
-        CompoundFarChannelConfig,
+    let server_config: CompoundFarChannelsConfig<
         (),
-        CompoundXfrmCreateParam<
-            PassthruDatagramXfrmParam,
-            PassthruDatagramXfrmParam
-        >,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
         (),
         ()
     > = yaml_serde::from_str(conf).unwrap();
@@ -332,13 +313,10 @@ fn client(
         addr,
         param: negoparam
     } = endpoint;
-    let client_config: FarChannelsConfig<
-        CompoundFarChannelConfig,
+    let client_config: CompoundFarChannelsConfig<
         (),
-        CompoundXfrmCreateParam<
-            PassthruDatagramXfrmParam,
-            PassthruDatagramXfrmParam
-        >,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
         (),
         ()
     > = yaml_serde::from_str(conf).unwrap();

@@ -26,6 +26,7 @@ use std::marker::PhantomData;
 use constellation_auth::authn::AuthNed;
 use constellation_auth::authn::AuthNedDestruct;
 use constellation_auth::authn::AuthNedMap;
+use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_auth::cred::CredentialsMut;
 use constellation_common::codec::Decoder;
@@ -626,6 +627,54 @@ pub type CompoundNearChannelsDatagramSelectorPollTypes<
         Dec
     >,
     Ctx
+>;
+
+pub type CompoundNearChannelsDatagramChan<
+    InMsg,
+    OutMsg,
+    Enc,
+    Dec
+> = RefCellStream<
+    DatagramCodecStream<
+        OutMsg,
+        InMsg,
+        DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
+        Enc,
+        Dec
+    >
+>;
+
+pub type CompoundNearChannelsBasicAuthNedDatagramChan<
+    Prin,
+    InMsg,
+    OutMsg,
+    Enc,
+    Dec
+> = BasicAuthNed<
+    Prin,
+    CompoundNearChannelsDatagramChan<
+        InMsg,
+        OutMsg,
+        Enc,
+        Dec
+    >
+>;
+
+pub type CompoundNearChannelsBasicAuthNedLargeObjChan<
+    Prin,
+    Hash,
+    HashID,
+> = BasicAuthNed<
+    Prin,
+    RefCellStream<
+        DatagramCodecStream<
+            LargeObjMsg<HashID>,
+            LargeObjMsg<HashID>,
+            DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
+            LargeObjMsgCodec<Hash>,
+            LargeObjMsgCodec<Hash>,
+        >
+    >
 >;
 
 pub type NearChannelsLargeObjSelectorPollTypes<

@@ -36,11 +36,8 @@ use constellation_auth::authn::MsgAuthNTypes;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundNearAcceptorConfig;
-use constellation_channels::config::CompoundNearConnectorParam;
-use constellation_channels::config::CompoundNearConnectorPartialConfig;
 use constellation_channels::config::CompoundNearEndpoint;
-use constellation_channels::config::NearChannelsConfig;
+use constellation_channels::config::CompoundNearSelectorPollThreadConfig;
 use constellation_channels::config::ResolverConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
@@ -49,6 +46,7 @@ use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
 use constellation_channels::near::compound::CompoundNearServerConn;
 use constellation_channels::near::types::CompoundNearChannelsLargeObjSelectorPollTypes;
+use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedLargeObjChan;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -64,21 +62,16 @@ use constellation_common::hashid::SHA3Algo;
 use constellation_common::hashid::SHA3ID;
 use constellation_common::ids::AscendingCount;
 use constellation_common::retry::Retry;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::LargeObjProtoConfig;
-use constellation_streams::config::PartyConfig;
-use constellation_streams::config::PollThreadConfig;
 use constellation_streams::config::PrivateLargeObjModeConfig;
 use constellation_streams::frags::Frags;
 use constellation_streams::large_obj::LargeObjID;
 use constellation_streams::large_obj::LargeObjMsg;
-use constellation_streams::large_obj::LargeObjMsgCodec;
 use constellation_streams::large_obj::LargeObjMsgs;
 use constellation_streams::large_obj::LargeObjProto;
 use constellation_streams::large_obj::LargeObjProtoAddOutboundError;
 use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::large_obj::LargeObjSender;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::poll::MsgsWaker;
@@ -446,17 +439,10 @@ type ExampleServerPollTypes = CompoundNearChannelsLargeObjSelectorPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    BasicAuthNed<
+    CompoundNearChannelsBasicAuthNedLargeObjChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                LargeObjMsg<SHA3ID>,
-                LargeObjMsg<SHA3ID>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                LargeObjMsgCodec<SHA3Algo>,
-                LargeObjMsgCodec<SHA3Algo>
-            >
-        >
+        SHA3Algo,
+        SHA3ID
     >,
     BasicAuthN<String>,
     TLSServerConfig,
@@ -473,17 +459,10 @@ type ExampleClientPollTypes = CompoundNearChannelsLargeObjSelectorPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    BasicAuthNed<
+    CompoundNearChannelsBasicAuthNedLargeObjChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                LargeObjMsg<SHA3ID>,
-                LargeObjMsg<SHA3ID>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                LargeObjMsgCodec<SHA3Algo>,
-                LargeObjMsgCodec<SHA3Algo>
-            >
-        >
+        SHA3Algo,
+        SHA3ID
     >,
     BasicAuthN<String>,
     TLSServerConfig,
@@ -496,23 +475,15 @@ type ExampleClientPollTypes = CompoundNearChannelsLargeObjSelectorPollTypes<
 >;
 
 fn server(conf: &str) {
-    let poll_config: PollThreadConfig<
-        NearChannelsConfig<
-            CompoundNearAcceptorConfig<TLSServerConfig>,
-            CompoundNearConnectorPartialConfig<TLSClientConfig>,
-            BasicAuthNConfig<String>,
-            BasicAuthNConfig<String>,
-            (),
-            ()
-        >,
+    let poll_config: CompoundNearSelectorPollThreadConfig<
+        BasicAuthNConfig<String>,
+        BasicAuthNConfig<String>,
+        (),
+        (),
         PrivateLargeObjModeConfig,
-        PartyConfig<
-            ResolverConfig,
-            (),
-            String,
-            Option<CompoundNearConnectorParam>,
-            CompoundNearEndpoint
-        >,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
@@ -554,23 +525,15 @@ fn server(conf: &str) {
 }
 
 fn client(conf: &str) {
-    let poll_config: PollThreadConfig<
-        NearChannelsConfig<
-            CompoundNearAcceptorConfig<TLSServerConfig>,
-            CompoundNearConnectorPartialConfig<TLSClientConfig>,
-            BasicAuthNConfig<String>,
-            BasicAuthNConfig<String>,
-            (),
-            ()
-        >,
+    let poll_config: CompoundNearSelectorPollThreadConfig<
+        BasicAuthNConfig<String>,
+        BasicAuthNConfig<String>,
+        (),
+        (),
         PrivateLargeObjModeConfig,
-        PartyConfig<
-            ResolverConfig,
-            (),
-            String,
-            Option<CompoundNearConnectorParam>,
-            CompoundNearEndpoint
-        >,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));

@@ -91,6 +91,7 @@ use crate::far::flows::FlowsFlowError;
 use crate::far::flows::FlowsListenError;
 use crate::far::flows::ListenResult;
 use crate::far::types::FarChannelsTypes;
+use crate::far::types::CompoundFarChannelsTypes;
 use crate::far::types::FlowAuthNShutdownTypes;
 use crate::far::types::FlowsEntryTypes;
 use crate::resolve::cache::NSNameCacheError;
@@ -665,6 +666,26 @@ pub enum FarChannelsCreateError<Auth, Channel, Entry> {
     Entry { err: Entry },
     Collision { name: String }
 }
+
+pub type CompoundFarChannels<
+    AuthN,
+    AuthNChan,
+    Unix,
+    UDP,
+    OutMsg,
+    Wrapper,
+    Enc,
+    Dec
+> = FarChannels<CompoundFarChannelsTypes<
+    AuthN,
+    AuthNChan,
+    Unix,
+    UDP,
+    OutMsg,
+    Wrapper,
+    Enc,
+    Dec
+>>;
 
 impl<AuthPending> SessionNegoState<AuthPending> {
     /// Create a state denoting session negotiations.

@@ -64,6 +64,10 @@ use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
 use constellation_common::unix::UnixSocketPath;
+use constellation_streams::config::DispatchThreadConfig;
+use constellation_streams::config::PartyConfig;
+use constellation_streams::config::PollThreadConfig;
+use constellation_streams::config::StreamMulticasterConfig;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -2494,6 +2498,117 @@ pub struct UnixNearConnectorPartialConfig {
     #[serde(skip)]
     placeholder: ()
 }
+
+pub type CompoundFarDispatchThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode> =
+    DispatchThreadConfig<
+        CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
+        Mode,
+    >;
+
+pub type CompoundNearDispatchThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode> =
+    DispatchThreadConfig<
+        CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
+        Mode,
+    >;
+
+pub type CompoundFarPollThreadConfig<AuthN, Unix, UDP, Enc, Dec,
+                                     Mode, Stream, MsgAuthN> =
+    PollThreadConfig<
+        CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
+        Mode,
+        Stream,
+        MsgAuthN
+    >;
+
+pub type CompoundFarSelectorPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
+                                             Resolver, Epochs, ChanName,
+                                             MsgAuthN> =
+    CompoundFarPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
+                                CompoundFarPartyConfig<Resolver, Epochs,
+                                                       ChanName>,
+                                MsgAuthN>;
+
+pub type CompoundFarMulticastPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
+                                              PartyName, Resolver, Epochs,
+                                              ChanName, MsgAuthN> =
+    CompoundFarPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
+                                CompoundFarMulticasterConfig<
+                                    PartyName, Resolver, Epochs, ChanName
+                                >,
+                                MsgAuthN>;
+
+pub type CompoundNearPollThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode,
+                                      Stream, MsgAuthN> =
+    PollThreadConfig<
+        CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
+        Mode,
+        Stream,
+        MsgAuthN
+    >;
+
+pub type CompoundNearSelectorPollThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode,
+                                              Resolver, Epochs, ChanName,
+                                              MsgAuthN> =
+    CompoundNearPollThreadConfig<
+        InAuthN, OutAuthN, Enc, Dec, Mode,
+        CompoundNearPartyConfig<Resolver, Epochs, ChanName>,
+        MsgAuthN
+    >;
+pub type CompoundNearMulticastPollThreadConfig<InAuthN, OutAuthN, Enc, Dec,
+                                               Mode, PartyName, Resolver,
+                                               Epochs, ChanName, MsgAuthN> =
+    CompoundNearPollThreadConfig<
+        InAuthN, OutAuthN, Enc, Dec, Mode,
+        CompoundNearMulticasterConfig<PartyName, Resolver, Epochs, ChanName>,
+        MsgAuthN
+    >;
+
+pub type CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec> =
+    FarChannelsConfig<
+        CompoundFarChannelConfig,
+        AuthN,
+        CompoundXfrmCreateParam<Unix, UDP>,
+        Enc,
+        Dec
+    >;
+
+pub type CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec> =
+    NearChannelsConfig<
+        CompoundNearAcceptorConfig<TLSServerConfig>,
+        CompoundNearConnectorPartialConfig<TLSClientConfig>,
+        InAuthN,
+        OutAuthN,
+        Enc,
+        Dec
+    >;
+
+pub type CompoundFarPartyConfig<Resolver, Epochs, ChanName> = PartyConfig<
+    Resolver,
+    Epochs,
+    ChanName,
+    CompoundOutboundNegotiatorParam,
+    CompoundFarEndpoint
+>;
+
+pub type CompoundNearPartyConfig<Resolver, Epochs, ChanName> = PartyConfig<
+    Resolver,
+    Epochs,
+    ChanName,
+    Option<CompoundNearConnectorParam>,
+    CompoundNearEndpoint
+>;
+
+pub type CompoundNearMulticasterConfig<PartyName, Resolver, Epochs, ChanName> =
+    StreamMulticasterConfig<
+        PartyName,
+        CompoundNearPartyConfig<Resolver, Epochs, ChanName>
+    >;
+
+pub type CompoundFarMulticasterConfig<PartyName, Resolver, Epochs, ChanName> =
+    StreamMulticasterConfig<
+        PartyName,
+        CompoundFarPartyConfig<Resolver, Epochs, ChanName>
+    >;
 
 #[derive(Clone)]
 struct CompoundNearConnectorPartialConfigVisitor<TLS>

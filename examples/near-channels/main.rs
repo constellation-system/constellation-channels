@@ -19,7 +19,6 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::TrivialAuthN;
 use constellation_auth::cred::NullCred;
 use constellation_channels::config::CompoundNearAcceptorConfig;
@@ -29,7 +28,6 @@ use constellation_channels::config::CompoundNearEndpoint;
 use constellation_channels::config::NearChannelsConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
-use constellation_channels::near::channels::DuplexValue;
 use constellation_channels::near::channels::NearChannelID;
 use constellation_channels::near::channels::NearChannelParam;
 use constellation_channels::near::channels::NearChannels;
@@ -37,6 +35,7 @@ use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
 use constellation_channels::near::compound::CompoundNearServerConn;
 use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
+use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedDatagramChan;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
 use constellation_common::codec::test::TestBytesCodec;
@@ -48,10 +47,8 @@ use constellation_common::retry::RetryWhen;
 use constellation_streams::channels::Channels;
 use constellation_streams::channels::ChannelsID;
 use constellation_streams::channels::ChannelsListen;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::stream::PullStream;
 use constellation_streams::stream::PushStreamPrivateSingle;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::RegistryCtx;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
@@ -131,20 +128,12 @@ fn read(
         CompoundNearDuplexNegoTypes<
             TrivialAuthN<NullCred, CompoundNearServerConn>,
             TrivialAuthN<NullCred, CompoundNearClientConn>,
-            BasicAuthNed<
+            CompoundNearChannelsBasicAuthNedDatagramChan<
                 NullCred,
-                RefCellStream<
-                    DatagramCodecStream<
-                        Vec<u8>,
-                        Vec<u8>,
-                        DuplexValue<
-                            CompoundNearServerConn,
-                            CompoundNearClientConn
-                        >,
-                        TestBytesCodec,
-                        TestBytesCodec
-                    >
-                >
+                Vec<u8>,
+                Vec<u8>,
+                TestBytesCodec,
+                TestBytesCodec
             >,
             TLSServerConfig,
             TLSClientConfig,
@@ -154,17 +143,12 @@ fn read(
             TestBytesCodec
         >
     >,
-    stream: &mut BasicAuthNed<
+    stream: &mut CompoundNearChannelsBasicAuthNedDatagramChan<
         NullCred,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     addr: CompoundNearNameAddr,
     channel_id: NearChannelID,
@@ -252,20 +236,12 @@ fn server(conf: &str) {
         CompoundNearDuplexNegoTypes<
             TrivialAuthN<NullCred, CompoundNearServerConn>,
             TrivialAuthN<NullCred, CompoundNearClientConn>,
-            BasicAuthNed<
+            CompoundNearChannelsBasicAuthNedDatagramChan<
                 NullCred,
-                RefCellStream<
-                    DatagramCodecStream<
-                        Vec<u8>,
-                        Vec<u8>,
-                        DuplexValue<
-                            CompoundNearServerConn,
-                            CompoundNearClientConn
-                        >,
-                        TestBytesCodec,
-                        TestBytesCodec
-                    >
-                >
+                Vec<u8>,
+                Vec<u8>,
+                TestBytesCodec,
+                TestBytesCodec
             >,
             TLSServerConfig,
             TLSClientConfig,
@@ -367,20 +343,12 @@ fn client(
         CompoundNearDuplexNegoTypes<
             TrivialAuthN<NullCred, CompoundNearServerConn>,
             TrivialAuthN<NullCred, CompoundNearClientConn>,
-            BasicAuthNed<
+            CompoundNearChannelsBasicAuthNedDatagramChan<
                 NullCred,
-                RefCellStream<
-                    DatagramCodecStream<
-                        Vec<u8>,
-                        Vec<u8>,
-                        DuplexValue<
-                            CompoundNearServerConn,
-                            CompoundNearClientConn
-                        >,
-                        TestBytesCodec,
-                        TestBytesCodec
-                    >
-                >
+                Vec<u8>,
+                Vec<u8>,
+                TestBytesCodec,
+                TestBytesCodec
             >,
             TLSServerConfig,
             TLSClientConfig,

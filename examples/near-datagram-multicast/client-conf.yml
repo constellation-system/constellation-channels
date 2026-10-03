@@ -2,7 +2,7 @@ default-outbound-authn:
   rules:
     - prin: server
       cred:
-        unix: near-threads-example-server-stream.sock
+        unix: near-threads-example-server-datagram.sock
 
     - prin: server
       cred:
@@ -25,7 +25,7 @@ channels:
   - outbound:
       id: client-unix
       unix-stream:
-        path: near-channels-example-client-stream.sock
+        path: near-channels-example-client-datagram.sock
 
 parties:
   - party: client
@@ -42,7 +42,7 @@ parties:
 
         endpoints:
           - addr:
-              unix-stream: near-threads-example-client-stream.sock
+              unix-stream: near-threads-example-client-datagram.sock
 
   - party: server
     connections:
@@ -58,6 +58,6 @@ parties:
 
         endpoints:
           - addr:
-              unix-stream: near-threads-example-server-stream.sock
+              unix-stream: near-threads-example-server-datagram.sock
 
 msg-authn: null

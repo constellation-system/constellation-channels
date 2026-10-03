@@ -30,19 +30,15 @@ use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
 use constellation_auth::authn::AuthNedDestruct;
-use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundFarEndpoint;
-use constellation_channels::config::CompoundOutboundNegotiatorParam;
-use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::FarChannelsConfig;
+use constellation_channels::config::CompoundFarSelectorPollThreadConfig;
 use constellation_channels::config::ResolverConfig;
-use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::types::CompoundFarChannelsDatagramSelectorPollTypes;
+use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedDatagramChan;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -56,11 +52,7 @@ use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::net::PrivateMsgs;
 use constellation_common::retry::Retry;
 use constellation_common::unix::UnixSocketPath;
-use constellation_streams::codec::DatagramCodecStream;
-use constellation_streams::config::PartyConfig;
-use constellation_streams::config::PollThreadConfig;
 use constellation_streams::config::PrivateDatagramModeConfig;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::poll::MsgsWaker;
@@ -317,20 +309,14 @@ type ExampleServerPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedDatagramChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
@@ -349,20 +335,14 @@ type ExampleClientPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedDatagramChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
@@ -376,25 +356,16 @@ type ExampleClientPollTypes = CompoundFarChannelsDatagramSelectorPollTypes<
 >;
 
 fn server(conf: &str) {
-    let poll_config: PollThreadConfig<
-        FarChannelsConfig<
-            CompoundFarChannelConfig,
-            BasicAuthNConfig<String>,
-            CompoundXfrmCreateParam<
-                PassthruDatagramXfrmParam,
-                PassthruDatagramXfrmParam
-            >,
-            (),
-            ()
-        >,
+    let poll_config: CompoundFarSelectorPollThreadConfig<
+        BasicAuthNConfig<String>,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
+        (),
+        (),
         PrivateDatagramModeConfig,
-        PartyConfig<
-            ResolverConfig,
-            (),
-            String,
-            CompoundOutboundNegotiatorParam,
-            CompoundFarEndpoint
-        >,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
@@ -425,25 +396,16 @@ fn server(conf: &str) {
 }
 
 fn client(conf: &str) {
-    let poll_config: PollThreadConfig<
-        FarChannelsConfig<
-            CompoundFarChannelConfig,
-            BasicAuthNConfig<String>,
-            CompoundXfrmCreateParam<
-                PassthruDatagramXfrmParam,
-                PassthruDatagramXfrmParam
-            >,
-            (),
-            ()
-        >,
+    let poll_config: CompoundFarSelectorPollThreadConfig<
+        BasicAuthNConfig<String>,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
+        (),
+        (),
         PrivateDatagramModeConfig,
-        PartyConfig<
-            ResolverConfig,
-            (),
-            String,
-            CompoundOutboundNegotiatorParam,
-            CompoundFarEndpoint
-        >,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));

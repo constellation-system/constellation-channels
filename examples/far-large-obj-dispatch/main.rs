@@ -37,14 +37,13 @@ use constellation_auth::authn::MsgAuthNTypes;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
+use constellation_channels::config::CompoundFarDispatchThreadConfig;
 use constellation_channels::config::CompoundFarEndpoint;
-use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::FarChannelsConfig;
 use constellation_channels::far::channels::FarChannels;
 use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::types::CompoundFarChannelsLargeObjDispatchTypes;
+use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedLargeObjChan;
 use constellation_channels::far::types::CompoundFarChannelsTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -65,9 +64,7 @@ use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
 use constellation_common::unix::UnixSocketPath;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::DispatchConfig;
-use constellation_streams::config::DispatchThreadConfig;
 use constellation_streams::config::LargeObjProtoConfig;
 use constellation_streams::config::PrivateLargeObjModeConfig;
 use constellation_streams::frags::Frags;
@@ -81,7 +78,6 @@ use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::large_obj::LargeObjSender;
 use constellation_streams::select::dispatch::DispatchSelector;
 use constellation_streams::select::dispatch::DispatchSelectorCreateError;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::dispatch::Dispatch;
@@ -313,20 +309,12 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
             FarChannels<
                 CompoundFarChannelsTypes<
                     BasicAuthN<String>,
-                    BasicAuthNed<
+                    CompoundFarChannelsBasicAuthNedLargeObjChan<
                         String,
-                        RefCellStream<
-                            DatagramCodecStream<
-                                LargeObjMsg<SHA3ID>,
-                                LargeObjMsg<SHA3ID>,
-                                CompoundFlow<
-                                    PassthruDatagramXfrm<UnixSocketPath>,
-                                    PassthruDatagramXfrm<SocketAddr>
-                                >,
-                                LargeObjMsgCodec<SHA3Algo>,
-                                LargeObjMsgCodec<SHA3Algo>
-                            >
-                        >
+                        SHA3Algo,
+                        SHA3ID,
+                        PassthruDatagramXfrm<UnixSocketPath>,
+                        PassthruDatagramXfrm<SocketAddr>,
                     >,
                     PassthruDatagramXfrm<UnixSocketPath>,
                     PassthruDatagramXfrm<SocketAddr>,
@@ -386,20 +374,12 @@ type ExampleDispatchTypes = CompoundFarChannelsLargeObjDispatchTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedLargeObjChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                LargeObjMsg<SHA3ID>,
-                LargeObjMsg<SHA3ID>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                LargeObjMsgCodec<SHA3Algo>,
-                LargeObjMsgCodec<SHA3Algo>
-            >
-        >
+        SHA3Algo,
+        SHA3ID,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
     >,
     BasicAuthN<String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -411,24 +391,19 @@ type ExampleDispatchTypes = CompoundFarChannelsLargeObjDispatchTypes<
 >;
 
 fn run(conf: &str) {
-    let dispatch_config: DispatchThreadConfig<
-        FarChannelsConfig<
-            CompoundFarChannelConfig,
-            BasicAuthNConfig<String>,
-            CompoundXfrmCreateParam<
-                PassthruDatagramXfrmParam,
-                PassthruDatagramXfrmParam
-            >,
-            (),
-            ()
-        >,
+    let dispatch_config: CompoundFarDispatchThreadConfig<
+        BasicAuthNConfig<String>,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
+        (),
+        (),
         PrivateLargeObjModeConfig
     > = yaml_serde::from_str(conf).unwrap();
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let poll: JoinHandle<()> =
+    let dispatch: JoinHandle<()> =
         DispatchThread::<
             ExampleDispatchTypes,
             ExampleDispatch,
@@ -436,7 +411,7 @@ fn run(conf: &str) {
         >::start(dispatch_config, ExampleDispatch, ctx)
         .unwrap();
 
-    poll.join().unwrap();
+    dispatch.join().unwrap();
 }
 
 fn main() {

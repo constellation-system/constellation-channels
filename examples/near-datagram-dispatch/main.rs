@@ -28,22 +28,17 @@ use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
 use constellation_auth::authn::AuthNedDestruct;
-use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundNearAcceptorConfig;
-use constellation_channels::config::CompoundNearConnectorPartialConfig;
+use constellation_channels::config::CompoundNearDispatchThreadConfig;
 use constellation_channels::config::CompoundNearEndpoint;
-use constellation_channels::config::NearChannelsConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
-use constellation_channels::near::channels::DuplexValue;
 use constellation_channels::near::channels::NearChannels;
-use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
-use constellation_channels::near::compound::CompoundNearServerConn;
 use constellation_channels::near::types::CompoundNearChannelsDatagramDispatchTypes;
+use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedDatagramChan;
 use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -56,13 +51,10 @@ use constellation_common::ids::AscendingCount;
 use constellation_common::net::PrivateMsgs;
 use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::DispatchConfig;
-use constellation_streams::config::DispatchThreadConfig;
 use constellation_streams::config::PrivateDatagramModeConfig;
 use constellation_streams::select::dispatch::DispatchSelector;
 use constellation_streams::select::dispatch::DispatchSelectorCreateError;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::dispatch::Dispatch;
@@ -170,20 +162,12 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
                 CompoundNearDuplexNegoTypes<
                     BasicAuthN<String>,
                     BasicAuthN<String>,
-                    BasicAuthNed<
+                    CompoundNearChannelsBasicAuthNedDatagramChan<
                         String,
-                        RefCellStream<
-                            DatagramCodecStream<
-                                Vec<u8>,
-                                Vec<u8>,
-                                DuplexValue<
-                                    CompoundNearServerConn,
-                                    CompoundNearClientConn
-                                >,
-                                TestBytesCodec,
-                                TestBytesCodec
-                            >
-                        >
+                        Vec<u8>,
+                        Vec<u8>,
+                        TestBytesCodec,
+                        TestBytesCodec
                     >,
                     TLSServerConfig,
                     TLSClientConfig,
@@ -272,17 +256,12 @@ type ExampleDispatchTypes = CompoundNearChannelsDatagramDispatchTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
-    BasicAuthNed<
+    CompoundNearChannelsBasicAuthNedDatagramChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     BasicAuthN<String>,
     TLSServerConfig,
@@ -297,29 +276,25 @@ type ExampleDispatchTypes = CompoundNearChannelsDatagramDispatchTypes<
 >;
 
 fn run(conf: &str) {
-    let poll_config: DispatchThreadConfig<
-        NearChannelsConfig<
-            CompoundNearAcceptorConfig<TLSServerConfig>,
-            CompoundNearConnectorPartialConfig<TLSClientConfig>,
-            BasicAuthNConfig<String>,
-            BasicAuthNConfig<String>,
-            (),
-            ()
-        >,
+    let dispatch_config: CompoundNearDispatchThreadConfig<
+        BasicAuthNConfig<String>,
+        BasicAuthNConfig<String>,
+        (),
+        (),
         PrivateDatagramModeConfig
     > = yaml_serde::from_str(conf).unwrap();
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let poll: JoinHandle<()> = DispatchThread::<
+    let dispatch: JoinHandle<()> = DispatchThread::<
         ExampleDispatchTypes,
         ExampleDispatch,
         ExampleCtx<SharedNSNameCaches>
-    >::start(poll_config, ExampleDispatch, ctx)
+    >::start(dispatch_config, ExampleDispatch, ctx)
     .unwrap();
 
-    poll.join().unwrap();
+    dispatch.join().unwrap();
 }
 
 fn main() {

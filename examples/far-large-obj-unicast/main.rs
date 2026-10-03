@@ -37,15 +37,13 @@ use constellation_auth::authn::MsgAuthNTypes;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundFarEndpoint;
-use constellation_channels::config::CompoundOutboundNegotiatorParam;
-use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::FarChannelsConfig;
+use constellation_channels::config::CompoundFarSelectorPollThreadConfig;
 use constellation_channels::config::ResolverConfig;
 use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::types::CompoundFarChannelsLargeObjSelectorPollTypes;
+use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedLargeObjChan;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -64,21 +62,16 @@ use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::retry::Retry;
 use constellation_common::unix::UnixSocketPath;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::LargeObjProtoConfig;
-use constellation_streams::config::PartyConfig;
-use constellation_streams::config::PollThreadConfig;
 use constellation_streams::config::PrivateLargeObjModeConfig;
 use constellation_streams::frags::Frags;
 use constellation_streams::large_obj::LargeObjID;
 use constellation_streams::large_obj::LargeObjMsg;
-use constellation_streams::large_obj::LargeObjMsgCodec;
 use constellation_streams::large_obj::LargeObjMsgs;
 use constellation_streams::large_obj::LargeObjProto;
 use constellation_streams::large_obj::LargeObjProtoAddOutboundError;
 use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::large_obj::LargeObjSender;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::poll::MsgsWaker;
@@ -449,20 +442,12 @@ type ExampleServerPollTypes = CompoundFarChannelsLargeObjSelectorPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedLargeObjChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                LargeObjMsg<SHA3ID>,
-                LargeObjMsg<SHA3ID>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                LargeObjMsgCodec<SHA3Algo>,
-                LargeObjMsgCodec<SHA3Algo>
-            >
-        >
+        SHA3Algo,
+        SHA3ID,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
     >,
     BasicAuthN<String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -478,20 +463,12 @@ type ExampleClientPollTypes = CompoundFarChannelsLargeObjSelectorPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedLargeObjChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                LargeObjMsg<SHA3ID>,
-                LargeObjMsg<SHA3ID>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                LargeObjMsgCodec<SHA3Algo>,
-                LargeObjMsgCodec<SHA3Algo>
-            >
-        >
+        SHA3Algo,
+        SHA3ID,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
     >,
     BasicAuthN<String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -503,25 +480,16 @@ type ExampleClientPollTypes = CompoundFarChannelsLargeObjSelectorPollTypes<
 >;
 
 fn server(conf: &str) {
-    let poll_config: PollThreadConfig<
-        FarChannelsConfig<
-            CompoundFarChannelConfig,
-            BasicAuthNConfig<String>,
-            CompoundXfrmCreateParam<
-                PassthruDatagramXfrmParam,
-                PassthruDatagramXfrmParam
-            >,
-            (),
-            ()
-        >,
+    let poll_config: CompoundFarSelectorPollThreadConfig<
+        BasicAuthNConfig<String>,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
+        (),
+        (),
         PrivateLargeObjModeConfig,
-        PartyConfig<
-            ResolverConfig,
-            (),
-            String,
-            CompoundOutboundNegotiatorParam,
-            CompoundFarEndpoint
-        >,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
@@ -563,25 +531,16 @@ fn server(conf: &str) {
 }
 
 fn client(conf: &str) {
-    let poll_config: PollThreadConfig<
-        FarChannelsConfig<
-            CompoundFarChannelConfig,
-            BasicAuthNConfig<String>,
-            CompoundXfrmCreateParam<
-                PassthruDatagramXfrmParam,
-                PassthruDatagramXfrmParam
-            >,
-            (),
-            ()
-        >,
+    let poll_config: CompoundFarSelectorPollThreadConfig<
+        BasicAuthNConfig<String>,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
+        (),
+        (),
         PrivateLargeObjModeConfig,
-        PartyConfig<
-            ResolverConfig,
-            (),
-            String,
-            CompoundOutboundNegotiatorParam,
-            CompoundFarEndpoint
-        >,
+        ResolverConfig,
+        (),
+        String,
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));

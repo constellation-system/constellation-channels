@@ -29,18 +29,15 @@ use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
 use constellation_auth::authn::AuthNedDestruct;
-use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundFarChannelConfig;
 use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
+use constellation_channels::config::CompoundFarDispatchThreadConfig;
 use constellation_channels::config::CompoundFarEndpoint;
-use constellation_channels::config::CompoundXfrmCreateParam;
-use constellation_channels::config::FarChannelsConfig;
 use constellation_channels::far::channels::FarChannels;
-use constellation_channels::far::compound::CompoundFlow;
 use constellation_channels::far::types::CompoundFarChannelsDatagramDispatchTypes;
+use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedDatagramChan;
 use constellation_channels::far::types::CompoundFarChannelsTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -56,13 +53,10 @@ use constellation_common::net::PrivateMsgs;
 use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
 use constellation_common::unix::UnixSocketPath;
-use constellation_streams::codec::DatagramCodecStream;
 use constellation_streams::config::DispatchConfig;
-use constellation_streams::config::DispatchThreadConfig;
 use constellation_streams::config::PrivateDatagramModeConfig;
 use constellation_streams::select::dispatch::DispatchSelector;
 use constellation_streams::select::dispatch::DispatchSelectorCreateError;
-use constellation_streams::stream::RefCellStream;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::dispatch::Dispatch;
@@ -169,20 +163,14 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
             FarChannels<
                 CompoundFarChannelsTypes<
                     BasicAuthN<String>,
-                    BasicAuthNed<
+                    CompoundFarChannelsBasicAuthNedDatagramChan<
                         String,
-                        RefCellStream<
-                            DatagramCodecStream<
-                                Vec<u8>,
-                                Vec<u8>,
-                                CompoundFlow<
-                                    PassthruDatagramXfrm<UnixSocketPath>,
-                                    PassthruDatagramXfrm<SocketAddr>
-                                >,
-                                TestBytesCodec,
-                                TestBytesCodec
-                            >
-                        >
+                        Vec<u8>,
+                        Vec<u8>,
+                        PassthruDatagramXfrm<UnixSocketPath>,
+                        PassthruDatagramXfrm<SocketAddr>,
+                        TestBytesCodec,
+                        TestBytesCodec
                     >,
                     PassthruDatagramXfrm<UnixSocketPath>,
                     PassthruDatagramXfrm<SocketAddr>,
@@ -271,20 +259,14 @@ type ExampleDispatchTypes = CompoundFarChannelsDatagramDispatchTypes<
     Vec<u8>,
     TestBytesCodec,
     TestBytesCodec,
-    BasicAuthNed<
+    CompoundFarChannelsBasicAuthNedDatagramChan<
         String,
-        RefCellStream<
-            DatagramCodecStream<
-                Vec<u8>,
-                Vec<u8>,
-                CompoundFlow<
-                    PassthruDatagramXfrm<UnixSocketPath>,
-                    PassthruDatagramXfrm<SocketAddr>
-                >,
-                TestBytesCodec,
-                TestBytesCodec
-            >
-        >
+        Vec<u8>,
+        Vec<u8>,
+        PassthruDatagramXfrm<UnixSocketPath>,
+        PassthruDatagramXfrm<SocketAddr>,
+        TestBytesCodec,
+        TestBytesCodec
     >,
     BasicAuthN<String>,
     PassthruMsgAuthN<Vec<u8>, String>,
@@ -298,31 +280,26 @@ type ExampleDispatchTypes = CompoundFarChannelsDatagramDispatchTypes<
 >;
 
 fn run(conf: &str) {
-    let poll_config: DispatchThreadConfig<
-        FarChannelsConfig<
-            CompoundFarChannelConfig,
-            BasicAuthNConfig<String>,
-            CompoundXfrmCreateParam<
-                PassthruDatagramXfrmParam,
-                PassthruDatagramXfrmParam
-            >,
-            (),
-            ()
-        >,
+    let dispatch_config: CompoundFarDispatchThreadConfig<
+        BasicAuthNConfig<String>,
+        PassthruDatagramXfrmParam,
+        PassthruDatagramXfrmParam,
+        (),
+        (),
         PrivateDatagramModeConfig
     > = yaml_serde::from_str(conf).unwrap();
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let poll: JoinHandle<()> = DispatchThread::<
+    let dispatch: JoinHandle<()> = DispatchThread::<
         ExampleDispatchTypes,
         ExampleDispatch,
         ExampleCtx<SharedNSNameCaches>
-    >::start(poll_config, ExampleDispatch, ctx)
+    >::start(dispatch_config, ExampleDispatch, ctx)
     .unwrap();
 
-    poll.join().unwrap();
+    dispatch.join().unwrap();
 }
 
 fn main() {

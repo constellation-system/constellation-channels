@@ -2,7 +2,7 @@ default-inbound-authn:
   rules:
     - prin: client
       cred:
-        unix: near-threads-example-client-stream.sock
+        unix: near-threads-example-client-datagram.sock
 
     - prin: client
       cred:
@@ -26,7 +26,7 @@ channels:
   - inbound:
       id: server-unix
       unix-stream:
-        path: near-threads-example-server-stream.sock
+        path: near-threads-example-server-datagram.sock
 
 connections:
   - channel-names:
@@ -41,6 +41,6 @@ connections:
 
     endpoints:
       - addr:
-          unix-stream: near-threads-example-client-stream.sock
+          unix-stream: near-threads-example-client-datagram.sock
 
 msg-authn: null

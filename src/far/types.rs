@@ -28,6 +28,7 @@ use std::net::SocketAddr;
 
 use constellation_auth::authn::AuthNedDestruct;
 use constellation_auth::authn::AuthNedMap;
+use constellation_auth::authn::BasicAuthNed;
 use constellation_auth::authn::SessionAuthN;
 use constellation_common::codec::Decoder;
 use constellation_common::codec::Encoder;
@@ -309,14 +310,13 @@ pub struct CompoundFarChannelsTypes<
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >
         >,
     AuthN: CreateWithParam<bool>
@@ -326,14 +326,13 @@ pub struct CompoundFarChannelsTypes<
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
@@ -455,6 +454,62 @@ pub type CompoundFarChannelsDatagramSelectorPollTypes<
         Dec
     >,
     Ctx
+>;
+
+pub type CompoundFarChannelsDatagramChan<
+    InMsg,
+    OutMsg,
+    Unix,
+    UDP,
+    Enc,
+    Dec
+> = RefCellStream<
+    DatagramCodecStream<
+        OutMsg,
+        InMsg,
+        CompoundFlow<Unix, UDP>,
+        Enc,
+        Dec
+    >
+>;
+
+pub type CompoundFarChannelsBasicAuthNedDatagramChan<
+    Prin,
+    InMsg,
+    OutMsg,
+    Unix,
+    UDP,
+    Enc,
+    Dec
+> = BasicAuthNed<
+    Prin,
+    CompoundFarChannelsDatagramChan<
+        InMsg,
+        OutMsg,
+        Unix,
+        UDP,
+        Enc,
+        Dec
+    >
+>;
+
+pub type CompoundFarChannelsBasicAuthNedLargeObjChan<
+    Prin,
+    Hash,
+    HashID,
+    Unix,
+    UDP,
+> = BasicAuthNed<
+    Prin,
+    RefCellStream<
+        DatagramCodecStream<
+            LargeObjMsg<HashID>,
+            LargeObjMsg<HashID>,
+            CompoundFlow<Unix, UDP>,
+            LargeObjMsgCodec<Hash>,
+            LargeObjMsgCodec<Hash>,
+        >
+    >
 >;
 
 pub type FarChannelsLargeObjSelectorPollTypes<
@@ -968,15 +1023,14 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
-            >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
+            >,
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -985,14 +1039,13 @@ where
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
@@ -1045,15 +1098,14 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
-            >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
+            >,
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1062,14 +1114,13 @@ where
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
@@ -1109,15 +1160,14 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
-            >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
+            >,
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1126,14 +1176,13 @@ where
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
@@ -1174,15 +1223,14 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
-            >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
+            >,
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1191,14 +1239,13 @@ where
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
@@ -1265,15 +1312,14 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
-            >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
+            >,
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1282,14 +1328,13 @@ where
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
@@ -1343,15 +1388,14 @@ where
     Enc::CreateError: Debug + Display + ScopedError,
     AuthNChan: AuthNedDestruct<
             AuthN::Prin,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
-            >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
+            >,
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1360,14 +1404,13 @@ where
         + AuthNedMap<
             AuthN::Prin,
             CompoundFlow<Unix, UDP>,
-            RefCellStream<
-                DatagramCodecStream<
-                    OutMsg,
-                    Wrapper,
-                    CompoundFlow<Unix, UDP>,
-                    Enc,
-                    Dec
-                >
+            CompoundFarChannelsDatagramChan<
+                Wrapper,
+                OutMsg,
+                Unix,
+                UDP,
+                Enc,
+                Dec
             >,
             AuthNChan
         > + Session<
