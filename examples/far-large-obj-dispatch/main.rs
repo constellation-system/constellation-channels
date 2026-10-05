@@ -42,8 +42,8 @@ use constellation_channels::config::CompoundFarDispatchThreadConfig;
 use constellation_channels::config::CompoundFarEndpoint;
 use constellation_channels::far::channels::FarChannels;
 use constellation_channels::far::compound::CompoundFlow;
-use constellation_channels::far::types::CompoundFarChannelsLargeObjDispatchTypes;
 use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedLargeObjChan;
+use constellation_channels::far::types::CompoundFarChannelsLargeObjDispatchTypes;
 use constellation_channels::far::types::CompoundFarChannelsTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -312,9 +312,8 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
                     CompoundFarChannelsBasicAuthNedLargeObjChan<
                         String,
                         SHA3Algo,
-                        SHA3ID,
                         PassthruDatagramXfrm<UnixSocketPath>,
-                        PassthruDatagramXfrm<SocketAddr>,
+                        PassthruDatagramXfrm<SocketAddr>
                     >,
                     PassthruDatagramXfrm<UnixSocketPath>,
                     PassthruDatagramXfrm<SocketAddr>,
@@ -377,9 +376,8 @@ type ExampleDispatchTypes = CompoundFarChannelsLargeObjDispatchTypes<
     CompoundFarChannelsBasicAuthNedLargeObjChan<
         String,
         SHA3Algo,
-        SHA3ID,
         PassthruDatagramXfrm<UnixSocketPath>,
-        PassthruDatagramXfrm<SocketAddr>,
+        PassthruDatagramXfrm<SocketAddr>
     >,
     BasicAuthN<String>,
     PassthruDatagramXfrm<UnixSocketPath>,

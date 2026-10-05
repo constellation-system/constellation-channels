@@ -42,8 +42,8 @@ use constellation_channels::config::CompoundFarEndpoint;
 use constellation_channels::config::CompoundFarSelectorPollThreadConfig;
 use constellation_channels::config::ResolverConfig;
 use constellation_channels::far::compound::CompoundFlow;
-use constellation_channels::far::types::CompoundFarChannelsLargeObjSelectorPollTypes;
 use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedLargeObjChan;
+use constellation_channels::far::types::CompoundFarChannelsLargeObjSelectorPollTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -445,9 +445,8 @@ type ExampleServerPollTypes = CompoundFarChannelsLargeObjSelectorPollTypes<
     CompoundFarChannelsBasicAuthNedLargeObjChan<
         String,
         SHA3Algo,
-        SHA3ID,
         PassthruDatagramXfrm<UnixSocketPath>,
-        PassthruDatagramXfrm<SocketAddr>,
+        PassthruDatagramXfrm<SocketAddr>
     >,
     BasicAuthN<String>,
     PassthruDatagramXfrm<UnixSocketPath>,
@@ -466,9 +465,8 @@ type ExampleClientPollTypes = CompoundFarChannelsLargeObjSelectorPollTypes<
     CompoundFarChannelsBasicAuthNedLargeObjChan<
         String,
         SHA3Algo,
-        SHA3ID,
         PassthruDatagramXfrm<UnixSocketPath>,
-        PassthruDatagramXfrm<SocketAddr>,
+        PassthruDatagramXfrm<SocketAddr>
     >,
     BasicAuthN<String>,
     PassthruDatagramXfrm<UnixSocketPath>,

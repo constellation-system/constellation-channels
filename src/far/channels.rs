@@ -90,8 +90,8 @@ use crate::far::flows::Flows;
 use crate::far::flows::FlowsFlowError;
 use crate::far::flows::FlowsListenError;
 use crate::far::flows::ListenResult;
-use crate::far::types::FarChannelsTypes;
 use crate::far::types::CompoundFarChannelsTypes;
+use crate::far::types::FarChannelsTypes;
 use crate::far::types::FlowAuthNShutdownTypes;
 use crate::far::types::FlowsEntryTypes;
 use crate::resolve::cache::NSNameCacheError;
@@ -676,16 +676,18 @@ pub type CompoundFarChannels<
     Wrapper,
     Enc,
     Dec
-> = FarChannels<CompoundFarChannelsTypes<
-    AuthN,
-    AuthNChan,
-    Unix,
-    UDP,
-    OutMsg,
-    Wrapper,
-    Enc,
-    Dec
->>;
+> = FarChannels<
+    CompoundFarChannelsTypes<
+        AuthN,
+        AuthNChan,
+        Unix,
+        UDP,
+        OutMsg,
+        Wrapper,
+        Enc,
+        Dec
+    >
+>;
 
 impl<AuthPending> SessionNegoState<AuthPending> {
     /// Create a state denoting session negotiations.
@@ -5944,8 +5946,6 @@ use crate::config::DTLSOutboundParam;
 use crate::far::compound::CompoundFarChannelSessionCred;
 #[cfg(test)]
 use crate::far::compound::CompoundFlow;
-#[cfg(test)]
-use crate::far::types::CompoundFarChannelsTypes;
 #[cfg(test)]
 use crate::init;
 #[cfg(test)]

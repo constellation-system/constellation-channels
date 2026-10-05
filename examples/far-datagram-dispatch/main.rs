@@ -36,8 +36,8 @@ use constellation_channels::config::CompoundFarChannelXfrmPeerAddr;
 use constellation_channels::config::CompoundFarDispatchThreadConfig;
 use constellation_channels::config::CompoundFarEndpoint;
 use constellation_channels::far::channels::FarChannels;
-use constellation_channels::far::types::CompoundFarChannelsDatagramDispatchTypes;
 use constellation_channels::far::types::CompoundFarChannelsBasicAuthNedDatagramChan;
+use constellation_channels::far::types::CompoundFarChannelsDatagramDispatchTypes;
 use constellation_channels::far::types::CompoundFarChannelsTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -292,12 +292,13 @@ fn run(conf: &str) {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let dispatch: JoinHandle<()> = DispatchThread::<
-        ExampleDispatchTypes,
-        ExampleDispatch,
-        ExampleCtx<SharedNSNameCaches>
-    >::start(dispatch_config, ExampleDispatch, ctx)
-    .unwrap();
+    let dispatch: JoinHandle<()> =
+        DispatchThread::<
+            ExampleDispatchTypes,
+            ExampleDispatch,
+            ExampleCtx<SharedNSNameCaches>
+        >::start(dispatch_config, ExampleDispatch, ctx)
+        .unwrap();
 
     dispatch.join().unwrap();
 }

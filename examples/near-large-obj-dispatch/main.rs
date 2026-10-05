@@ -45,8 +45,8 @@ use constellation_channels::near::channels::NearChannels;
 use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
 use constellation_channels::near::compound::CompoundNearServerConn;
-use constellation_channels::near::types::CompoundNearChannelsLargeObjDispatchTypes;
 use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedLargeObjChan;
+use constellation_channels::near::types::CompoundNearChannelsLargeObjDispatchTypes;
 use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -369,11 +369,7 @@ type ExampleDispatchTypes = CompoundNearChannelsLargeObjDispatchTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    CompoundNearChannelsBasicAuthNedLargeObjChan<
-        String,
-        SHA3Algo,
-        SHA3ID
-    >,
+    CompoundNearChannelsBasicAuthNedLargeObjChan<String, SHA3Algo, SHA3ID>,
     BasicAuthN<String>,
     TLSServerConfig,
     BasicAuthN<String>,

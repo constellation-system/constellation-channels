@@ -629,20 +629,16 @@ pub type CompoundNearChannelsDatagramSelectorPollTypes<
     Ctx
 >;
 
-pub type CompoundNearChannelsDatagramChan<
-    InMsg,
-    OutMsg,
-    Enc,
-    Dec
-> = RefCellStream<
-    DatagramCodecStream<
-        OutMsg,
-        InMsg,
-        DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-        Enc,
-        Dec
-    >
->;
+pub type CompoundNearChannelsDatagramChan<InMsg, OutMsg, Enc, Dec> =
+    RefCellStream<
+        DatagramCodecStream<
+            OutMsg,
+            InMsg,
+            DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
+            Enc,
+            Dec
+        >
+    >;
 
 pub type CompoundNearChannelsBasicAuthNedDatagramChan<
     Prin,
@@ -652,30 +648,22 @@ pub type CompoundNearChannelsBasicAuthNedDatagramChan<
     Dec
 > = BasicAuthNed<
     Prin,
-    CompoundNearChannelsDatagramChan<
-        InMsg,
-        OutMsg,
-        Enc,
-        Dec
-    >
+    CompoundNearChannelsDatagramChan<InMsg, OutMsg, Enc, Dec>
 >;
 
-pub type CompoundNearChannelsBasicAuthNedLargeObjChan<
-    Prin,
-    Hash,
-    HashID,
-> = BasicAuthNed<
-    Prin,
-    RefCellStream<
-        DatagramCodecStream<
-            LargeObjMsg<HashID>,
-            LargeObjMsg<HashID>,
-            DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
-            LargeObjMsgCodec<Hash>,
-            LargeObjMsgCodec<Hash>,
+pub type CompoundNearChannelsBasicAuthNedLargeObjChan<Prin, Hash, HashID> =
+    BasicAuthNed<
+        Prin,
+        RefCellStream<
+            DatagramCodecStream<
+                LargeObjMsg<HashID>,
+                LargeObjMsg<HashID>,
+                DuplexValue<CompoundNearServerConn, CompoundNearClientConn>,
+                LargeObjMsgCodec<Hash>,
+                LargeObjMsgCodec<Hash>
+            >
         >
-    >
->;
+    >;
 
 pub type NearChannelsLargeObjSelectorPollTypes<
     InMsg,

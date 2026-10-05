@@ -45,8 +45,8 @@ use constellation_channels::near::channels::DuplexValue;
 use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
 use constellation_channels::near::compound::CompoundNearServerConn;
-use constellation_channels::near::types::CompoundNearChannelsLargeObjSelectorPollTypes;
 use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedLargeObjChan;
+use constellation_channels::near::types::CompoundNearChannelsLargeObjSelectorPollTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -439,11 +439,7 @@ type ExampleServerPollTypes = CompoundNearChannelsLargeObjSelectorPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    CompoundNearChannelsBasicAuthNedLargeObjChan<
-        String,
-        SHA3Algo,
-        SHA3ID
-    >,
+    CompoundNearChannelsBasicAuthNedLargeObjChan<String, SHA3Algo, SHA3ID>,
     BasicAuthN<String>,
     TLSServerConfig,
     BasicAuthN<String>,
@@ -459,11 +455,7 @@ type ExampleClientPollTypes = CompoundNearChannelsLargeObjSelectorPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    CompoundNearChannelsBasicAuthNedLargeObjChan<
-        String,
-        SHA3Algo,
-        SHA3ID
-    >,
+    CompoundNearChannelsBasicAuthNedLargeObjChan<String, SHA3Algo, SHA3ID>,
     BasicAuthN<String>,
     TLSServerConfig,
     BasicAuthN<String>,

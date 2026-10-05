@@ -35,6 +35,7 @@ use constellation_common::codec::Encoder;
 use constellation_common::config::Create;
 use constellation_common::config::CreateWithParam;
 use constellation_common::error::ScopedError;
+use constellation_common::hashid::HashAlgo;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
 use constellation_common::net::Negotiator;
@@ -456,22 +457,10 @@ pub type CompoundFarChannelsDatagramSelectorPollTypes<
     Ctx
 >;
 
-pub type CompoundFarChannelsDatagramChan<
-    InMsg,
-    OutMsg,
-    Unix,
-    UDP,
-    Enc,
-    Dec
-> = RefCellStream<
-    DatagramCodecStream<
-        OutMsg,
-        InMsg,
-        CompoundFlow<Unix, UDP>,
-        Enc,
-        Dec
-    >
->;
+pub type CompoundFarChannelsDatagramChan<InMsg, OutMsg, Unix, UDP, Enc, Dec> =
+    RefCellStream<
+        DatagramCodecStream<OutMsg, InMsg, CompoundFlow<Unix, UDP>, Enc, Dec>
+    >;
 
 pub type CompoundFarChannelsBasicAuthNedDatagramChan<
     Prin,
@@ -483,34 +472,21 @@ pub type CompoundFarChannelsBasicAuthNedDatagramChan<
     Dec
 > = BasicAuthNed<
     Prin,
-    CompoundFarChannelsDatagramChan<
-        InMsg,
-        OutMsg,
-        Unix,
-        UDP,
-        Enc,
-        Dec
+    CompoundFarChannelsDatagramChan<InMsg, OutMsg, Unix, UDP, Enc, Dec>
+>;
+
+pub type CompoundFarChannelsLargeObjChan<Hash, Unix, UDP> = RefCellStream<
+    DatagramCodecStream<
+        LargeObjMsg<<Hash as HashAlgo>::HashID>,
+        LargeObjMsg<<Hash as HashAlgo>::HashID>,
+        CompoundFlow<Unix, UDP>,
+        LargeObjMsgCodec<Hash>,
+        LargeObjMsgCodec<Hash>
     >
 >;
 
-pub type CompoundFarChannelsBasicAuthNedLargeObjChan<
-    Prin,
-    Hash,
-    HashID,
-    Unix,
-    UDP,
-> = BasicAuthNed<
-    Prin,
-    RefCellStream<
-        DatagramCodecStream<
-            LargeObjMsg<HashID>,
-            LargeObjMsg<HashID>,
-            CompoundFlow<Unix, UDP>,
-            LargeObjMsgCodec<Hash>,
-            LargeObjMsgCodec<Hash>,
-        >
-    >
->;
+pub type CompoundFarChannelsBasicAuthNedLargeObjChan<Prin, Hash, Unix, UDP> =
+    BasicAuthNed<Prin, CompoundFarChannelsLargeObjChan<Hash, Unix, UDP>>;
 
 pub type FarChannelsLargeObjSelectorPollTypes<
     InMsg,
@@ -1030,7 +1006,7 @@ where
                 UDP,
                 Enc,
                 Dec
-            >,
+            >
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1105,7 +1081,7 @@ where
                 UDP,
                 Enc,
                 Dec
-            >,
+            >
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1167,7 +1143,7 @@ where
                 UDP,
                 Enc,
                 Dec
-            >,
+            >
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1230,7 +1206,7 @@ where
                 UDP,
                 Enc,
                 Dec
-            >,
+            >
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1319,7 +1295,7 @@ where
                 UDP,
                 Enc,
                 Dec
-            >,
+            >
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,
@@ -1395,7 +1371,7 @@ where
                 UDP,
                 Enc,
                 Dec
-            >,
+            >
         >,
     AuthN: CreateWithParam<bool>
         + SessionAuthN<CompoundFlow<Unix, UDP>, Param = ()>,

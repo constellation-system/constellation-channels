@@ -36,8 +36,8 @@ use constellation_auth::authn::MsgAuthNTypes;
 use constellation_auth::authn::PassthruMsgAuthN;
 use constellation_auth::authn::basic::BasicAuthN;
 use constellation_auth::config::BasicAuthNConfig;
-use constellation_channels::config::CompoundNearMulticastPollThreadConfig;
 use constellation_channels::config::CompoundNearEndpoint;
+use constellation_channels::config::CompoundNearMulticastPollThreadConfig;
 use constellation_channels::config::ResolverConfig;
 use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
@@ -45,8 +45,8 @@ use constellation_channels::near::channels::DuplexValue;
 use constellation_channels::near::compound::CompoundNearClientConn;
 use constellation_channels::near::compound::CompoundNearNameAddr;
 use constellation_channels::near::compound::CompoundNearServerConn;
-use constellation_channels::near::types::CompoundNearChannelsLargeObjMulticastPollTypes;
 use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedLargeObjChan;
+use constellation_channels::near::types::CompoundNearChannelsLargeObjMulticastPollTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
 use constellation_channels::resolve::cache::SharedNSNameCaches;
@@ -439,11 +439,7 @@ type ExampleServerPollTypes = CompoundNearChannelsLargeObjMulticastPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    CompoundNearChannelsBasicAuthNedLargeObjChan<
-        String,
-        SHA3Algo,
-        SHA3ID
-    >,
+    CompoundNearChannelsBasicAuthNedLargeObjChan<String, SHA3Algo, SHA3ID>,
     BasicAuthN<String>,
     TLSServerConfig,
     BasicAuthN<String>,
@@ -459,11 +455,7 @@ type ExampleClientPollTypes = CompoundNearChannelsLargeObjMulticastPollTypes<
     Vec<u8>,
     LargeObjMsg<SHA3ID>,
     PassthruMsgAuthN<LargeObjMsg<SHA3ID>, String>,
-    CompoundNearChannelsBasicAuthNedLargeObjChan<
-        String,
-        SHA3Algo,
-        SHA3ID
-    >,
+    CompoundNearChannelsBasicAuthNedLargeObjChan<String, SHA3Algo, SHA3ID>,
     BasicAuthN<String>,
     TLSServerConfig,
     BasicAuthN<String>,

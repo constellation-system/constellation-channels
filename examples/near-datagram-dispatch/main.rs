@@ -37,8 +37,8 @@ use constellation_channels::config::tls::TLSClientConfig;
 use constellation_channels::config::tls::TLSServerConfig;
 use constellation_channels::near::channels::NearChannels;
 use constellation_channels::near::compound::CompoundNearNameAddr;
-use constellation_channels::near::types::CompoundNearChannelsDatagramDispatchTypes;
 use constellation_channels::near::types::CompoundNearChannelsBasicAuthNedDatagramChan;
+use constellation_channels::near::types::CompoundNearChannelsDatagramDispatchTypes;
 use constellation_channels::near::types::CompoundNearDuplexNegoTypes;
 use constellation_channels::resolve::MixedResolver;
 use constellation_channels::resolve::cache::NSNameCachesCtx;
@@ -287,12 +287,13 @@ fn run(conf: &str) {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let dispatch: JoinHandle<()> = DispatchThread::<
-        ExampleDispatchTypes,
-        ExampleDispatch,
-        ExampleCtx<SharedNSNameCaches>
-    >::start(dispatch_config, ExampleDispatch, ctx)
-    .unwrap();
+    let dispatch: JoinHandle<()> =
+        DispatchThread::<
+            ExampleDispatchTypes,
+            ExampleDispatch,
+            ExampleCtx<SharedNSNameCaches>
+        >::start(dispatch_config, ExampleDispatch, ctx)
+        .unwrap();
 
     dispatch.join().unwrap();
 }

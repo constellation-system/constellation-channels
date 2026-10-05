@@ -2502,66 +2502,130 @@ pub struct UnixNearConnectorPartialConfig {
 pub type CompoundFarDispatchThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode> =
     DispatchThreadConfig<
         CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
-        Mode,
+        Mode
     >;
 
 pub type CompoundNearDispatchThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode> =
     DispatchThreadConfig<
         CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
-        Mode,
+        Mode
     >;
 
-pub type CompoundFarPollThreadConfig<AuthN, Unix, UDP, Enc, Dec,
-                                     Mode, Stream, MsgAuthN> =
-    PollThreadConfig<
-        CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
-        Mode,
-        Stream,
-        MsgAuthN
-    >;
+pub type CompoundFarPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    Stream,
+    MsgAuthN
+> = PollThreadConfig<
+    CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
+    Mode,
+    Stream,
+    MsgAuthN
+>;
 
-pub type CompoundFarSelectorPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
-                                             Resolver, Epochs, ChanName,
-                                             MsgAuthN> =
-    CompoundFarPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
-                                CompoundFarPartyConfig<Resolver, Epochs,
-                                                       ChanName>,
-                                MsgAuthN>;
+pub type CompoundFarSelectorPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundFarPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    CompoundFarPartyConfig<Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
 
-pub type CompoundFarMulticastPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
-                                              PartyName, Resolver, Epochs,
-                                              ChanName, MsgAuthN> =
-    CompoundFarPollThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode,
-                                CompoundFarMulticasterConfig<
-                                    PartyName, Resolver, Epochs, ChanName
-                                >,
-                                MsgAuthN>;
+pub type CompoundFarMulticastPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    PartyName,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundFarPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    CompoundFarMulticasterConfig<PartyName, Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
 
-pub type CompoundNearPollThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode,
-                                      Stream, MsgAuthN> =
-    PollThreadConfig<
-        CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
-        Mode,
-        Stream,
-        MsgAuthN
-    >;
+pub type CompoundNearPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    Stream,
+    MsgAuthN
+> = PollThreadConfig<
+    CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
+    Mode,
+    Stream,
+    MsgAuthN
+>;
 
-pub type CompoundNearSelectorPollThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode,
-                                              Resolver, Epochs, ChanName,
-                                              MsgAuthN> =
-    CompoundNearPollThreadConfig<
-        InAuthN, OutAuthN, Enc, Dec, Mode,
-        CompoundNearPartyConfig<Resolver, Epochs, ChanName>,
-        MsgAuthN
-    >;
-pub type CompoundNearMulticastPollThreadConfig<InAuthN, OutAuthN, Enc, Dec,
-                                               Mode, PartyName, Resolver,
-                                               Epochs, ChanName, MsgAuthN> =
-    CompoundNearPollThreadConfig<
-        InAuthN, OutAuthN, Enc, Dec, Mode,
-        CompoundNearMulticasterConfig<PartyName, Resolver, Epochs, ChanName>,
-        MsgAuthN
-    >;
+pub type CompoundNearSelectorPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundNearPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    CompoundNearPartyConfig<Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
+pub type CompoundNearMulticastPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    PartyName,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundNearPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    CompoundNearMulticasterConfig<PartyName, Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
 
 pub type CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec> =
     FarChannelsConfig<
