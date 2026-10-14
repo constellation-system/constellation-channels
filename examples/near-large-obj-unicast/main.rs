@@ -25,7 +25,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::thread::JoinHandle;
 use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
@@ -62,6 +61,7 @@ use constellation_common::hashid::SHA3Algo;
 use constellation_common::hashid::SHA3ID;
 use constellation_common::ids::AscendingCount;
 use constellation_common::retry::Retry;
+use constellation_common::sync::Notify;
 use constellation_streams::config::LargeObjProtoConfig;
 use constellation_streams::config::PrivateLargeObjModeConfig;
 use constellation_streams::frags::Frags;
@@ -74,13 +74,12 @@ use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::large_obj::LargeObjSender;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
-use constellation_streams::threads::poll::MsgsWaker;
+use constellation_streams::threads::poll::MsgsSetNotify;
 use constellation_streams::threads::poll::PollThread;
 use log::LevelFilter;
 use log::debug;
 use log::info;
 use mio::Token;
-use mio::Waker;
 
 const FIRST_BYTES: [u8; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
 const SECOND_BYTES: [u8; 8] = [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
@@ -93,27 +92,27 @@ where
 }
 
 struct ExampleClientMsgs {
-    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    notify: Arc<Mutex<Option<Notify>>>,
     live: Arc<AtomicBool>,
     nretries: usize,
     retry: Retry
 }
 
 struct ExampleServerMsgs {
-    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    notify: Arc<Mutex<Option<Notify>>>,
     live: Arc<AtomicBool>,
     sent: bool
 }
 
 #[derive(Clone)]
 struct ExampleClientRecv {
-    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    notify: Arc<Mutex<Option<Notify>>>,
     live: Arc<AtomicBool>
 }
 
 #[derive(Clone)]
 struct ExampleServerRecv {
-    waker: Arc<Mutex<Option<Arc<Waker>>>>,
+    notify: Arc<Mutex<Option<Notify>>>,
     live: Arc<AtomicBool>
 }
 
@@ -131,31 +130,31 @@ struct LargeObjClient;
 
 struct ExampleAuthN;
 
-impl MsgsWaker for ExampleServerMsgs {
+impl MsgsSetNotify for ExampleServerMsgs {
     type Error = MutexPoison;
 
-    fn set_waker(
+    fn set_notify(
         &mut self,
-        waker: Arc<Waker>
+        notify: Notify
     ) -> Result<(), Self::Error> {
-        let mut guard = self.waker.lock().map_err(|_| MutexPoison)?;
+        let mut guard = self.notify.lock().map_err(|_| MutexPoison)?;
 
-        *guard = Some(waker);
+        *guard = Some(notify);
 
         Ok(())
     }
 }
 
-impl MsgsWaker for ExampleClientMsgs {
+impl MsgsSetNotify for ExampleClientMsgs {
     type Error = MutexPoison;
 
-    fn set_waker(
+    fn set_notify(
         &mut self,
-        waker: Arc<Waker>
+        notify: Notify
     ) -> Result<(), Self::Error> {
-        let mut guard = self.waker.lock().map_err(|_| MutexPoison)?;
+        let mut guard = self.notify.lock().map_err(|_| MutexPoison)?;
 
-        *guard = Some(waker);
+        *guard = Some(notify);
 
         Ok(())
     }
@@ -258,13 +257,13 @@ where
 
         self.live.store(false, Ordering::Release);
 
-        if let Ok(mut guard) = self.waker.lock() {
-            if let Some(waker) = &mut *guard {
-                if let Err(err) = waker.wake() {
+        if let Ok(mut guard) = self.notify.lock() {
+            if let Some(notify) = &mut *guard {
+                if let Err(err) = notify.notify() {
                     panic!("error waking: {}", err)
                 }
             } else {
-                panic!("waker should not be None")
+                panic!("notify should not be None")
             }
         } else {
             panic!("lock failed")
@@ -293,13 +292,13 @@ where
 
         self.live.store(true, Ordering::Release);
 
-        if let Ok(mut guard) = self.waker.lock() {
-            if let Some(waker) = &mut *guard {
-                if let Err(err) = waker.wake() {
+        if let Ok(mut guard) = self.notify.lock() {
+            if let Some(notify) = &mut *guard {
+                if let Err(err) = notify.notify() {
                     panic!("error waking: {}", err)
                 }
             } else {
-                panic!("waker should not be None")
+                panic!("notify should not be None")
             }
         } else {
             panic!("lock failed")
@@ -479,13 +478,13 @@ fn server(conf: &str) {
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
-    let waker = Arc::new(Mutex::new(None));
+    let notify = Arc::new(Mutex::new(None));
     let recv = ExampleServerRecv {
-        waker: waker.clone(),
+        notify: notify.clone(),
         live: live.clone()
     };
     let msgs = ExampleServerMsgs {
-        waker: waker,
+        notify: notify,
         live: live,
         sent: false
     };
@@ -501,7 +500,7 @@ fn server(conf: &str) {
         LargeObjProto::create(proto_config, recv.clone(), msgs, msgauth, hash)
             .expect("Expected success");
     let large_obj = Arc::new(Mutex::new(large_obj));
-    let poll: JoinHandle<()> = PollThread::<
+    let (poll, _) = PollThread::<
         ExampleCtx<SharedNSNameCaches>,
         ExampleServerPollTypes
     >::start(
@@ -529,14 +528,14 @@ fn client(conf: &str) {
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
-    let waker = Arc::new(Mutex::new(None));
+    let notify = Arc::new(Mutex::new(None));
     let recv = ExampleClientRecv {
-        waker: waker.clone(),
+        notify: notify.clone(),
         live: live.clone()
     };
     let msgs = ExampleClientMsgs {
         live: live,
-        waker: waker,
+        notify: notify,
         retry: Retry::TERRESTRIAL_NETWORK_DEFAULT.clone(),
         nretries: 0
     };
@@ -552,7 +551,7 @@ fn client(conf: &str) {
         LargeObjProto::create(proto_config, recv.clone(), msgs, msgauth, hash)
             .expect("Expected success");
     let large_obj = Arc::new(Mutex::new(large_obj));
-    let poll: JoinHandle<()> = PollThread::<
+    let (poll, _) = PollThread::<
         ExampleCtx<SharedNSNameCaches>,
         ExampleClientPollTypes
     >::start(
