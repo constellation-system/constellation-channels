@@ -61,6 +61,7 @@ use constellation_common::ids::AscendingCount;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::retry::Retry;
+use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::config::LargeObjProtoConfig;
@@ -523,7 +524,7 @@ fn server(conf: &str) {
         .expect("Expected success");
 
     let large_obj = Arc::new(Mutex::new(large_obj));
-    let (poll, _) = PollThread::<
+    let poll = PollThread::<
         ExampleCtx<SharedNSNameCaches>,
         ExampleServerPollTypes
     >::start(
@@ -531,7 +532,8 @@ fn server(conf: &str) {
         self_party,
         ctx,
         large_obj.clone(),
-        large_obj
+        large_obj,
+        ShutdownFlag::new()
     )
     .unwrap();
 
@@ -584,7 +586,7 @@ fn client(conf: &str) {
         .expect("Expected success");
 
     let large_obj = Arc::new(Mutex::new(large_obj));
-    let (poll, _) = PollThread::<
+    let poll = PollThread::<
         ExampleCtx<SharedNSNameCaches>,
         ExampleClientPollTypes
     >::start(
@@ -592,7 +594,8 @@ fn client(conf: &str) {
         self_party,
         ctx,
         large_obj.clone(),
-        large_obj
+        large_obj,
+        ShutdownFlag::new()
     )
     .unwrap();
 

@@ -50,6 +50,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::ids::AscendingCount;
 use constellation_common::net::SharedMsgs;
 use constellation_common::retry::Retry;
+use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
 use constellation_streams::config::SharedDatagramModeConfig;
 use constellation_streams::threads::Tokens;
@@ -396,10 +397,17 @@ fn server(conf: &str) {
         tokens: Tokens::new()
     };
     let self_party: Option<String> = Some(String::from("server"));
-    let (poll, _) = PollThread::<
+    let poll = PollThread::<
         ExampleCtx<SharedNSNameCaches>,
         ExampleServerPollTypes
-    >::start(poll_config, self_party, ctx, recv, msgs)
+    >::start(
+        poll_config,
+        self_party,
+        ctx,
+        recv,
+        msgs,
+        ShutdownFlag::new()
+    )
     .unwrap();
 
     poll.join().unwrap();
@@ -435,10 +443,17 @@ fn client(conf: &str) {
         tokens: Tokens::new()
     };
     let self_party: Option<String> = Some(String::from("client"));
-    let (poll, _) = PollThread::<
+    let poll = PollThread::<
         ExampleCtx<SharedNSNameCaches>,
         ExampleClientPollTypes
-    >::start(poll_config, self_party, ctx, recv, msgs)
+    >::start(
+        poll_config,
+        self_party,
+        ctx,
+        recv,
+        msgs,
+        ShutdownFlag::new()
+    )
     .unwrap();
 
     poll.join().unwrap();

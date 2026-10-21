@@ -297,7 +297,9 @@ fn run(conf: &str) {
             ExampleDispatchTypes,
             ExampleDispatch,
             ExampleCtx<SharedNSNameCaches>
-        >::start(dispatch_config, ExampleDispatch, ctx)
+        >::start(
+            dispatch_config, ExampleDispatch, ctx, ShutdownFlag::new()
+        )
         .unwrap();
 
     dispatch.join().unwrap();

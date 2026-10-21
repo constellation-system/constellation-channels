@@ -25,16 +25,19 @@ use std::fmt::Formatter;
 use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvError;
+use std::sync::mpsc::channel;
+use std::thread::Builder;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
 use constellation_common::error::ErrorScope;
-use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::retry::Retry;
 use constellation_common::retry::next_retry_definite;
@@ -49,6 +52,13 @@ use log::error;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::Events;
+use mio::Poll;
+use mio::Registry;
+use mio::Token;
+use mio::Waker;
+
+const WAKER_TOKEN: Token = Token(0);
 
 use crate::config::ThreadedNSNameCachesConfig;
 
@@ -114,11 +124,10 @@ pub struct NSName {
 }
 
 /// Notifier for additions to the name caches.
+#[derive(Clone)]
 struct ThreadedNSNameCachesNotify {
-    /// Condition variable to signal when adding cache entries.
-    cond: Condvar,
-    /// Boolean flag to indicate that cache entries have been added.
-    added: Mutex<bool>
+    flag: Arc<AtomicBool>,
+    waker: Arc<Waker>
 }
 
 /// Shared name resolution caches, without a refresher thread.
@@ -144,7 +153,7 @@ pub struct ThreadedNSNameCaches {
     /// Name resolution cache.
     caches: Arc<RwLock<HashMap<String, Weak<RwLock<NSNameCache>>>>>,
     /// Notifier for the refresher thread.
-    notify: Arc<ThreadedNSNameCachesNotify>
+    notify: ThreadedNSNameCachesNotify
 }
 
 /// Errors that can occur when handling name caches.
@@ -154,6 +163,12 @@ pub enum NSNameCacheError {
     Inconsistent,
     /// Mutex was poisoned.
     MutexPoison
+}
+
+#[derive(Debug)]
+pub enum ThreadedNSNameCachesCreateError {
+    Recv { err: RecvError },
+    IO { err: std::io::Error }
 }
 
 impl NSName {
@@ -301,11 +316,8 @@ impl NSNameCache {
                 let now = Instant::now();
 
                 warn!(target: "resolve",
-                      concat!("resolution for \"{}\" ",
-                              "failed ({}), ",
-                              "retry in {}.{:03}s"),
-                      name, err, delay.as_secs(),
-                      delay.subsec_millis());
+                      "resolution for \"{}\" failed ({}), retry in {}.{:03}s",
+                      name, err, delay.as_secs(), delay.subsec_millis());
 
                 self.nretries += 1;
                 self.cached.clear();
@@ -339,29 +351,45 @@ impl NSNameCache {
 impl ThreadedNSNameCachesNotify {
     /// Create a new notifier.
     #[inline]
-    fn new() -> Self {
-        ThreadedNSNameCachesNotify {
-            added: Mutex::new(false),
-            cond: Condvar::new()
-        }
+    fn new(registry: &Registry) -> Result<Self, std::io::Error> {
+        let flag = AtomicBool::new(false);
+        let flag = Arc::new(flag);
+        let waker = Waker::new(registry, WAKER_TOKEN)?;
+        let waker = Arc::new(waker);
+
+        Ok(ThreadedNSNameCachesNotify {
+            waker: waker,
+            flag: flag
+        })
+    }
+
+    #[inline]
+    fn waker(&self) -> Arc<Waker> {
+        self.waker.clone()
     }
 
     /// Set the flag and notify one waiter.
     #[inline]
-    fn notify(&self) -> Result<(), MutexPoison> {
-        match self.added.lock() {
-            Ok(mut guard) => {
-                trace!(target: "ns-name-cache-notify",
-                       "sending notification");
+    fn notify(&self) -> Result<(), std::io::Error> {
+        self.flag.store(true, Ordering::Release);
 
-                *guard = true;
+        self.waker.wake()
+    }
 
-                self.cond.notify_one();
+    fn check_events(events: &mut Events) -> bool {
+        let mut out = false;
 
-                Ok(())
+        for event in events.iter() {
+            if event.token() == WAKER_TOKEN {
+                out = true;
+            } else {
+                warn!(target: "ns-name-cache-notify",
+                      "warn unknown token {}",
+                      event.token().0);
             }
-            Err(_) => Err(MutexPoison)
         }
+
+        out
     }
 
     /// Wait until the time `until` only if the flag is clear,
@@ -369,76 +397,78 @@ impl ThreadedNSNameCachesNotify {
     #[inline]
     fn wait(
         &self,
+        poll: &mut Poll,
+        events: &mut Events,
         until: Option<Instant>
-    ) -> Result<(), MutexPoison> {
-        match self.added.lock() {
-            // Check if the flag is set
-            Ok(guard) => {
-                let mut guard = guard;
+    ) -> Result<(), std::io::Error> {
+        trace!(target: "ns-name-cache-notify",
+               "waiting for notify");
 
-                // Keep waiting until the flag is set, or the delay
-                // has passed.
-                while !*guard &&
-                    until.map(|until| until > Instant::now()).unwrap_or(true)
-                {
-                    // See if we need a timeout.
-                    match until {
-                        // We have a timeout.
-                        Some(until) => {
-                            let now = Instant::now();
+        while until.is_none_or(|until| until > Instant::now()) &&
+            self.flag
+                .compare_exchange(
+                    true,
+                    false,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                )
+                .is_err()
+        {
+            let mut cont = true;
 
-                            // Check that the timeout hasn't happened.
-                            if until > now {
-                                // Wait until the timeout.
-                                let delay = until - now;
+            while {
+                if let Some(when) = &until {
+                    let now = Instant::now();
 
-                                trace!(target: "ns-name-cache-notify",
-                                       "waiting {}.{:03}s for notify",
-                                       delay.as_secs(), delay.subsec_millis());
+                    if *when > now {
+                        // Wait until the timeout.
 
-                                guard = self
-                                    .cond
-                                    .wait_timeout(guard, until - now)
-                                    .map(|(guard, _)| guard)
-                                    .map_err(|_| MutexPoison)?;
-                            }
+                        let delay = *when - now;
+
+                        trace!(target: "ns-name-cache-notify",
+                               "waiting {}.{:03}s for notify",
+                               delay.as_secs(), delay.subsec_millis());
+
+                        poll.poll(events, Some(delay))?;
+
+                        if Self::check_events(events) {
+                            cont = false
                         }
-                        // No timeout.
-                        None => {
-                            trace!(target: "ns-name-cache-notify",
-                                   "waiting indefinitely for notify");
+                    } else {
+                        cont = false
+                    }
+                } else {
+                    trace!(target: "ns-name-cache-notify",
+                           "waiting indefinitely for notify");
 
-                            guard = self
-                                .cond
-                                .wait(guard)
-                                .map_err(|_| MutexPoison)?;
-                        }
+                    poll.poll(events, None)?;
+
+                    if Self::check_events(events) {
+                        cont = false
                     }
                 }
 
-                // We're done; clear the flag and go.
-                trace!(target: "ns-name-cache-notify",
-                       "finished waiting");
-
-                *guard = false;
-
-                Ok(())
-            }
-            Err(_) => Err(MutexPoison)
+                cont
+            } {}
         }
+
+        Ok(())
     }
 }
 
 /// Main runner for the refresher thread.
 fn run_refresh_thread(
     cache: Weak<RwLock<HashMap<String, Weak<RwLock<NSNameCache>>>>>,
-    notify: Arc<ThreadedNSNameCachesNotify>,
+    notify: ThreadedNSNameCachesNotify,
+    mut poll: Poll,
     shutdown: ShutdownFlag,
     renewal: Duration,
     retry: Retry
 ) {
     debug!(target: "ns-name-cache-refresh",
            "launching refresher thread for name caches");
+
+    let mut events = Events::with_capacity(1);
 
     while let Some(cache) = cache.upgrade() &&
         shutdown.is_live()
@@ -575,7 +605,7 @@ fn run_refresh_thread(
         };
 
         // Now wait for notification
-        if notify.wait(earliest).is_err() {
+        if notify.wait(&mut poll, &mut events, earliest).is_err() {
             error!(target: "ns-name-cache-refresh",
                    "name cache notify mutex poisoned");
             warn!(target: "ns-name-cache-refresh",
@@ -802,38 +832,79 @@ impl NSNameCachesCtx for ThreadedNSNameCaches {
 impl ThreadedNSNameCaches {
     pub fn create(
         config: ThreadedNSNameCachesConfig,
-        shutdown: ShutdownFlag
-    ) -> (Self, JoinHandle<()>) {
+        mut shutdown: ShutdownFlag
+    ) -> Result<(Self, JoinHandle<()>), ThreadedNSNameCachesCreateError> {
         info!(target: "ns-name-cache",
               "creating name caches");
 
         let (size_hint, renewal, retry) = config.take();
+        let (tx, rx) = channel();
+        let rx: Receiver<ThreadedNSNameCachesNotify> = rx;
         let caches = match size_hint {
             Some(size) => Arc::new(RwLock::new(HashMap::with_capacity(size))),
             None => Arc::new(RwLock::new(HashMap::new()))
         };
-        let notify = Arc::new(ThreadedNSNameCachesNotify::new());
         let thread_caches = Arc::downgrade(&caches);
-        let thread_notify = notify.clone();
+        let handle = Builder::new()
+            .name(String::from("ns-name-cache-refresh-thread"))
+            .spawn(move || {
+                info!(target: "ns-name-cache-refresh-thread",
+                      "setting up shutdown flag and notify");
 
-        // Start the refresher thread.
-        let handle = std::thread::spawn(move || {
-            run_refresh_thread(
-                thread_caches,
-                thread_notify,
-                shutdown,
-                renewal,
-                retry
-            )
-        });
+                match Poll::new() {
+                    Ok(poll) => {
+                        match ThreadedNSNameCachesNotify::new(poll.registry()) {
+                            Ok(notify) => {
+                                if let Err(err) =
+                                    shutdown.add_waker(notify.waker())
+                                {
+                                    error!(target: "ns-name-cache-refresh",
+                                       "error registering notifier: {}",
+                                       err);
+                                } else if let Err(err) = tx.send(notify.clone())
+                                {
+                                    error!(target: "ns-name-cache-refresh",
+                                       "error sending notifier: {}",
+                                       err);
+                                } else {
+                                    run_refresh_thread(
+                                        thread_caches,
+                                        notify,
+                                        poll,
+                                        shutdown,
+                                        renewal,
+                                        retry
+                                    )
+                                }
+                            }
+                            Err(err) => {
+                                error!(target: "ns-name-cache-refresh",
+                                   "error creating notifier: {}",
+                                   err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!(target: "ns-name-cache-refresh",
+                               "error creating notifier: {}",
+                               err);
+                    }
+                }
+            })
+            .map_err(|err| ThreadedNSNameCachesCreateError::IO { err: err })?;
+        let notify =
+            rx.recv()
+                .map_err(|err| ThreadedNSNameCachesCreateError::Recv {
+                    err: err
+                })?;
 
-        (
+        Ok((
             ThreadedNSNameCaches {
                 caches: caches,
                 notify: notify
             },
             handle
-        )
+        ))
     }
 
     /// Obtain the shared [NSNameCache] for `name`.
@@ -960,6 +1031,20 @@ impl Display for NSNameCacheError {
         match self {
             NSNameCacheError::Inconsistent => write!(f, "inconsistent state"),
             NSNameCacheError::MutexPoison => write!(f, "mutex poisoned")
+        }
+    }
+}
+
+impl Display for ThreadedNSNameCachesCreateError {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ThreadedNSNameCachesCreateError::Recv { err } => {
+                write!(f, "{}", err)
+            }
+            ThreadedNSNameCachesCreateError::IO { err } => write!(f, "{}", err)
         }
     }
 }
