@@ -26,7 +26,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::thread::JoinHandle;
 use std::time::Instant;
 
 use constellation_auth::authn::AuthNMsgRecv;
@@ -62,7 +61,7 @@ use constellation_common::ids::AscendingCount;
 use constellation_common::net::PassthruDatagramXfrm;
 use constellation_common::net::PassthruDatagramXfrmParam;
 use constellation_common::shutdown::ShutdownFlag;
-use constellation_common::sync::Notify;
+use constellation_common::sync::NotifyFlag;
 use constellation_common::unix::UnixSocketPath;
 use constellation_streams::config::DispatchConfig;
 use constellation_streams::config::LargeObjProtoConfig;
@@ -81,8 +80,8 @@ use constellation_streams::select::dispatch::DispatchSelectorCreateError;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::dispatch::Dispatch;
-use constellation_streams::threads::dispatch::DispatchThread;
 use constellation_streams::threads::dispatch::DispatchThreadCtx;
+use constellation_streams::threads::dispatch::DispatchThreadStarter;
 use constellation_streams::threads::dispatch::Dispatched;
 use log::LevelFilter;
 use log::debug;
@@ -106,7 +105,7 @@ struct ExampleMsgs {
 
 #[derive(Clone)]
 struct ExampleRecv {
-    notify: Notify,
+    notify: NotifyFlag,
     live: Arc<AtomicBool>
 }
 
@@ -327,7 +326,7 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
         >,
         _prin: &String,
         shutdown: ShutdownFlag,
-        notify: Notify
+        notify: NotifyFlag
     ) -> Result<
         Dispatched<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>,
         Self::DispatchError
@@ -349,7 +348,8 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
             recv.clone(),
             msgs,
             msgauth,
-            hash
+            hash,
+            notify.into()
         )
         .expect("Expected success");
         let large_obj = Arc::new(Mutex::new(large_obj));
@@ -401,12 +401,13 @@ fn run(conf: &str) {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let dispatch: JoinHandle<()> =
-        DispatchThread::<
-            ExampleDispatchTypes,
-            ExampleDispatch,
-            ExampleCtx<SharedNSNameCaches>
-        >::start(dispatch_config, ExampleDispatch, ctx)
+    let (dispatch, _) = DispatchThreadStarter::<
+        ExampleDispatchTypes,
+        ExampleCtx<SharedNSNameCaches>
+    >::create(dispatch_config, ctx)
+    .unwrap();
+    let dispatch = dispatch
+        .start(ExampleDispatch, ShutdownFlag::new())
         .unwrap();
 
     dispatch.join().unwrap();

@@ -50,7 +50,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::ids::AscendingCount;
 use constellation_common::net::PrivateMsgs;
 use constellation_common::shutdown::ShutdownFlag;
-use constellation_common::sync::Notify;
+use constellation_common::sync::NotifyFlag;
 use constellation_streams::config::DispatchConfig;
 use constellation_streams::config::PrivateDatagramModeConfig;
 use constellation_streams::select::dispatch::DispatchSelector;
@@ -58,8 +58,8 @@ use constellation_streams::select::dispatch::DispatchSelectorCreateError;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
 use constellation_streams::threads::dispatch::Dispatch;
-use constellation_streams::threads::dispatch::DispatchThread;
 use constellation_streams::threads::dispatch::DispatchThreadCtx;
+use constellation_streams::threads::dispatch::DispatchThreadStarter;
 use constellation_streams::threads::dispatch::Dispatched;
 use log::LevelFilter;
 use log::debug;
@@ -82,7 +82,7 @@ struct ExampleMsgs {
 }
 
 struct ExampleRecv {
-    notify: Notify,
+    notify: NotifyFlag,
     live: Arc<AtomicBool>
 }
 
@@ -181,7 +181,7 @@ impl Dispatch<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>
         >,
         _prin: &String,
         shutdown: ShutdownFlag,
-        notify: Notify
+        notify: NotifyFlag
     ) -> Result<
         Dispatched<ExampleDispatchTypes, ExampleCtx<SharedNSNameCaches>>,
         Self::DispatchError
@@ -287,12 +287,13 @@ fn run(conf: &str) {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
-    let dispatch: JoinHandle<()> =
-        DispatchThread::<
-            ExampleDispatchTypes,
-            ExampleDispatch,
-            ExampleCtx<SharedNSNameCaches>
-        >::start(dispatch_config, ExampleDispatch, ctx)
+    let (dispatch, _) = DispatchThreadStarter::<
+        ExampleDispatchTypes,
+        ExampleCtx<SharedNSNameCaches>
+    >::create(dispatch_config, ctx)
+    .unwrap();
+    let dispatch: JoinHandle<()> = dispatch
+        .start(ExampleDispatch, ShutdownFlag::new())
         .unwrap();
 
     dispatch.join().unwrap();

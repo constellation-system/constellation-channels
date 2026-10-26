@@ -25,10 +25,10 @@ use std::fmt::Formatter;
 use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::sync::mpsc::RecvError;
+use std::thread::Builder;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
@@ -39,6 +39,7 @@ use constellation_common::error::ScopedError;
 use constellation_common::retry::Retry;
 use constellation_common::retry::next_retry_definite;
 use constellation_common::shutdown::ShutdownFlag;
+use constellation_common::sync::Notify;
 use constellation_streams::channels::Channels;
 use constellation_streams::threads::ThreadInnerCtx;
 use constellation_streams::threads::WithTokens;
@@ -49,6 +50,12 @@ use log::error;
 use log::info;
 use log::trace;
 use log::warn;
+use mio::Events;
+use mio::Poll;
+use mio::Token;
+use mio::Waker;
+
+const WAKER_TOKEN: Token = Token(0);
 
 use crate::config::ThreadedNSNameCachesConfig;
 
@@ -113,14 +120,6 @@ pub struct NSName {
     cache: Arc<RwLock<NSNameCache>>
 }
 
-/// Notifier for additions to the name caches.
-struct ThreadedNSNameCachesNotify {
-    /// Condition variable to signal when adding cache entries.
-    cond: Condvar,
-    /// Boolean flag to indicate that cache entries have been added.
-    added: Mutex<bool>
-}
-
 /// Shared name resolution caches, without a refresher thread.
 ///
 /// This is a collection of shared caches used to build [NSName]s.
@@ -144,7 +143,7 @@ pub struct ThreadedNSNameCaches {
     /// Name resolution cache.
     caches: Arc<RwLock<HashMap<String, Weak<RwLock<NSNameCache>>>>>,
     /// Notifier for the refresher thread.
-    notify: Arc<ThreadedNSNameCachesNotify>
+    notify: Notify
 }
 
 /// Errors that can occur when handling name caches.
@@ -153,6 +152,13 @@ pub enum NSNameCacheError {
     /// Cache is in an inconsistent state.
     Inconsistent,
     /// Mutex was poisoned.
+    MutexPoison
+}
+
+#[derive(Debug)]
+pub enum ThreadedNSNameCachesCreateError {
+    Recv { err: RecvError },
+    IO { err: std::io::Error },
     MutexPoison
 }
 
@@ -301,11 +307,8 @@ impl NSNameCache {
                 let now = Instant::now();
 
                 warn!(target: "resolve",
-                      concat!("resolution for \"{}\" ",
-                              "failed ({}), ",
-                              "retry in {}.{:03}s"),
-                      name, err, delay.as_secs(),
-                      delay.subsec_millis());
+                      "resolution for \"{}\" failed ({}), retry in {}.{:03}s",
+                      name, err, delay.as_secs(), delay.subsec_millis());
 
                 self.nretries += 1;
                 self.cached.clear();
@@ -336,103 +339,84 @@ impl NSNameCache {
     }
 }
 
-impl ThreadedNSNameCachesNotify {
-    /// Create a new notifier.
-    #[inline]
-    fn new() -> Self {
-        ThreadedNSNameCachesNotify {
-            added: Mutex::new(false),
-            cond: Condvar::new()
-        }
-    }
+fn handle_refresher_events(
+    cache: Arc<RwLock<HashMap<String, Weak<RwLock<NSNameCache>>>>>,
+    earliest: &mut Option<Instant>,
+    renewal: Duration,
+    now: Instant,
+    retry: &Retry
+) -> Result<(), MutexPoison> {
+    debug!(target: "ns-name-cache-refresh",
+           "checking name caches for refresh");
 
-    /// Set the flag and notify one waiter.
-    #[inline]
-    fn notify(&self) -> Result<(), MutexPoison> {
-        match self.added.lock() {
-            Ok(mut guard) => {
-                trace!(target: "ns-name-cache-notify",
-                       "sending notification");
+    // Do a read-only scan of the cache to see if we need to
+    // do anything.
+    let _ = earliest.take();
 
-                *guard = true;
+    for (name, cache) in cache.read().map_err(|_| MutexPoison)?.iter() {
+        if let Some(cache) = cache.upgrade() {
+            match cache.read().map_err(|_| MutexPoison)?.cached_when {
+                // The entry needs to be refreshed after the
+                // renewal period.
+                Some(prev) => {
+                    let when = prev + renewal;
 
-                self.cond.notify_one();
-
-                Ok(())
-            }
-            Err(_) => Err(MutexPoison)
-        }
-    }
-
-    /// Wait until the time `until` only if the flag is clear,
-    /// otherwise return immediately.
-    #[inline]
-    fn wait(
-        &self,
-        until: Option<Instant>
-    ) -> Result<(), MutexPoison> {
-        match self.added.lock() {
-            // Check if the flag is set
-            Ok(guard) => {
-                let mut guard = guard;
-
-                // Keep waiting until the flag is set, or the delay
-                // has passed.
-                while !*guard &&
-                    until.map(|until| until > Instant::now()).unwrap_or(true)
-                {
-                    // See if we need a timeout.
-                    match until {
-                        // We have a timeout.
-                        Some(until) => {
-                            let now = Instant::now();
-
-                            // Check that the timeout hasn't happened.
-                            if until > now {
-                                // Wait until the timeout.
-                                let delay = until - now;
-
-                                trace!(target: "ns-name-cache-notify",
-                                       "waiting {}.{:03}s for notify",
-                                       delay.as_secs(), delay.subsec_millis());
-
-                                guard = self
-                                    .cond
-                                    .wait_timeout(guard, until - now)
-                                    .map(|(guard, _)| guard)
-                                    .map_err(|_| MutexPoison)?;
-                            }
-                        }
-                        // No timeout.
-                        None => {
-                            trace!(target: "ns-name-cache-notify",
-                                   "waiting indefinitely for notify");
-
-                            guard = self
-                                .cond
-                                .wait(guard)
-                                .map_err(|_| MutexPoison)?;
-                        }
-                    }
+                    *earliest = Some(next_retry_definite(&earliest, &when));
                 }
+                // The entry is brand new, and
+                // needs to be resolved for the
+                // frist time.
+                None => {
+                    error!(target: "ns-name-cache-refresh",
+                       "entry for {} not initialized",
+                       name);
 
-                // We're done; clear the flag and go.
-                trace!(target: "ns-name-cache-notify",
-                       "finished waiting");
-
-                *guard = false;
-
-                Ok(())
+                    *earliest =
+                        Some(next_retry_definite(&earliest, &Instant::now()));
+                }
             }
-            Err(_) => Err(MutexPoison)
+        } else {
+            // A stale cache entry, needs to be purged.
+            debug!(target: "ns-name-cache-refresh",
+                   "entry for {} is expired",
+                   name);
+
+            *earliest = Some(next_retry_definite(&earliest, &Instant::now()));
         }
     }
+
+    if earliest.is_some_and(|earliest| earliest <= now) {
+        debug!(target: "ns-name-cache-refresh",
+               "refreshing name caches");
+
+        let mut guard = cache.write().map_err(|_| MutexPoison)?;
+
+        for (name, cache) in guard.iter() {
+            if let Some(cache) = cache.upgrade() {
+                let (_, _, when) = cache
+                    .write()
+                    .map_err(|_| MutexPoison)?
+                    .check_refresh(name, renewal, &retry);
+
+                *earliest = Some(next_retry_definite(&earliest, &when));
+            } else {
+                debug!(target: "ns-name-cache-refresh",
+                       "entry for {} is expired",
+                       name);
+            }
+        }
+
+        // Wipe out all the stale entries
+        guard.retain(|_, cache| cache.upgrade().is_some());
+    }
+
+    Ok(())
 }
 
 /// Main runner for the refresher thread.
 fn run_refresh_thread(
     cache: Weak<RwLock<HashMap<String, Weak<RwLock<NSNameCache>>>>>,
-    notify: Arc<ThreadedNSNameCachesNotify>,
+    mut poll: Poll,
     shutdown: ShutdownFlag,
     renewal: Duration,
     retry: Retry
@@ -440,150 +424,50 @@ fn run_refresh_thread(
     debug!(target: "ns-name-cache-refresh",
            "launching refresher thread for name caches");
 
+    let mut events = Events::with_capacity(1);
+    let mut next = Some(Instant::now());
+
     while let Some(cache) = cache.upgrade() &&
-        shutdown.is_live()
-    {
-        debug!(target: "ns-name-cache-refresh",
-               "checking name caches for refresh");
-
-        // Do a read-only scan of the cache to see if we need to
-        // do anything.
-        let earliest = match cache.read() {
-            Ok(guard) => {
-                let mut earliest: Option<Instant> = None;
-
-                for (name, cache) in guard.iter() {
-                    if let Some(cache) = cache.upgrade() {
-                        match cache.read() {
-                            // Check when the entry was last refreshed.
-                            Ok(guard) => {
-                                match guard.cached_when {
-                                    // The entry needs to be refreshed
-                                    // after the renewal period.
-                                    Some(prev) => {
-                                        let when = prev + renewal;
-
-                                        earliest = Some(next_retry_definite(
-                                            &earliest, &when
-                                        ));
-                                    }
-                                    // The entry is brand new, and
-                                    // needs to be resolved for the
-                                    // frist time.
-                                    None => {
-                                        error!(target: "ns-name-cache-refresh",
-                                           "entry for {} not initialized",
-                                           name);
-
-                                        earliest = Some(next_retry_definite(
-                                            &earliest,
-                                            &Instant::now()
-                                        ));
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                error!(target: "ns-name-cache-refresh",
-                                       "rw lock poisoned for {}",
-                                       name);
-                                warn!(target: "ns-name-cache-refresh",
-                                      "refresher thread exiting");
-
-                                return;
-                            }
-                        }
-                    } else {
-                        // A stale cache entry, needs to be purged.
-                        debug!(target: "ns-name-cache-refresh",
-                               "entry for {} is expired",
-                               name);
-
-                        earliest = Some(next_retry_definite(
-                            &earliest,
-                            &Instant::now()
-                        ));
-                    }
-                }
-
-                earliest
-            }
-            Err(_) => {
-                error!(target: "ns-name-cache-refresh",
-                       "name cache rw lock poisoned");
-                warn!(target: "ns-name-cache-refresh",
-                      "refresher thread exiting");
-
-                return;
-            }
-        };
-
-        // Check if we need to do a write pass.
-        let earliest = if let Some(earliest) = earliest &&
-            earliest <= Instant::now()
+        shutdown.is_live() &&
         {
-            debug!(target: "ns-name-cache-refresh",
-                   "refreshing name caches");
+            let now = Instant::now();
 
-            match cache.write() {
-                Ok(mut guard) => {
-                    let mut earliest: Option<Instant> = None;
+            next.is_some_and(|next: Instant| next < now) ||
+                ({
+                    let duration = next.map(|next| next - now);
 
-                    for (name, cache) in guard.iter() {
-                        if let Some(cache) = cache.upgrade() {
-                            match cache.write() {
-                                Ok(mut guard) => {
-                                    let (_, _, when) = guard
-                                        .check_refresh(name, renewal, &retry);
-
-                                    earliest = Some(next_retry_definite(
-                                        &earliest, &when
-                                    ));
-                                }
-                                Err(_) => {
-                                    error!(target: "ns-name-cache-refresh",
-                                           "rw lock poisoned for {}",
-                                           name);
-                                    warn!(target: "ns-name-cache-refresh",
-                                          "refresher thread exiting");
-
-                                    return;
-                                }
-                            }
-                        } else {
-                            debug!(target: "ns-name-cache-refresh",
-                                   "entry for {} is expired",
-                                   name);
-                        }
+                    if let Some(duration) = &duration {
+                        trace!(target: "ns-name-cache-refresh",
+                            "waiting for poll for {}.{:03}",
+                            duration.as_secs(), duration.subsec_millis());
+                    } else {
+                        trace!(target: "poll-thread",
+                            "waiting for poll indefinitely");
                     }
 
-                    // Wipe out all the stale entries
-                    guard.retain(|_, cache| cache.upgrade().is_some());
+                    poll.poll(&mut events, duration)
+                        .inspect_err(|err| {
+                            error!(target: "ns-name-cache-refresh",
+                                "error polling: {}",
+                                err)
+                        })
+                        .is_ok()
+                } && events.iter().all(|event| {
+                    let token = event.token();
 
-                    earliest
-                }
-                Err(_) => {
-                    error!(target: "ns-name-cache-refresh",
-                           "name cache rw lock poisoned");
-                    warn!(target: "ns-name-cache-refresh",
-                          "refresher thread exiting");
+                    if token != WAKER_TOKEN {
+                        debug!(target: "ns-name-cache-refresh",
+                            "unexpected token {}",
+                            token.0);
+                    }
 
-                    return;
-                }
-            }
-        } else {
-            earliest
-        };
-
-        // Now wait for notification
-        if notify.wait(earliest).is_err() {
-            error!(target: "ns-name-cache-refresh",
-                   "name cache notify mutex poisoned");
-            warn!(target: "ns-name-cache-refresh",
-                  "refresher thread exiting");
-
-            return;
+                    token == WAKER_TOKEN
+                }) && handle_refresher_events(
+                    cache, &mut next, renewal, now, &retry
+                )
+                .is_ok())
         }
-    }
+    {}
 
     info!(target: "ns-name-cache-refresh",
           "name caches have been dropped, refresher thread exiting")
@@ -802,38 +686,51 @@ impl NSNameCachesCtx for ThreadedNSNameCaches {
 impl ThreadedNSNameCaches {
     pub fn create(
         config: ThreadedNSNameCachesConfig,
-        shutdown: ShutdownFlag
-    ) -> (Self, JoinHandle<()>) {
+        mut shutdown: ShutdownFlag
+    ) -> Result<(Self, JoinHandle<()>), ThreadedNSNameCachesCreateError> {
         info!(target: "ns-name-cache",
               "creating name caches");
 
         let (size_hint, renewal, retry) = config.take();
+        let poll = Poll::new()
+            .map_err(|err| ThreadedNSNameCachesCreateError::IO { err: err })?;
+        let waker = Waker::new(poll.registry(), WAKER_TOKEN)
+            .map_err(|err| ThreadedNSNameCachesCreateError::IO { err: err })?;
+        let waker = Arc::new(waker);
+        let notify = Notify::new(waker);
         let caches = match size_hint {
             Some(size) => Arc::new(RwLock::new(HashMap::with_capacity(size))),
             None => Arc::new(RwLock::new(HashMap::new()))
         };
-        let notify = Arc::new(ThreadedNSNameCachesNotify::new());
         let thread_caches = Arc::downgrade(&caches);
-        let thread_notify = notify.clone();
 
-        // Start the refresher thread.
-        let handle = std::thread::spawn(move || {
-            run_refresh_thread(
-                thread_caches,
-                thread_notify,
-                shutdown,
-                renewal,
-                retry
-            )
-        });
+        shutdown
+            .add_notify(notify.clone())
+            .map_err(|_| ThreadedNSNameCachesCreateError::MutexPoison)?;
 
-        (
+        let handle = Builder::new()
+            .name(String::from("ns-name-cache-refresh-thread"))
+            .spawn(move || {
+                info!(target: "ns-name-cache-refresh-thread",
+                      "setting up shutdown flag and notify");
+
+                run_refresh_thread(
+                    thread_caches,
+                    poll,
+                    shutdown,
+                    renewal,
+                    retry
+                )
+            })
+            .map_err(|err| ThreadedNSNameCachesCreateError::IO { err: err })?;
+
+        Ok((
             ThreadedNSNameCaches {
                 caches: caches,
                 notify: notify
             },
             handle
-        )
+        ))
     }
 
     /// Obtain the shared [NSNameCache] for `name`.
@@ -960,6 +857,23 @@ impl Display for NSNameCacheError {
         match self {
             NSNameCacheError::Inconsistent => write!(f, "inconsistent state"),
             NSNameCacheError::MutexPoison => write!(f, "mutex poisoned")
+        }
+    }
+}
+
+impl Display for ThreadedNSNameCachesCreateError {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        match self {
+            ThreadedNSNameCachesCreateError::Recv { err } => {
+                write!(f, "{}", err)
+            }
+            ThreadedNSNameCachesCreateError::IO { err } => write!(f, "{}", err),
+            ThreadedNSNameCachesCreateError::MutexPoison => {
+                write!(f, "mutex poisoned")
+            }
         }
     }
 }

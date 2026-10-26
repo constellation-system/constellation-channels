@@ -55,12 +55,12 @@ use constellation_common::codec::test::TestDecodeError;
 use constellation_common::codec::test::TooShort;
 use constellation_common::config::Create;
 use constellation_common::error::ErrorScope;
-use constellation_common::error::MutexPoison;
 use constellation_common::error::ScopedError;
 use constellation_common::hashid::SHA3Algo;
 use constellation_common::hashid::SHA3ID;
 use constellation_common::ids::AscendingCount;
 use constellation_common::retry::Retry;
+use constellation_common::shutdown::ShutdownFlag;
 use constellation_common::sync::Notify;
 use constellation_streams::config::LargeObjProtoConfig;
 use constellation_streams::config::PrivateLargeObjModeConfig;
@@ -74,8 +74,7 @@ use constellation_streams::large_obj::LargeObjProtoTypes;
 use constellation_streams::large_obj::LargeObjSender;
 use constellation_streams::threads::Tokens;
 use constellation_streams::threads::TokensCtx;
-use constellation_streams::threads::poll::MsgsSetNotify;
-use constellation_streams::threads::poll::PollThread;
+use constellation_streams::threads::poll::PollThreadStarter;
 use log::LevelFilter;
 use log::debug;
 use log::info;
@@ -92,27 +91,25 @@ where
 }
 
 struct ExampleClientMsgs {
-    notify: Arc<Mutex<Option<Notify>>>,
     live: Arc<AtomicBool>,
     nretries: usize,
     retry: Retry
 }
 
 struct ExampleServerMsgs {
-    notify: Arc<Mutex<Option<Notify>>>,
     live: Arc<AtomicBool>,
     sent: bool
 }
 
 #[derive(Clone)]
 struct ExampleClientRecv {
-    notify: Arc<Mutex<Option<Notify>>>,
+    notify: Notify,
     live: Arc<AtomicBool>
 }
 
 #[derive(Clone)]
 struct ExampleServerRecv {
-    notify: Arc<Mutex<Option<Notify>>>,
+    notify: Notify,
     live: Arc<AtomicBool>
 }
 
@@ -129,36 +126,6 @@ struct LargeObjServer;
 struct LargeObjClient;
 
 struct ExampleAuthN;
-
-impl MsgsSetNotify for ExampleServerMsgs {
-    type Error = MutexPoison;
-
-    fn set_notify(
-        &mut self,
-        notify: Notify
-    ) -> Result<(), Self::Error> {
-        let mut guard = self.notify.lock().map_err(|_| MutexPoison)?;
-
-        *guard = Some(notify);
-
-        Ok(())
-    }
-}
-
-impl MsgsSetNotify for ExampleClientMsgs {
-    type Error = MutexPoison;
-
-    fn set_notify(
-        &mut self,
-        notify: Notify
-    ) -> Result<(), Self::Error> {
-        let mut guard = self.notify.lock().map_err(|_| MutexPoison)?;
-
-        *guard = Some(notify);
-
-        Ok(())
-    }
-}
 
 impl LargeObjMsgs<SHA3Algo, Vec<u8>> for ExampleClientMsgs {
     type AddMsgsError<Encode>
@@ -257,16 +224,8 @@ where
 
         self.live.store(false, Ordering::Release);
 
-        if let Ok(mut guard) = self.notify.lock() {
-            if let Some(notify) = &mut *guard {
-                if let Err(err) = notify.notify() {
-                    panic!("error waking: {}", err)
-                }
-            } else {
-                panic!("notify should not be None")
-            }
-        } else {
-            panic!("lock failed")
+        if let Err(err) = self.notify.notify() {
+            panic!("error waking: {}", err)
         }
 
         assert_eq!(msg, &SECOND_BYTES[..]);
@@ -292,16 +251,8 @@ where
 
         self.live.store(true, Ordering::Release);
 
-        if let Ok(mut guard) = self.notify.lock() {
-            if let Some(notify) = &mut *guard {
-                if let Err(err) = notify.notify() {
-                    panic!("error waking: {}", err)
-                }
-            } else {
-                panic!("notify should not be None")
-            }
-        } else {
-            panic!("lock failed")
+        if let Err(err) = self.notify.notify() {
+            panic!("error waking: {}", err)
         }
 
         assert_eq!(msg, &FIRST_BYTES[..]);
@@ -478,39 +429,40 @@ fn server(conf: &str) {
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(false));
-    let notify = Arc::new(Mutex::new(None));
-    let recv = ExampleServerRecv {
-        notify: notify.clone(),
-        live: live.clone()
-    };
-    let msgs = ExampleServerMsgs {
-        notify: notify,
-        live: live,
-        sent: false
-    };
     let ctx = ExampleCtx {
         inner: SharedNSNameCaches::new(),
         tokens: Tokens::new()
     };
     let self_party: Option<String> = None;
+    let (poll, notify) = PollThreadStarter::<
+        ExampleCtx<SharedNSNameCaches>,
+        ExampleServerPollTypes
+    >::create(poll_config, self_party, ctx)
+    .unwrap();
+    let recv = ExampleServerRecv {
+        notify: notify.clone(),
+        live: live.clone()
+    };
+    let msgs = ExampleServerMsgs {
+        live: live,
+        sent: false
+    };
     let proto_config = LargeObjProtoConfig::default();
     let msgauth = PassthruMsgAuthN::default();
     let hash = SHA3Algo::default();
-    let large_obj =
-        LargeObjProto::create(proto_config, recv.clone(), msgs, msgauth, hash)
-            .expect("Expected success");
-    let large_obj = Arc::new(Mutex::new(large_obj));
-    let (poll, _) = PollThread::<
-        ExampleCtx<SharedNSNameCaches>,
-        ExampleServerPollTypes
-    >::start(
-        poll_config,
-        self_party,
-        ctx,
-        large_obj.clone(),
-        large_obj
+    let large_obj = LargeObjProto::create(
+        proto_config,
+        recv.clone(),
+        msgs,
+        msgauth,
+        hash,
+        notify
     )
-    .unwrap();
+    .expect("Expected success");
+    let large_obj = Arc::new(Mutex::new(large_obj));
+    let poll = poll
+        .start(large_obj.clone(), large_obj, ShutdownFlag::new())
+        .unwrap();
 
     poll.join().unwrap();
 }
@@ -528,40 +480,41 @@ fn client(conf: &str) {
         ()
     > = yaml_serde::from_str(conf).unwrap();
     let live = Arc::new(AtomicBool::new(true));
-    let notify = Arc::new(Mutex::new(None));
+    let ctx = ExampleCtx {
+        inner: SharedNSNameCaches::new(),
+        tokens: Tokens::new()
+    };
+    let self_party: Option<String> = None;
+    let (poll, notify) = PollThreadStarter::<
+        ExampleCtx<SharedNSNameCaches>,
+        ExampleClientPollTypes
+    >::create(poll_config, self_party, ctx)
+    .unwrap();
     let recv = ExampleClientRecv {
         notify: notify.clone(),
         live: live.clone()
     };
     let msgs = ExampleClientMsgs {
         live: live,
-        notify: notify,
         retry: Retry::TERRESTRIAL_NETWORK_DEFAULT.clone(),
         nretries: 0
     };
-    let ctx = ExampleCtx {
-        inner: SharedNSNameCaches::new(),
-        tokens: Tokens::new()
-    };
-    let self_party: Option<String> = None;
     let proto_config = LargeObjProtoConfig::default();
     let msgauth = PassthruMsgAuthN::default();
     let hash = SHA3Algo::default();
-    let large_obj =
-        LargeObjProto::create(proto_config, recv.clone(), msgs, msgauth, hash)
-            .expect("Expected success");
-    let large_obj = Arc::new(Mutex::new(large_obj));
-    let (poll, _) = PollThread::<
-        ExampleCtx<SharedNSNameCaches>,
-        ExampleClientPollTypes
-    >::start(
-        poll_config,
-        self_party,
-        ctx,
-        large_obj.clone(),
-        large_obj
+    let large_obj = LargeObjProto::create(
+        proto_config,
+        recv.clone(),
+        msgs,
+        msgauth,
+        hash,
+        notify
     )
-    .unwrap();
+    .expect("Expected success");
+    let large_obj = Arc::new(Mutex::new(large_obj));
+    let poll = poll
+        .start(large_obj.clone(), large_obj, ShutdownFlag::new())
+        .unwrap();
 
     poll.join().unwrap();
 }
