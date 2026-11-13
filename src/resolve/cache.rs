@@ -361,7 +361,7 @@ fn handle_refresher_events(
                 Some(prev) => {
                     let when = prev + renewal;
 
-                    *earliest = Some(next_retry_definite(&earliest, &when));
+                    *earliest = Some(next_retry_definite(earliest, &when));
                 }
                 // The entry is brand new, and
                 // needs to be resolved for the
@@ -372,7 +372,7 @@ fn handle_refresher_events(
                        name);
 
                     *earliest =
-                        Some(next_retry_definite(&earliest, &Instant::now()));
+                        Some(next_retry_definite(earliest, &Instant::now()));
                 }
             }
         } else {
@@ -381,7 +381,7 @@ fn handle_refresher_events(
                    "entry for {} is expired",
                    name);
 
-            *earliest = Some(next_retry_definite(&earliest, &Instant::now()));
+            *earliest = Some(next_retry_definite(earliest, &Instant::now()));
         }
     }
 
@@ -396,9 +396,9 @@ fn handle_refresher_events(
                 let (_, _, when) = cache
                     .write()
                     .map_err(|_| MutexPoison)?
-                    .check_refresh(name, renewal, &retry);
+                    .check_refresh(name, renewal, retry);
 
-                *earliest = Some(next_retry_definite(&earliest, &when));
+                *earliest = Some(next_retry_definite(earliest, &when));
             } else {
                 debug!(target: "ns-name-cache-refresh",
                        "entry for {} is expired",
@@ -432,7 +432,7 @@ fn run_refresh_thread(
         {
             let now = Instant::now();
 
-            next.is_some_and(|next: Instant| next < now) ||
+            (next.is_some_and(|next: Instant| next <= now) ||
                 ({
                     let duration = next.map(|next| next - now);
 
@@ -462,10 +462,11 @@ fn run_refresh_thread(
                     }
 
                     token == WAKER_TOKEN
-                }) && handle_refresher_events(
+                }))) &&
+                handle_refresher_events(
                     cache, &mut next, renewal, now, &retry
                 )
-                .is_ok())
+                .is_ok()
         }
     {}
 
