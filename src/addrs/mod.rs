@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -131,6 +131,7 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::retry::RetryIndefResult;
 use constellation_common::retry::RetryResult;
 use constellation_common::sched::EpochChange;
 use constellation_common::sched::History;
@@ -147,12 +148,12 @@ use log::warn;
 
 use crate::config::AddrKind;
 use crate::config::AddrsConfig;
-use crate::resolve::cache::NSNameCacheError;
-use crate::resolve::cache::NSNameCachesCtx;
 use crate::resolve::MixedResolver;
 use crate::resolve::MixedResolverCreateError;
 use crate::resolve::RefreshResult;
 use crate::resolve::Resolution;
+use crate::resolve::cache::NSNameCacheError;
+use crate::resolve::cache::NSNameCachesCtx;
 
 /// Dynamic address multiplexer.
 ///
@@ -186,6 +187,8 @@ pub struct AddrSelectResult<Epoch> {
 /// Errors that can occur when creating an [AddrMultiplexer].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AddrsError {
+    /// Select error.
+    Select(SelectError),
     /// Refresh error.
     Refresh(RefreshError),
     /// Error accessing name caches.
@@ -229,6 +232,7 @@ struct AddrsHistory {
 impl ScopedError for AddrsError {
     fn scope(&self) -> ErrorScope {
         match self {
+            AddrsError::Select(err) => err.scope(),
             AddrsError::Refresh(err) => err.scope(),
             AddrsError::NameCaches(err) => err.scope(),
             AddrsError::StaticAddrsInvalid => ErrorScope::System
@@ -301,8 +305,9 @@ where
         let policy = SocketAddrPolicy::create(&addr_policy);
         let sched = Scheduler::new((), retry, policy, epochs)
             .map_err(AddrsCreateError::Refresh)?;
-        let resolver = MixedResolver::create(ctx, resolver, endpoints)
-            .map_err(AddrsCreateError::Resolver)?;
+        let resolver =
+            MixedResolver::create(ctx, resolver, endpoints.into_iter())
+                .map_err(AddrsCreateError::Resolver)?;
 
         Ok(AddrMultiplexer {
             sched: sched,
@@ -356,7 +361,7 @@ where
                 .map_err(AddrsError::NameCaches)?
                 .flat_map_ok(|(resolved, _)| {
                     let addrs = resolved.map(|(addr, endpoint, _)| {
-                        (addr, endpoint.ip_endpoint().clone())
+                        (addr, endpoint.ip_addr().clone())
                     });
 
                     match self.sched.refresh(Instant::now(), addrs) {
@@ -390,15 +395,18 @@ where
         &mut self,
         refresh: Option<EpochChange<Epochs::Item, SocketAddr, IPEndpointAddr>>
     ) -> Result<RetryResult<AddrSelectResult<Epochs::Item>>, AddrsError> {
-        match self.sched.select() {
-            Ok(val) => Ok(val.map(|(addr, endpoint, _)| AddrSelectResult {
-                addr: addr,
-                endpoint: endpoint,
-                epoch: refresh
-            })),
+        match self.sched.select().map_err(AddrsError::Select)? {
+            RetryIndefResult::Success((addr, endpoint, _)) => {
+                Ok(RetryResult::Success(AddrSelectResult {
+                    addr: addr,
+                    endpoint: endpoint,
+                    epoch: refresh
+                }))
+            }
+            RetryIndefResult::Retry(when) => Ok(RetryResult::Retry(when)),
             // Uninitialized static multiplexer.  This should
             // never happen.
-            Err(SelectError::Empty) => {
+            RetryIndefResult::Indef(()) => {
                 error!(target: "addr-multiplex",
                        "no addresses in initialized multiplexer");
 
@@ -495,31 +503,18 @@ impl History for AddrsHistory {
         self.nretries
     }
 
-    #[inline]
-    fn cache_score(
-        &mut self,
-        _config: &()
-    ) {
-    }
-
-    #[inline]
-    fn clear_score_cache(&mut self) {}
-
     /// Get the score for this history.
     fn score(
         &self,
-        _config: &()
+        _config: &(),
+        _now: Instant
     ) -> f32 {
         let exp_retries = (self.nretries as f32).exp2() - 1.0;
         let total = self.nsuccesses as f32 + self.nfailures as f32;
         let diff =
             (self.nsuccesses as f32 - self.nfailures as f32) - exp_retries;
 
-        if total != 0.0 {
-            diff / total
-        } else {
-            0.0
-        }
+        if total != 0.0 { diff / total } else { 0.0 }
     }
 }
 
@@ -630,6 +625,7 @@ impl Display for AddrsError {
         f: &mut Formatter
     ) -> Result<(), Error> {
         match self {
+            AddrsError::Select(err) => err.fmt(f),
             AddrsError::Refresh(err) => err.fmt(f),
             AddrsError::NameCaches(err) => err.fmt(f),
             AddrsError::StaticAddrsInvalid => {
@@ -642,7 +638,7 @@ impl Display for AddrsError {
 impl Display for AddrsCreateError {
     fn fmt(
         &self,
-        f: &mut Formatter
+        f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
             AddrsCreateError::Refresh(err) => err.fmt(f),

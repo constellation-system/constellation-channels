@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -20,11 +20,8 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::large_enum_variant)]
 #![allow(incomplete_features)]
-#![feature(peer_credentials_unix_socket)]
-#![feature(get_mut_unchecked)]
-#![feature(let_chains)]
-#![feature(unix_socket_peek)]
 
 //! Low-level communications API for Constellation.
 //!
@@ -53,12 +50,13 @@
 //!    for a friendly network environment. See the [near] module for more
 //!    details.
 pub mod addrs;
+pub mod channels;
 pub mod config;
 pub mod far;
 pub mod near;
 pub mod resolve;
-#[cfg(feature = "unix")]
-pub mod unix;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 #[cfg(test)]
 use std::sync::Once;

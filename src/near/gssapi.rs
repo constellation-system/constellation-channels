@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -36,14 +36,11 @@
 //! [CompoundNearAcceptor](crate::near::compound::CompoundNearAcceptor),
 //! as it generally doesn't make sense to include them anywhere but at
 //! the top level of a configuration.
-use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
-use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use constellation_auth::cred::Credentials;
@@ -52,9 +49,21 @@ use constellation_auth::cred::GSSAPICred;
 use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::config::authn::GSSAPISecurity;
 use constellation_common::config::authn::ServerGSSAPIConfig;
+use constellation_common::error::CompletableIOError;
 use constellation_common::error::ErrorScope;
+use constellation_common::error::RecoverableError;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::NegotiatorStart;
+use constellation_common::net::Session;
+use constellation_common::retry::RetryResult;
+use constellation_streams::state_machine::OnceMachineAction;
+use constellation_streams::state_machine::RawMachineState;
+use constellation_streams::state_machine::RawOnceMachineState;
+use constellation_streams::state_machine::RawStateMachine;
+use constellation_streams::state_machine::RawStateMachineError;
 use libgssapi::context::ClientCtx;
 use libgssapi::context::CtxFlags;
 use libgssapi::context::SecurityContext;
@@ -62,18 +71,21 @@ use libgssapi::context::ServerCtx;
 use libgssapi::credential::Cred;
 use libgssapi::credential::CredUsage;
 use libgssapi::name::Name;
-use libgssapi::oid::OidSet;
 use libgssapi::oid::GSS_MECH_KRB5;
 use libgssapi::oid::GSS_NT_HOSTBASED_SERVICE;
+use libgssapi::oid::OidSet;
 use libgssapi::util::Buf;
 use log::debug;
 use log::trace;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::event::Source;
 
-use crate::near::session::NearSessionConnector;
-use crate::near::session::NearSessionParams;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
 use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
@@ -85,6 +97,92 @@ const GSSAPI_CTX_NEGOTIATE_ERROR: u8 = 0xff;
 const GSSAPI_SECLVL_NEGOTIATE: u8 = 0x02;
 const GSSAPI_PAYLOAD: u8 = 0x03;
 
+pub enum GSSAPIClientState {
+    GSSAPIStart,
+    /// GSSAPI auhentication.
+    GSSAPIAuthN {
+        /// GSSAPI context.
+        ctx: ClientCtx,
+        /// Buffered message to write.
+        msg: Buf
+    },
+    /// GSSAPI security level negotiation.
+    GSSAPISecLvl {
+        /// GSSAPI context.
+        ctx: ClientCtx
+    },
+    /// Success end-state.
+    Success {
+        /// Protocol result.
+        result: ClientCtx
+    },
+    /// Error end-state.
+    Error {
+        /// The protocol error.
+        error: GSSAPIError
+    }
+}
+
+pub enum GSSAPIServerState {
+    GSSAPIStart,
+    /// GSSAPI auhentication.
+    GSSAPIAuthN {
+        /// GSSAPI context.
+        ctx: ServerCtx,
+        /// Buffered message to write.
+        msg: Buf
+    },
+    /// GSSAPI security level negotiation.
+    GSSAPISecLvlWait {
+        /// GSSAPI context.
+        ctx: ServerCtx
+    },
+    /// GSSAPI security level negotiation.
+    GSSAPISecLvlSend {
+        /// GSSAPI context.
+        ctx: ServerCtx
+    },
+    /// Success end-state.
+    Success {
+        /// Protocol result.
+        result: ServerCtx
+    },
+    /// Error end-state.
+    Error {
+        /// The protocol error.
+        error: GSSAPIError
+    }
+}
+
+#[derive(Clone)]
+pub struct ClientGSSAPIParams {
+    bindings: Option<Vec<u8>>,
+    /// Name of the principal to acquire and use in authentication.
+    name: Option<String>,
+    /// Name of the service principal to expect.
+    service: String,
+    /// Duration for which to request credentials.
+    time_req: Option<Duration>,
+    /// GSSAPI security level (see [GSSAPISecurity]).
+    security: GSSAPISecurity
+}
+
+pub struct GSSAPIClientNegotiation<Inner> {
+    // XXX Figure out what to do with these
+    _params: ClientGSSAPIParams,
+    inner: Inner
+}
+
+pub struct GSSAPIServerNegotiation<Inner> {
+    // XXX Figure out what to do with these
+    _params: ServerGSSAPIConfig,
+    inner: Inner
+}
+
+pub struct GSSAPIShutdownNegotiator<Inner> {
+    inner: Inner
+}
+
 /// Representation of errors that can occur in GSSAPI portions of the
 /// protocol.
 #[derive(Debug)]
@@ -92,15 +190,15 @@ pub enum GSSAPIError {
     /// Low-level IO error.
     IO {
         /// IO error.
-        error: Error
+        err: Error
     },
     /// GSSAPI error.
     GSSAPI {
         /// GSSAPI error.
-        error: libgssapi::error::Error
+        err: libgssapi::error::Error
     },
     /// Security level was not accepted.
-    BadSecLvl,
+    BadSecLvl { seclvl: u8 },
     /// Bad protocol version.
     BadVersion,
     /// Bad operation code.
@@ -108,30 +206,45 @@ pub enum GSSAPIError {
 }
 
 /// Errors that can occur when setting up a GSSAPI connection.
-pub enum GSSAPIConnectionError<E> {
+#[derive(Debug)]
+pub enum GSSAPINegotiationError<E, Stream> {
     /// Error in GSSAPI negotiation.
     GSSAPI {
+        stream: Stream,
         /// The error from GSSAPI negotiation.
-        error: GSSAPIError
+        err: GSSAPIError
     },
     /// Error while obtaining the underlying connection.
-    Connection {
+    Inner {
         /// Error from obtaining the connection.
-        error: E
+        err: E
+    },
+    BadSplit
+}
+
+pub enum GSSAPINegotiationPending<Inner, Endpoint, Stream, Pending> {
+    GSSAPI {
+        endpoint: Endpoint,
+        stream: Stream,
+        pending: Pending
+    },
+    Inner {
+        inner: Inner
     }
 }
 
 /// Errors that can occur when obtaining GSSAPI credentials.
+#[derive(Debug)]
 pub enum GSSAPICredError<Inner> {
     /// Error in GSSAPI.
     GSSAPI {
         /// The error from GSSAPI.
-        error: libgssapi::error::Error
+        err: libgssapi::error::Error
     },
     /// Error from the underlying connection.
     Inner {
         /// Error from the connection.
-        error: Inner
+        err: Inner
     }
 }
 
@@ -140,7 +253,10 @@ pub enum GSSAPICredError<Inner> {
 /// This provides [Read] and [Write] functionality for GSSAPI
 /// connections post-negotiation.
 #[derive(Debug)]
-pub struct GSSAPIStream<Stream: Read + Write, Ctx: SecurityContext> {
+pub struct GSSAPIStream<Stream, Ctx>
+where
+    Stream: Session + Source + Read + Write,
+    Ctx: SecurityContext {
     /// The GSSAPI context.
     ctx: Ctx,
     /// The underlying stream.
@@ -148,208 +264,38 @@ pub struct GSSAPIStream<Stream: Read + Write, Ctx: SecurityContext> {
 }
 
 /// [NearChannel] instance that performs GSSAPI session negotiation.
-pub struct GSSAPINearAcceptor<A: NearChannel> {
-    config: ServerGSSAPIConfig,
+pub struct GSSAPINearAcceptor<A: Source + NearChannel> {
+    params: ServerGSSAPIConfig,
     /// Server credential name.
     inner: A
 }
 
-pub struct GSSAPINearConnectorParams<Conn: NearConnector> {
-    conn: PhantomData<Conn>,
-    /// Client credential name.
-    name: Option<String>,
-    /// Service name.
-    service: String,
-    time_req: Option<Duration>,
-    /// Optional GSSAPI bindings.
-    bindings: Option<Vec<u8>>,
-    security: GSSAPISecurity
-}
-
 /// [NearConnector] instance that performs GSSAPI session negotiation.
-pub type GSSAPINearConnector<Conn> =
-    NearSessionConnector<GSSAPINearConnectorParams<Conn>, Conn>;
+pub struct GSSAPINearConnector<Conn: NearConnector> {
+    params: ClientGSSAPIParams,
+    inner: Conn
+}
 
 /// Configuration object for a [GSSAPINearAcceptor].
 #[derive(Clone)]
-pub struct GSSAPINearAcceptorConfig<A: NearChannel> {
+pub struct GSSAPINearAcceptorConfig<Inner> {
     config: ServerGSSAPIConfig,
     /// Optional GSSAPI bindings.
-    inner: A
+    inner: Inner
 }
 
 /// Configuration object for a [GSSAPINearConnector].
 #[derive(Clone)]
-pub struct GSSAPINearConnectorConfig<Conn: NearChannel> {
-    /// Client credential name.
-    name: Option<String>,
-    /// Service name.
-    service: String,
-    time_req: Option<Duration>,
-    /// Optional GSSAPI bindings.
-    bindings: Option<Vec<u8>>,
-    /// GSSAPI security level.
-    security: GSSAPISecurity,
+pub struct GSSAPINearConnectorConfig<Inner> {
+    gssapi: ClientGSSAPIParams,
     /// Configuration for the underlying channel.
-    inner: Conn::Config
+    inner: Inner
 }
 
 /// Credentials harvested from a [GSSAPIStream].
 pub struct GSSAPIStreamCred<Stream> {
     gssapi: Option<GSSAPICred>,
     inner: Option<Stream>
-}
-
-impl<Stream> GSSAPIStreamCred<Stream> {
-    #[inline]
-    pub fn gssapi(&self) -> Option<&GSSAPICred> {
-        self.gssapi.as_ref()
-    }
-
-    #[inline]
-    pub fn stream(&self) -> Option<&Stream> {
-        self.inner.as_ref()
-    }
-}
-
-impl<Conn> GSSAPINearConnectorConfig<Conn>
-where
-    Conn: NearConnector
-{
-    #[inline]
-    pub fn from_config(
-        config: ClientGSSAPIConfig,
-        service_default: String,
-        bindings: Option<Vec<u8>>,
-        inner: Conn::Config
-    ) -> Self {
-        let (name, service, time_req, security) = config.take();
-
-        GSSAPINearConnectorConfig {
-            service: service.unwrap_or(service_default),
-            name: name,
-            security: security,
-            inner: inner,
-            time_req: time_req,
-            bindings: bindings
-        }
-    }
-}
-
-impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
-where
-    Stream: Credentials + Read + Write
-{
-    type Cred = GSSAPIStreamCred<Stream::Cred>;
-    type CredError = GSSAPICredError<Stream::CredError>;
-
-    #[inline]
-    fn creds(
-        &mut self
-    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred>>, Self::CredError> {
-        let gssapi = self
-            .ctx
-            .creds()
-            .map_err(|err| GSSAPICredError::GSSAPI { error: err })?;
-        let inner = self
-            .stream
-            .creds()
-            .map_err(|err| GSSAPICredError::Inner { error: err })?;
-
-        match (gssapi, inner) {
-            (None, None) => Ok(None),
-            (gssapi, inner) => Ok(Some(GSSAPIStreamCred {
-                gssapi: gssapi,
-                inner: inner
-            }))
-        }
-    }
-}
-
-impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
-where
-    Stream: Credentials + Read + Write
-{
-    type Cred = GSSAPIStreamCred<Stream::Cred>;
-    type CredError = GSSAPICredError<Stream::CredError>;
-
-    #[inline]
-    fn creds(
-        &mut self
-    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred>>, Self::CredError> {
-        let gssapi = self
-            .ctx
-            .creds()
-            .map_err(|err| GSSAPICredError::GSSAPI { error: err })?;
-        let inner = self
-            .stream
-            .creds()
-            .map_err(|err| GSSAPICredError::Inner { error: err })?;
-
-        match (gssapi, inner) {
-            (None, None) => Ok(None),
-            (gssapi, inner) => Ok(Some(GSSAPIStreamCred {
-                gssapi: gssapi,
-                inner: inner
-            }))
-        }
-    }
-}
-
-// ISSUE #8: We may need to check the time on the context and kill the
-// connection if it's expired.
-
-impl<Stream, Ctx> Read for GSSAPIStream<Stream, Ctx>
-where
-    Stream: Read + Write,
-    Ctx: SecurityContext
-{
-    #[inline]
-    fn read(
-        &mut self,
-        buf: &mut [u8]
-    ) -> Result<usize, Error> {
-        let msg = parse_gssapi_payload(&mut self.stream, &mut self.ctx)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
-        let len = msg.len();
-
-        buf.clone_from_slice(msg.as_ref());
-
-        Ok(len)
-    }
-}
-
-impl<Stream, Ctx> Write for GSSAPIStream<Stream, Ctx>
-where
-    Stream: Read + Write,
-    Ctx: SecurityContext
-{
-    #[inline]
-    fn write(
-        &mut self,
-        buf: &[u8]
-    ) -> Result<usize, Error> {
-        let len = buf.len();
-
-        write_gssapi_payload(&mut self.stream, &mut self.ctx, buf)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
-
-        Ok(len)
-    }
-
-    #[inline]
-    fn write_all(
-        &mut self,
-        buf: &[u8]
-    ) -> Result<(), Error> {
-        write_gssapi_payload(&mut self.stream, &mut self.ctx, buf)
-            .map_err(|err| Error::new(ErrorKind::Other, err.to_string()))
-    }
-
-    #[inline]
-    fn flush(&mut self) -> Result<(), Error> {
-        self.stream.flush()
-    }
 }
 
 #[inline]
@@ -378,6 +324,8 @@ where
     // Read the first two bytes to determine whether there is more.
     let mut buf = [0; 2];
 
+    // XXX this will most likely break.  We need to buffer and parse
+    // input into packets.
     stream.read_exact(&mut buf[..])?;
 
     // Check the version and status.
@@ -397,55 +345,13 @@ where
         }
         // Server rejected the authentication attempt.
         (GSSAPI_VERSION, GSSAPI_CTX_NEGOTIATE_ERROR) => {
-            warn!(target: "socks5-proto",
-                  "server refused GSSAPI authentication");
-
-            Err(Error::new(ErrorKind::Other, "authentication failed"))
+            Err(Error::other("authentication failed"))
         }
         // Bad reply type.
-        (GSSAPI_VERSION, reply) => {
-            warn!(target: "socks5-proto",
-                  "bad GSSAPI reply type ({})",
-                  reply);
-
-            Err(Error::new(ErrorKind::Other, "bad GSSAPI reply type"))
-        }
+        (GSSAPI_VERSION, _) => Err(Error::other("bad GSSAPI reply type")),
         // Bad version.
-        (version, _) => {
-            warn!(target: "gssapi-near",
-                  "bad GSSAPI protocol version ({})",
-                  version);
-
-            Err(Error::new(ErrorKind::Other, "bad protocol version code"))
-        }
+        _ => Err(Error::other("bad protocol version code"))
     }
-}
-
-#[inline]
-fn write_gssapi_seclvl<W, Ctx>(
-    stream: &mut W,
-    ctx: &mut Ctx,
-    seclvl: u8
-) -> Result<(), GSSAPIError>
-where
-    Ctx: SecurityContext,
-    W: Write {
-    let msg = ctx
-        .wrap(true, &[seclvl])
-        .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
-    let len = msg.len();
-    let mut buf = Vec::with_capacity(len + 4);
-    let len = len as u16;
-
-    buf.push(GSSAPI_VERSION);
-    buf.push(GSSAPI_SECLVL_NEGOTIATE);
-    buf.push((len >> 8) as u8);
-    buf.push((len & 0xff) as u8);
-    buf.extend(msg.as_ref());
-
-    stream
-        .write_all(&buf)
-        .map_err(|err| GSSAPIError::IO { error: err })
 }
 
 #[inline]
@@ -461,7 +367,7 @@ where
 
     stream
         .read_exact(&mut buf[..])
-        .map_err(|err| GSSAPIError::IO { error: err })?;
+        .map_err(|err| GSSAPIError::IO { err: err })?;
 
     // Check the version and status.
     match (buf[0], buf[1]) {
@@ -471,24 +377,24 @@ where
 
             stream
                 .read_exact(&mut buf[..])
-                .map_err(|err| GSSAPIError::IO { error: err })?;
+                .map_err(|err| GSSAPIError::IO { err: err })?;
 
             let len = ((buf[0] as usize) << 8) | (buf[1] as usize);
             let mut buf = vec![0; len];
 
             stream
                 .read_exact(&mut buf[..])
-                .map_err(|err| GSSAPIError::IO { error: err })?;
+                .map_err(|err| GSSAPIError::IO { err: err })?;
 
             let buf = ctx
                 .unwrap(&buf)
-                .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
+                .map_err(|err| GSSAPIError::GSSAPI { err: err })?;
 
             Ok(buf[0])
         }
         // Bad reply type.
         (GSSAPI_VERSION, reply) => {
-            warn!(target: "socks5-proto",
+            warn!(target: "gssapi-near",
                   "bad GSSAPI operation type ({})",
                   reply);
 
@@ -505,6 +411,1249 @@ where
     }
 }
 
+#[inline]
+fn write_gssapi_seclvl<W, Ctx>(
+    stream: &mut W,
+    ctx: &mut Ctx,
+    seclvl: u8
+) -> Result<(), GSSAPIError>
+where
+    Ctx: SecurityContext,
+    W: Write {
+    let msg = ctx
+        .wrap(true, &[seclvl])
+        .map_err(|err| GSSAPIError::GSSAPI { err: err })?;
+    let len = msg.len();
+    let mut buf = Vec::with_capacity(len + 4);
+    let len = len as u16;
+
+    buf.push(GSSAPI_VERSION);
+    buf.push(GSSAPI_SECLVL_NEGOTIATE);
+    buf.push((len >> 8) as u8);
+    buf.push((len & 0xff) as u8);
+    buf.extend(msg.as_ref());
+
+    stream
+        .write_all(&buf)
+        .map_err(|err| GSSAPIError::IO { err: err })
+}
+
+impl<Value, Inner> Negotiator<Value> for GSSAPIShutdownNegotiator<Inner>
+where
+    Inner: Negotiator<Value>
+{
+    type NegotiateError = Inner::NegotiateError;
+    type Pending = Inner::Pending;
+    type State = Inner::State;
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError>
+    {
+        self.inner.negotiate(state)
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        pending: Self::Pending
+    ) -> Result<NegotiatorResult<Value, Self::Pending>, Self::NegotiateError>
+    {
+        self.inner.complete_negotiate(pending)
+    }
+}
+
+impl<Value, Inner, Stream, Ctx>
+    NegotiatorStart<Value, GSSAPIStream<Stream, Ctx>>
+    for GSSAPIShutdownNegotiator<Inner>
+where
+    Inner: NegotiatorStart<Value, Stream>,
+    Stream: Session + Source + Read + Write,
+    Ctx: SecurityContext
+{
+    type Param = Inner::Param;
+    type StartError = Inner::StartError;
+
+    #[inline]
+    fn start(
+        &self,
+        param: &Self::Param,
+        stream: GSSAPIStream<Stream, Ctx>
+    ) -> Result<Self::State, Self::StartError> {
+        self.inner.start(param, stream.stream)
+    }
+}
+
+impl GSSAPIClientState {
+    fn prepare_gssapi(
+        params: &ClientGSSAPIParams
+    ) -> Result<ClientCtx, libgssapi::error::Error> {
+        // Prepare the mechanisms.
+        let mut mechs = OidSet::new()?;
+
+        mechs.add(&GSS_MECH_KRB5)?;
+
+        // Prepare the principal name.
+        let cred = match &params.name {
+            // A principal name was provided.
+            Some(name) => {
+                let name = Name::new(
+                    name.as_bytes(),
+                    Some(&GSS_NT_HOSTBASED_SERVICE)
+                )?;
+                let name = name.canonicalize(Some(&GSS_MECH_KRB5))?;
+
+                Cred::acquire(
+                    Some(&name),
+                    params.time_req,
+                    CredUsage::Initiate,
+                    Some(&mechs)
+                )?
+            }
+            // No principal name was provided.
+            None => Cred::acquire(
+                None,
+                params.time_req,
+                CredUsage::Initiate,
+                Some(&mechs)
+            )?
+        };
+
+        // Prepare the service name.
+        let service = Name::new(
+            params.service.as_bytes(),
+            Some(&GSS_NT_HOSTBASED_SERVICE)
+        )?;
+        let service = service.canonicalize(Some(&GSS_MECH_KRB5))?;
+
+        Ok(ClientCtx::new(
+            Some(cred),
+            service,
+            CtxFlags::GSS_C_MUTUAL_FLAG,
+            Some(&GSS_MECH_KRB5)
+        ))
+    }
+}
+
+impl RawMachineState for GSSAPIClientState {
+    type Error = GSSAPIError;
+    type Params = ClientGSSAPIParams;
+    type Value = ClientCtx;
+
+    #[inline]
+    fn start(_params: &ClientGSSAPIParams) -> GSSAPIClientState {
+        GSSAPIClientState::GSSAPIStart
+    }
+
+    #[inline]
+    fn error(
+        _params: &ClientGSSAPIParams,
+        error: GSSAPIError
+    ) -> GSSAPIClientState {
+        GSSAPIClientState::Error { error: error }
+    }
+
+    #[inline]
+    fn write<W>(
+        &mut self,
+        params: &ClientGSSAPIParams,
+        stream: &mut W
+    ) -> Result<(), GSSAPIError>
+    where
+        W: Write {
+        match self {
+            // Send GSSAPI authentication step.
+            GSSAPIClientState::GSSAPIAuthN { msg, .. } => {
+                write_gssapi_step(stream, msg)
+                    .map_err(|err| GSSAPIError::IO { err: err })
+            }
+            // Send GSSAPI security level request.
+            GSSAPIClientState::GSSAPISecLvl { ctx } => {
+                write_gssapi_seclvl(stream, ctx, params.security.seclvl())
+            }
+            _ => Ok(())
+        }
+    }
+
+    fn read_select<R>(
+        self,
+        params: &ClientGSSAPIParams,
+        stream: &mut R
+    ) -> Result<Self, GSSAPIError>
+    where
+        R: Read {
+        match self {
+            GSSAPIClientState::GSSAPIStart => {
+                // Prepare a GSSAPI state.
+                #[cfg(feature = "log")]
+                debug!(target: "gssapi-near-client",
+                       "beginning GSSAPI authentication");
+                let mut ctx = Self::prepare_gssapi(params)
+                    .map_err(|err| GSSAPIError::GSSAPI { err: err })?;
+
+                // Do the first step.
+                match ctx.step(None, params.bindings.as_deref()) {
+                    // The step returned a message.  Continue
+                    // authnenticating.
+                    Ok(Some(msg)) => {
+                        #[cfg(feature = "log")]
+                        trace!(target: "gssapi-near-client",
+                               "continuing GSSAPI authentication");
+
+                        Ok(GSSAPIClientState::GSSAPIAuthN {
+                            msg: msg,
+                            ctx: ctx
+                        })
+                    }
+                    // The step returned no message.  We're
+                    // authenticated.
+                    Ok(None) => {
+                        #[cfg(feature = "log")]
+                        debug!(target: "gssapi-near-client",
+                               "GSSAPI authentication succeeded");
+
+                        Ok(GSSAPIClientState::GSSAPISecLvl { ctx: ctx })
+                    }
+                    // The step returned an error.
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
+                }
+            }
+            GSSAPIClientState::GSSAPIAuthN { mut ctx, .. } => {
+                // Read in the server message.
+                let token = parse_gssapi_step(stream)
+                    .map_err(|err| GSSAPIError::IO { err: err })?;
+
+                match ctx.step(Some(&token), params.bindings.as_deref()) {
+                    // The step returned a message.  Continue
+                    // authnenticating.
+                    Ok(Some(msg)) => {
+                        #[cfg(feature = "log")]
+                        trace!(target: "gssapi-near-client",
+                               "continuing GSSAPI authentication");
+
+                        Ok(GSSAPIClientState::GSSAPIAuthN {
+                            msg: msg,
+                            ctx: ctx
+                        })
+                    }
+                    // The step returned no message.  We're
+                    // authenticated.
+                    Ok(None) => {
+                        #[cfg(feature = "log")]
+                        debug!(target: "gssapi-near-client",
+                               "GSSAPI authentication succeeded");
+
+                        Ok(GSSAPIClientState::GSSAPISecLvl { ctx: ctx })
+                    }
+                    // The step returned an error.
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
+                }
+            }
+            // Send GSSAPI security level request.
+            GSSAPIClientState::GSSAPISecLvl { mut ctx } => {
+                let seclvl = parse_gssapi_seclvl(stream, &mut ctx)?;
+
+                if !params.security.is_required() ||
+                    params.security.seclvl() >= seclvl
+                {
+                    #[cfg(feature = "log")]
+                    debug!(target: "gssapi-near-client",
+                           "GSSAPI negotiation succeeded");
+
+                    Ok(GSSAPIClientState::Success { result: ctx })
+                } else {
+                    Err(GSSAPIError::BadSecLvl { seclvl: seclvl })
+                }
+            }
+            // End states.
+            end => Ok(end)
+        }
+    }
+}
+
+impl RawOnceMachineState for GSSAPIClientState {
+    #[inline]
+    fn end(
+        self,
+        _params: &ClientGSSAPIParams
+    ) -> OnceMachineAction<Self, Result<ClientCtx, GSSAPIError>> {
+        match self {
+            GSSAPIClientState::Success { result } => {
+                #[cfg(feature = "log")]
+                debug!(target: "gssapi-near-client",
+                       "GSSAPI protocol has reached an end state");
+
+                OnceMachineAction::Stop(Ok(result))
+            }
+            GSSAPIClientState::Error { error } => {
+                #[cfg(feature = "log")]
+                debug!(target: "gssapi-near-client",
+                       "terminating GSSAPI protocol with error ({})",
+                       error);
+
+                OnceMachineAction::Stop(Err(error))
+            }
+            out => OnceMachineAction::Continue(out)
+        }
+    }
+}
+
+impl GSSAPIServerState {
+    /// Prepare a GSSAPI context.
+    fn prepare_gssapi(
+        params: &ServerGSSAPIConfig
+    ) -> Result<ServerCtx, libgssapi::error::Error> {
+        // Prepare the mechanisms.
+        let mut mechs = OidSet::new()?;
+
+        mechs.add(&GSS_MECH_KRB5)?;
+
+        // Prepare the principal name.
+        let cred = match params.name() {
+            // A principal name was provided.
+            Some(name) => {
+                let name = Name::new(
+                    name.as_bytes(),
+                    Some(&GSS_NT_HOSTBASED_SERVICE)
+                )?;
+                let name = name.canonicalize(Some(&GSS_MECH_KRB5))?;
+
+                Cred::acquire(
+                    Some(&name),
+                    params.time_req(),
+                    CredUsage::Initiate,
+                    Some(&mechs)
+                )?
+            }
+            // No principal name was provided.
+            None => Cred::acquire(
+                None,
+                params.time_req(),
+                CredUsage::Initiate,
+                Some(&mechs)
+            )?
+        };
+
+        Ok(ServerCtx::new(Some(cred)))
+    }
+}
+
+impl RawMachineState for GSSAPIServerState {
+    type Error = GSSAPIError;
+    type Params = ServerGSSAPIConfig;
+    type Value = ServerCtx;
+
+    #[inline]
+    fn start(_params: &ServerGSSAPIConfig) -> GSSAPIServerState {
+        GSSAPIServerState::GSSAPIStart
+    }
+
+    #[inline]
+    fn error(
+        _params: &ServerGSSAPIConfig,
+        error: GSSAPIError
+    ) -> GSSAPIServerState {
+        GSSAPIServerState::Error { error: error }
+    }
+
+    #[inline]
+    fn write<W>(
+        &mut self,
+        _params: &ServerGSSAPIConfig,
+        stream: &mut W
+    ) -> Result<(), GSSAPIError>
+    where
+        W: Write {
+        match self {
+            // Send GSSAPI authentication step.
+            GSSAPIServerState::GSSAPIAuthN { msg, .. } => {
+                write_gssapi_step(stream, msg)
+                    .map_err(|err| GSSAPIError::IO { err: err })
+            }
+            // Send GSSAPI security level request.
+            GSSAPIServerState::GSSAPISecLvlSend { ctx } =>
+            // The Rust bindings don't actually supply any means by
+            // which to interrogate or set security levels.
+            //
+            // Since Kerberos uses DES (ick!), we'll just hardwire it to 56.
+            {
+                write_gssapi_seclvl(stream, ctx, 56)
+            }
+            _ => Ok(())
+        }
+    }
+
+    fn read_select<R>(
+        self,
+        params: &ServerGSSAPIConfig,
+        stream: &mut R
+    ) -> Result<Self, GSSAPIError>
+    where
+        R: Read {
+        match self {
+            GSSAPIServerState::GSSAPIStart => {
+                #[cfg(feature = "log")]
+                debug!(target: "gssapi-near-client",
+                       "beginning GSSAPI authentication");
+                let mut ctx = Self::prepare_gssapi(params)
+                    .map_err(|err| GSSAPIError::GSSAPI { err: err })?;
+
+                // Read in the server message.
+                let token = parse_gssapi_step(stream)
+                    .map_err(|err| GSSAPIError::IO { err: err })?;
+
+                match ctx.step(&token) {
+                    // The step returned a message.  Continue
+                    // authnenticating.
+                    Ok(Some(msg)) => {
+                        #[cfg(feature = "log")]
+                        trace!(target: "gssapi-near-client",
+                               "continuing GSSAPI authentication");
+
+                        Ok(GSSAPIServerState::GSSAPIAuthN {
+                            msg: msg,
+                            ctx: ctx
+                        })
+                    }
+                    // The step returned no message.  We're
+                    // authenticated.
+                    Ok(None) => {
+                        #[cfg(feature = "log")]
+                        debug!(target: "gssapi-near-client",
+                               "GSSAPI authentication succeeded");
+
+                        Ok(GSSAPIServerState::GSSAPISecLvlWait { ctx: ctx })
+                    }
+                    // The step returned an error.
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
+                }
+            }
+            GSSAPIServerState::GSSAPIAuthN { mut ctx, .. } => {
+                // Read in the server message.
+                let token = parse_gssapi_step(stream)
+                    .map_err(|err| GSSAPIError::IO { err: err })?;
+
+                match ctx.step(&token) {
+                    // The step returned a message.  Continue
+                    // authnenticating.
+                    Ok(Some(msg)) => {
+                        #[cfg(feature = "log")]
+                        trace!(target: "gssapi-near-client",
+                               "continuing GSSAPI authentication");
+
+                        Ok(GSSAPIServerState::GSSAPIAuthN {
+                            msg: msg,
+                            ctx: ctx
+                        })
+                    }
+                    // The step returned no message.  We're
+                    // authenticated.
+                    Ok(None) => {
+                        #[cfg(feature = "log")]
+                        debug!(target: "gssapi-near-client",
+                               "GSSAPI authentication succeeded");
+
+                        Ok(GSSAPIServerState::GSSAPISecLvlWait { ctx: ctx })
+                    }
+                    // The step returned an error.
+                    Err(err) => Err(GSSAPIError::GSSAPI { err: err })
+                }
+            }
+            // Send GSSAPI security level request.
+            GSSAPIServerState::GSSAPISecLvlWait { mut ctx } => {
+                let _ = parse_gssapi_seclvl(stream, &mut ctx)?;
+
+                Ok(GSSAPIServerState::GSSAPISecLvlSend { ctx: ctx })
+            }
+            GSSAPIServerState::GSSAPISecLvlSend { ctx } => {
+                Ok(GSSAPIServerState::Success { result: ctx })
+            }
+            // End states.
+            end => Ok(end)
+        }
+    }
+}
+
+impl RawOnceMachineState for GSSAPIServerState {
+    #[inline]
+    fn end(
+        self,
+        _params: &ServerGSSAPIConfig
+    ) -> OnceMachineAction<Self, Result<ServerCtx, GSSAPIError>> {
+        match self {
+            GSSAPIServerState::Success { result } => {
+                #[cfg(feature = "log")]
+                debug!(target: "gssapi-near-client",
+                       "GSSAPI protocol has reached an end state");
+
+                OnceMachineAction::Stop(Ok(result))
+            }
+            GSSAPIServerState::Error { error } => {
+                #[cfg(feature = "log")]
+                debug!(target: "gssapi-near-client",
+                       "terminating GSSAPI protocol with error ({})",
+                       error);
+
+                OnceMachineAction::Stop(Err(error))
+            }
+            out => OnceMachineAction::Continue(out)
+        }
+    }
+}
+
+impl<A> Negotiator<(GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint)>
+    for GSSAPINearAcceptor<A>
+where
+    A: Source + NearChannel
+{
+    type NegotiateError = GSSAPINegotiationError<A::NegotiateError, A::Conn>;
+    type Pending = GSSAPINegotiationPending<
+        A::Pending,
+        A::Endpoint,
+        A::Conn,
+        <RawStateMachineError<GSSAPIServerState> as RecoverableError>::Completable
+    >;
+    type State = GSSAPIServerNegotiation<A::State>;
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<
+            (GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
+        self.inner
+            .negotiate(state.inner)
+            .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
+            .map_pending(|pending| GSSAPINegotiationPending::Inner {
+                inner: pending
+            })
+            .flat_map_ok(|(mut stream, endpoint)| {
+                let machine: RawStateMachine<GSSAPIServerState> =
+                    RawStateMachine::new(self.params.clone());
+
+                match machine.run(&mut stream) {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
+                            ctx: ctx,
+                            stream: stream
+                        },
+                        endpoint
+                    ))),
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            GSSAPINegotiationPending::GSSAPI {
+                                endpoint: endpoint.clone(),
+                                stream: stream,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => {
+                            Err(GSSAPINegotiationError::GSSAPI {
+                                stream: stream,
+                                err: err
+                            })
+                        }
+                        _ => Err(GSSAPINegotiationError::BadSplit)
+                    }
+                }
+            })
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: GSSAPINegotiationPending<
+            A::Pending,
+            A::Endpoint,
+            A::Conn,
+            <RawStateMachineError<GSSAPIServerState> as RecoverableError>::Completable
+        >
+    ) -> Result<
+        NegotiatorResult<
+            (GSSAPIStream<A::Conn, ServerCtx>, A::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
+        match pending {
+            GSSAPINegotiationPending::Inner { inner } => self
+                .inner
+                .complete_negotiate(inner)
+                .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
+                .map_pending(|pending| GSSAPINegotiationPending::Inner {
+                    inner: pending
+                })
+                .flat_map_ok(|(mut stream, endpoint)| {
+                    let machine: RawStateMachine<GSSAPIServerState> =
+                        RawStateMachine::new(self.params.clone());
+
+                    match machine.run(&mut stream) {
+                        Ok(ctx) => Ok(NegotiatorResult::Complete((
+                            GSSAPIStream {
+                                ctx: ctx,
+                                stream: stream
+                            },
+                            endpoint
+                        ))),
+                        Err(err) => match err.split() {
+                            (Some(pending), None) => {
+                                Ok(NegotiatorResult::Pending(
+                                    GSSAPINegotiationPending::GSSAPI {
+                                        endpoint: endpoint.clone(),
+                                        stream: stream,
+                                        pending: pending
+                                    }
+                                ))
+                            }
+                            (None, Some(err)) => {
+                                Err(GSSAPINegotiationError::GSSAPI {
+                                    stream: stream,
+                                    err: err
+                                })
+                            }
+                            _ => Err(GSSAPINegotiationError::BadSplit)
+                        }
+                    }
+                }),
+            GSSAPINegotiationPending::GSSAPI {
+                endpoint,
+                mut stream,
+                pending
+            } => {
+                let machine: RawStateMachine<GSSAPIServerState> =
+                    RawStateMachine::complete(pending);
+
+                match machine.run(&mut stream) {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
+                            ctx: ctx,
+                            stream: stream
+                        },
+                        endpoint
+                    ))),
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            GSSAPINegotiationPending::GSSAPI {
+                                endpoint: endpoint.clone(),
+                                stream: stream,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => {
+                            Err(GSSAPINegotiationError::GSSAPI {
+                                stream: stream,
+                                err: err
+                            })
+                        }
+                        _ => Err(GSSAPINegotiationError::BadSplit)
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<A> NearChannel for GSSAPINearAcceptor<A>
+where
+    A: Source + NearChannel
+{
+    type Conn = GSSAPIStream<A::Conn, ServerCtx>;
+    type Endpoint = A::Endpoint;
+    type ShutdownNego = GSSAPIShutdownNegotiator<A::ShutdownNego>;
+    type ShutdownValue = A::ShutdownValue;
+    type StartError = A::StartError;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        Ok(self.inner.start(registry, token)?.map(|inner| {
+            GSSAPIServerNegotiation {
+                _params: self.params.clone(),
+                inner: inner
+            }
+        }))
+    }
+
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        GSSAPIShutdownNegotiator { inner: inner }
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<
+        Self::ShutdownValue,
+        Self::Conn
+    >>::Param {
+        self.inner.shutdown_param()
+    }
+
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
+        err: GSSAPINegotiationError<A::NegotiateError, A::Conn>
+    ) -> Result<(), Error> {
+        match err {
+            GSSAPINegotiationError::Inner { err } => {
+                self.inner.cleanup(registry, err)
+            }
+            GSSAPINegotiationError::GSSAPI { mut stream, .. } => {
+                registry.deregister(&mut stream)
+            }
+            GSSAPINegotiationError::BadSplit => Ok(())
+        }
+    }
+}
+
+impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
+where
+    A: Source + NearChannelCreate
+{
+    type Config = GSSAPINearAcceptorConfig<A::Config>;
+    type CreateError = A::CreateError;
+
+    #[inline]
+    fn create<Ctx>(
+        caches: &mut Ctx,
+        config: Self::Config
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let inner = A::create(caches, config.inner)?;
+
+        Ok(GSSAPINearAcceptor {
+            inner: inner,
+            params: config.config
+        })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        A::verify_endpoint(&config.inner)
+    }
+}
+
+impl<C> Negotiator<(GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint)>
+    for GSSAPINearConnector<C>
+where
+    C: Source + NearConnector
+{
+    type NegotiateError = GSSAPINegotiationError<C::NegotiateError, C::Conn>;
+    type Pending = GSSAPINegotiationPending<
+        C::Pending,
+        C::Endpoint,
+        C::Conn,
+        <RawStateMachineError<GSSAPIClientState> as RecoverableError>::Completable
+    >;
+    type State = GSSAPIClientNegotiation<C::State>;
+
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<
+            (GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
+        self.inner
+            .negotiate(state.inner)
+            .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
+            .map_pending(|pending| GSSAPINegotiationPending::Inner {
+                inner: pending
+            })
+            .flat_map_ok(|(mut stream, endpoint)| {
+                let machine: RawStateMachine<GSSAPIClientState> =
+                    RawStateMachine::new(self.params.clone());
+
+                match machine.run(&mut stream) {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
+                            ctx: ctx,
+                            stream: stream
+                        },
+                        endpoint
+                    ))),
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            GSSAPINegotiationPending::GSSAPI {
+                                endpoint: endpoint.clone(),
+                                stream: stream,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => {
+                            Err(GSSAPINegotiationError::GSSAPI {
+                                stream: stream,
+                                err: err
+                            })
+                        }
+                        _ => Err(GSSAPINegotiationError::BadSplit)
+                    }
+                }
+            })
+    }
+
+    fn complete_negotiate(
+        &self,
+        pending: GSSAPINegotiationPending<
+            C::Pending,
+            C::Endpoint,
+            C::Conn,
+            <RawStateMachineError<GSSAPIClientState> as RecoverableError>::Completable
+        >
+    ) -> Result<
+        NegotiatorResult<
+            (GSSAPIStream<C::Conn, ClientCtx>, C::Endpoint),
+            Self::Pending
+        >,
+        Self::NegotiateError
+    > {
+        match pending {
+            GSSAPINegotiationPending::Inner { inner } => self
+                .inner
+                .complete_negotiate(inner)
+                .map_err(|err| GSSAPINegotiationError::Inner { err: err })?
+                .map_pending(|pending| GSSAPINegotiationPending::Inner {
+                    inner: pending
+                })
+                .flat_map_ok(|(mut stream, endpoint)| {
+                    let machine: RawStateMachine<GSSAPIClientState> =
+                        RawStateMachine::new(self.params.clone());
+
+                    match machine.run(&mut stream) {
+                        Ok(ctx) => Ok(NegotiatorResult::Complete((
+                            GSSAPIStream {
+                                ctx: ctx,
+                                stream: stream
+                            },
+                            endpoint
+                        ))),
+                        Err(err) => match err.split() {
+                            (Some(pending), None) => {
+                                Ok(NegotiatorResult::Pending(
+                                    GSSAPINegotiationPending::GSSAPI {
+                                        endpoint: endpoint.clone(),
+                                        stream: stream,
+                                        pending: pending
+                                    }
+                                ))
+                            }
+                            (None, Some(err)) => {
+                                Err(GSSAPINegotiationError::GSSAPI {
+                                    stream: stream,
+                                    err: err
+                                })
+                            }
+                            _ => Err(GSSAPINegotiationError::BadSplit)
+                        }
+                    }
+                }),
+            GSSAPINegotiationPending::GSSAPI {
+                endpoint,
+                mut stream,
+                pending
+            } => {
+                let machine: RawStateMachine<GSSAPIClientState> =
+                    RawStateMachine::complete(pending);
+
+                match machine.run(&mut stream) {
+                    Ok(ctx) => Ok(NegotiatorResult::Complete((
+                        GSSAPIStream {
+                            ctx: ctx,
+                            stream: stream
+                        },
+                        endpoint
+                    ))),
+                    Err(err) => match err.split() {
+                        (Some(pending), None) => Ok(NegotiatorResult::Pending(
+                            GSSAPINegotiationPending::GSSAPI {
+                                endpoint: endpoint.clone(),
+                                stream: stream,
+                                pending: pending
+                            }
+                        )),
+                        (None, Some(err)) => {
+                            Err(GSSAPINegotiationError::GSSAPI {
+                                stream: stream,
+                                err: err
+                            })
+                        }
+                        _ => Err(GSSAPINegotiationError::BadSplit)
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<C> NearChannel for GSSAPINearConnector<C>
+where
+    C: Source + NearConnector
+{
+    type Conn = GSSAPIStream<C::Conn, ClientCtx>;
+    type Endpoint = C::Endpoint;
+    type ShutdownNego = GSSAPIShutdownNegotiator<C::ShutdownNego>;
+    type ShutdownValue = C::ShutdownValue;
+    type StartError = C::StartError;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        Ok(self.inner.start(registry, token)?.map(|inner| {
+            GSSAPIClientNegotiation {
+                _params: self.params.clone(),
+                inner: inner
+            }
+        }))
+    }
+
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        let inner = self.inner.shutdown_nego();
+
+        GSSAPIShutdownNegotiator { inner: inner }
+    }
+
+    #[inline]
+    fn shutdown_param(
+        &self
+    ) -> <Self::ShutdownNego as NegotiatorStart<
+        Self::ShutdownValue,
+        Self::Conn
+    >>::Param {
+        self.inner.shutdown_param()
+    }
+
+    fn cleanup(
+        &mut self,
+        registry: &Registry,
+        err: GSSAPINegotiationError<C::NegotiateError, C::Conn>
+    ) -> Result<(), Error> {
+        match err {
+            GSSAPINegotiationError::Inner { err } => {
+                self.inner.cleanup(registry, err)
+            }
+            GSSAPINegotiationError::GSSAPI { mut stream, .. } => {
+                registry.deregister(&mut stream)
+            }
+            GSSAPINegotiationError::BadSplit => Ok(())
+        }
+    }
+}
+
+impl<C> NearChannelCreate for GSSAPINearConnector<C>
+where
+    C: Source + NearConnector + NearChannelCreate
+{
+    type Config = GSSAPINearConnectorConfig<C::Config>;
+    type CreateError = C::CreateError;
+
+    #[inline]
+    fn create<Ctx>(
+        caches: &mut Ctx,
+        config: Self::Config
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let inner = C::create(caches, config.inner)?;
+
+        Ok(GSSAPINearConnector {
+            inner: inner,
+            params: config.gssapi
+        })
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        C::verify_endpoint(&config.inner)
+    }
+}
+
+impl<C> NearChannelCreateWithEndpoint for GSSAPINearConnector<C>
+where
+    C: Source + NearConnector + NearChannelCreateWithEndpoint
+{
+    type Config = GSSAPINearConnectorConfig<C::Config>;
+    type CreateError = C::CreateError;
+    type EndpointConfig = C::EndpointConfig;
+    type Param = C::Param;
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: Self::Config,
+        endpoint: C::EndpointConfig,
+        param: Self::Param
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let inner =
+            C::create_with_endpoint(caches, config.inner, endpoint, param)?;
+
+        Ok(GSSAPINearConnector {
+            inner: inner,
+            params: config.gssapi
+        })
+    }
+}
+
+impl<A> Source for GSSAPINearAcceptor<A>
+where
+    A: Source + NearChannel
+{
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.inner.deregister(registry)
+    }
+}
+
+impl<Stream, Ctx> Session for GSSAPIStream<Stream, Ctx>
+where
+    Stream: Source + Session + Read + Write,
+    Ctx: SecurityContext
+{
+    type LocalAddr = Stream::LocalAddr;
+    type PeerAddr = Stream::PeerAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.stream.local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
+        self.stream.peer_addr()
+    }
+}
+
+impl<Stream, Ctx> Source for GSSAPIStream<Stream, Ctx>
+where
+    Stream: Session + Source + Read + Write,
+    Ctx: SecurityContext
+{
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.stream.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.stream.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.stream.deregister(registry)
+    }
+}
+
+impl<Stream> GSSAPIStreamCred<Stream> {
+    #[inline]
+    pub fn gssapi(&self) -> Option<&GSSAPICred> {
+        self.gssapi.as_ref()
+    }
+
+    #[inline]
+    pub fn stream(&self) -> Option<&Stream> {
+        self.inner.as_ref()
+    }
+}
+
+impl<Conn> GSSAPINearConnectorConfig<Conn>
+where
+    Conn: NearConnector
+{
+    #[inline]
+    pub fn from_config(
+        config: ClientGSSAPIConfig,
+        service_default: String,
+        bindings: Option<Vec<u8>>,
+        inner: Conn
+    ) -> Self {
+        let (name, service, time_req, security) = config.take();
+        let params = ClientGSSAPIParams {
+            service: service.unwrap_or(service_default),
+            name: name,
+            security: security,
+            time_req: time_req,
+            bindings: bindings
+        };
+
+        GSSAPINearConnectorConfig {
+            gssapi: params,
+            inner: inner
+        }
+    }
+}
+
+impl<Stream> CredentialsMut for GSSAPIStream<Stream, ServerCtx>
+where
+    Stream: Session + Source + CredentialsMut + Read + Write
+{
+    type Cred = GSSAPIStreamCred<Stream::Cred>;
+    type CredError = GSSAPICredError<Stream::CredError>;
+
+    #[inline]
+    fn creds(
+        &mut self
+    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred>>, Self::CredError> {
+        let gssapi = self
+            .ctx
+            .creds()
+            .map_err(|err| GSSAPICredError::GSSAPI { err: err })?;
+        let inner = self
+            .stream
+            .creds()
+            .map_err(|err| GSSAPICredError::Inner { err: err })?;
+
+        match (gssapi, inner) {
+            (None, None) => Ok(None),
+            (gssapi, inner) => Ok(Some(GSSAPIStreamCred {
+                gssapi: gssapi,
+                inner: inner
+            }))
+        }
+    }
+}
+
+impl<Stream> CredentialsMut for GSSAPIStream<Stream, ClientCtx>
+where
+    Stream: Session + Source + CredentialsMut + Read + Write
+{
+    type Cred = GSSAPIStreamCred<Stream::Cred>;
+    type CredError = GSSAPICredError<Stream::CredError>;
+
+    #[inline]
+    fn creds(
+        &mut self
+    ) -> Result<Option<GSSAPIStreamCred<Stream::Cred>>, Self::CredError> {
+        let gssapi = self
+            .ctx
+            .creds()
+            .map_err(|err| GSSAPICredError::GSSAPI { err: err })?;
+        let inner = self
+            .stream
+            .creds()
+            .map_err(|err| GSSAPICredError::Inner { err: err })?;
+
+        match (gssapi, inner) {
+            (None, None) => Ok(None),
+            (gssapi, inner) => Ok(Some(GSSAPIStreamCred {
+                gssapi: gssapi,
+                inner: inner
+            }))
+        }
+    }
+}
+
+// ISSUE #8: We may need to check the time on the context and kill the
+// connection if it's expired.
+
+impl<Stream, Ctx> Read for GSSAPIStream<Stream, Ctx>
+where
+    Stream: Session + Source + Read + Write,
+    Ctx: SecurityContext
+{
+    #[inline]
+    fn read(
+        &mut self,
+        buf: &mut [u8]
+    ) -> Result<usize, Error> {
+        let msg = parse_gssapi_payload(&mut self.stream, &mut self.ctx)
+            .map_err(|err| Error::other(err.to_string()))?;
+        let len = msg.len();
+
+        buf.clone_from_slice(msg.as_ref());
+
+        Ok(len)
+    }
+}
+
+impl<Stream, Ctx> Write for GSSAPIStream<Stream, Ctx>
+where
+    Stream: Session + Source + Read + Write,
+    Ctx: SecurityContext
+{
+    #[inline]
+    fn write(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<usize, Error> {
+        let len = buf.len();
+
+        write_gssapi_payload(&mut self.stream, &mut self.ctx, buf)
+            .map_err(|err| Error::other(err.to_string()))?;
+
+        Ok(len)
+    }
+
+    #[inline]
+    fn write_all(
+        &mut self,
+        buf: &[u8]
+    ) -> Result<(), Error> {
+        write_gssapi_payload(&mut self.stream, &mut self.ctx, buf)
+            .map_err(|err| Error::other(err.to_string()))
+    }
+
+    #[inline]
+    fn flush(&mut self) -> Result<(), Error> {
+        self.stream.flush()
+    }
+}
+
 fn write_gssapi_payload<W, Ctx>(
     stream: &mut W,
     ctx: &mut Ctx,
@@ -515,7 +1664,7 @@ where
     Ctx: SecurityContext {
     let msg = ctx
         .wrap(true, msg)
-        .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
+        .map_err(|err| GSSAPIError::GSSAPI { err: err })?;
     let len = msg.len();
     let mut buf = Vec::with_capacity(len + 4);
     let len = len as u16;
@@ -528,7 +1677,7 @@ where
 
     stream
         .write_all(&buf)
-        .map_err(|err| GSSAPIError::IO { error: err })
+        .map_err(|err| GSSAPIError::IO { err: err })
 }
 
 fn parse_gssapi_payload<R, Ctx>(
@@ -543,7 +1692,7 @@ where
 
     stream
         .read_exact(&mut buf[..])
-        .map_err(|err| GSSAPIError::IO { error: err })?;
+        .map_err(|err| GSSAPIError::IO { err: err })?;
 
     // Check the version and status.
     match (buf[0], buf[1]) {
@@ -553,18 +1702,18 @@ where
 
             stream
                 .read_exact(&mut buf[..])
-                .map_err(|err| GSSAPIError::IO { error: err })?;
+                .map_err(|err| GSSAPIError::IO { err: err })?;
 
             let len = ((buf[0] as usize) << 8) | (buf[1] as usize);
             let mut buf = vec![0; len];
 
             stream
                 .read_exact(&mut buf[..])
-                .map_err(|err| GSSAPIError::IO { error: err })?;
+                .map_err(|err| GSSAPIError::IO { err: err })?;
 
             let buf = ctx
                 .unwrap(&buf)
-                .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
+                .map_err(|err| GSSAPIError::GSSAPI { err: err })?;
 
             Ok(buf)
         }
@@ -587,302 +1736,54 @@ where
     }
 }
 
-impl<A: NearChannel> GSSAPINearAcceptor<A> {
-    /// Prepare a GSSAPI context.
-    fn prepare_gssapi(&self) -> Result<ServerCtx, libgssapi::error::Error> {
-        // Prepare the mechanisms.
-        let mut mechs = OidSet::new()?;
-
-        mechs.add(&GSS_MECH_KRB5)?;
-
-        // Prepare the principal name.
-        let cred = match &self.config.name() {
-            // A principal name was provided.
-            Some(name) => {
-                let name = Name::new(
-                    name.as_bytes(),
-                    Some(&GSS_NT_HOSTBASED_SERVICE)
-                )?;
-                let name = name.canonicalize(Some(&GSS_MECH_KRB5))?;
-
-                Cred::acquire(
-                    Some(&name),
-                    self.config.time_req(),
-                    CredUsage::Initiate,
-                    Some(&mechs)
-                )?
-            }
-            // No principal name was provided.
-            None => Cred::acquire(
-                None,
-                self.config.time_req(),
-                CredUsage::Initiate,
-                Some(&mechs)
-            )?
-        };
-
-        Ok(ServerCtx::new(Some(cred)))
-    }
-
-    fn gssapi_negotiate(
-        &self,
-        conn: &mut A::OwnedConn
-    ) -> Result<ServerCtx, GSSAPIError> {
-        let mut ctx = self
-            .prepare_gssapi()
-            .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
-
-        debug!(target: "gssapi-near",
-               "beginning GSSAPI negotiation");
-
-        // Do context negotiation.
-        while let Some(msg) = {
-            let token = parse_gssapi_step(conn)
-                .map_err(|err| GSSAPIError::IO { error: err })?;
-
-            ctx.step(&token)
-                .map_err(|err| GSSAPIError::GSSAPI { error: err })?
-        } {
-            trace!(target: "gssapi-near",
-                   "continuing GSSAPI authentication");
-
-            write_gssapi_step(conn, &msg)
-                .map_err(|err| GSSAPIError::IO { error: err })?;
-        }
-
-        // Do security level negotiation.
-        debug!(target: "gssapi-near",
-               "GSSAPI context established, negotiating security level");
-
-        let _ = parse_gssapi_seclvl(conn, &mut ctx)?;
-
-        // The Rust bindings don't actually supply any means by
-        // which to interrogate or set security levels.
-        //
-        // Since Kerberos uses DES (ick!), we'll just hardwire it to 56.
-        write_gssapi_seclvl(conn, &mut ctx, 56)?;
-
-        Ok(ctx)
-    }
-}
-
-impl<A> NearChannel for GSSAPINearAcceptor<A>
+impl<Conn> NearConnector for GSSAPINearConnector<Conn>
 where
-    A: NearChannel,
-    A::OwnedConn: Credentials
+    Conn: Source + NearConnector,
+    Conn::Conn: Source + Credentials + Read + Write
 {
-    type Config = GSSAPINearAcceptorConfig<A>;
-    type Endpoint = A::Endpoint;
-    type OwnedConn = GSSAPIStream<A::OwnedConn, ServerCtx>;
-    type TakeConnectError = GSSAPIConnectionError<A::TakeConnectError>;
-
-    fn take_connection(
-        &mut self
-    ) -> Result<
-        (Self::OwnedConn, Self::Endpoint),
-        GSSAPIConnectionError<A::TakeConnectError>
-    > {
-        let (mut stream, endpoint) = self
-            .inner
-            .take_connection()
-            .map_err(|err| GSSAPIConnectionError::Connection { error: err })?;
-        let ctx = self
-            .gssapi_negotiate(&mut stream)
-            .map_err(|err| GSSAPIConnectionError::GSSAPI { error: err })?;
-
-        Ok((
-            GSSAPIStream {
-                ctx: ctx,
-                stream: stream
-            },
-            endpoint
-        ))
-    }
-}
-
-impl<A> NearChannelCreate for GSSAPINearAcceptor<A>
-where
-    A: NearChannelCreate,
-    A::OwnedConn: Credentials
-{
-    type CreateError = Infallible;
-
-    #[inline]
-    fn new<Ctx>(
-        _caches: &mut Ctx,
-        config: Self::Config
-    ) -> Result<Self, Self::CreateError>
+    /// Type of endpoint references.
+    type EndpointRef<'a>
+        = Conn::EndpointRef<'a>
     where
-        Ctx: NSNameCachesCtx {
-        Ok(GSSAPINearAcceptor {
-            inner: config.inner,
-            config: config.config
-        })
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        self.inner.endpoint()
+    }
+
+    #[inline]
+    fn shutdown(&mut self) -> Result<(), Error> {
+        self.inner.shutdown()
     }
 }
 
-impl<Conn: NearConnector> GSSAPINearConnectorParams<Conn> {
-    /// Prepare a GSSAPI context.
-    fn prepare_gssapi(&self) -> Result<ClientCtx, libgssapi::error::Error> {
-        // Prepare the mechanisms.
-        let mut mechs = OidSet::new()?;
+impl RecoverableError for GSSAPIError {
+    type Completable = CompletableIOError;
+    type Permanent = GSSAPIError;
 
-        mechs.add(&GSS_MECH_KRB5)?;
+    fn split(self) -> (Option<Self::Completable>, Option<Self::Permanent>) {
+        match self {
+            GSSAPIError::IO { err } => {
+                let (completable, permanent) = err.split();
 
-        // Prepare the principal name.
-        let cred = match &self.name {
-            // A principal name was provided.
-            Some(name) => {
-                let name = Name::new(
-                    name.as_bytes(),
-                    Some(&GSS_NT_HOSTBASED_SERVICE)
-                )?;
-                let name = name.canonicalize(Some(&GSS_MECH_KRB5))?;
-
-                Cred::acquire(
-                    Some(&name),
-                    self.time_req,
-                    CredUsage::Initiate,
-                    Some(&mechs)
-                )?
+                if let Some(permanent) = permanent {
+                    (completable, Some(GSSAPIError::IO { err: permanent }))
+                } else {
+                    (completable, None)
+                }
             }
-            // No principal name was provided.
-            None => Cred::acquire(
-                None,
-                self.time_req,
-                CredUsage::Initiate,
-                Some(&mechs)
-            )?
-        };
-
-        // Prepare the service name.
-        let service = Name::new(
-            self.service.as_bytes(),
-            Some(&GSS_NT_HOSTBASED_SERVICE)
-        )?;
-        let service = service.canonicalize(Some(&GSS_MECH_KRB5))?;
-
-        Ok(ClientCtx::new(
-            Some(cred),
-            service,
-            CtxFlags::GSS_C_MUTUAL_FLAG,
-            Some(&GSS_MECH_KRB5)
-        ))
-    }
-
-    fn gssapi_negotiate(
-        &self,
-        conn: &mut Conn::OwnedConn
-    ) -> Result<ClientCtx, GSSAPIError> {
-        let mut ctx = self
-            .prepare_gssapi()
-            .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
-        let bindings = self.bindings.as_ref().map(|b| &b[..]);
-
-        debug!(target: "gssapi-near",
-               "beginning GSSAPI authentication");
-
-        // Do context negotiation.
-        let mut res = ctx
-            .step(None, bindings)
-            .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
-
-        while let Some(msg) = res {
-            trace!(target: "gssapi-near",
-                   "continuing GSSAPI authentication");
-
-            write_gssapi_step(conn, &msg)
-                .map_err(|err| GSSAPIError::IO { error: err })?;
-
-            let token = parse_gssapi_step(conn)
-                .map_err(|err| GSSAPIError::IO { error: err })?;
-
-            res = ctx
-                .step(Some(&token), bindings)
-                .map_err(|err| GSSAPIError::GSSAPI { error: err })?;
+            err => (None, Some(err))
         }
-
-        debug!(target: "gssapi-near",
-               "GSSAPI context established, negotiating security level");
-
-        // Do security level negotiation.
-        write_gssapi_seclvl(conn, &mut ctx, self.security.seclvl())?;
-
-        let seclvl = parse_gssapi_seclvl(conn, &mut ctx)?;
-
-        trace!(target: "gssapi-near",
-               "server replied with security level {}",
-               seclvl);
-
-        if !self.security.is_required() || self.security.seclvl() >= seclvl {
-            trace!(target: "gssapi-near",
-                   "security level {} accepted",
-                   seclvl);
-            Ok(ctx)
-        } else {
-            trace!(target: "gssapi-near",
-                   "security level {} not accepted",
-                   seclvl);
-
-            Err(GSSAPIError::BadSecLvl)
-        }
-    }
-}
-
-impl<Conn: NearConnector> NearSessionParams<Conn>
-    for GSSAPINearConnectorParams<Conn>
-where
-    Conn::Conn: Credentials
-{
-    type Config = GSSAPINearConnectorConfig<Conn>;
-    type CreateError = Infallible;
-    type NegotiateError = GSSAPIError;
-    type Value = GSSAPIStream<Conn::OwnedConn, ClientCtx>;
-
-    const NAME: &'static str = "GSSAPI";
-
-    #[inline]
-    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
-        Conn::verify_endpoint(&config.inner)
-    }
-
-    #[inline]
-    fn create(
-        config: Self::Config
-    ) -> Result<(Self, Conn::Config), Infallible> {
-        Ok((
-            GSSAPINearConnectorParams {
-                service: config.service,
-                name: config.name,
-                time_req: config.time_req,
-                bindings: config.bindings,
-                security: config.security,
-                conn: PhantomData
-            },
-            config.inner
-        ))
-    }
-
-    fn negotiate(
-        &mut self,
-        mut conn: Conn::OwnedConn,
-        _endpoint: &Conn::Endpoint
-    ) -> Result<GSSAPIStream<Conn::OwnedConn, ClientCtx>, GSSAPIError> {
-        let ctx = self.gssapi_negotiate(&mut conn)?;
-
-        Ok(GSSAPIStream {
-            ctx: ctx,
-            stream: conn
-        })
     }
 }
 
 impl ScopedError for GSSAPIError {
     fn scope(&self) -> ErrorScope {
         match self {
-            GSSAPIError::IO { error } => error.scope(),
+            GSSAPIError::IO { err } => err.scope(),
             GSSAPIError::GSSAPI { .. } => ErrorScope::Session,
-            GSSAPIError::BadSecLvl | GSSAPIError::BadVersion => {
+            GSSAPIError::BadSecLvl { .. } | GSSAPIError::BadVersion => {
                 ErrorScope::External
             }
             GSSAPIError::BadOpcode => ErrorScope::Session
@@ -890,14 +1791,15 @@ impl ScopedError for GSSAPIError {
     }
 }
 
-impl<E> ScopedError for GSSAPIConnectionError<E>
+impl<E, S> ScopedError for GSSAPINegotiationError<E, S>
 where
     E: ScopedError
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            GSSAPIConnectionError::Connection { error } => error.scope(),
-            GSSAPIConnectionError::GSSAPI { error } => error.scope()
+            GSSAPINegotiationError::Inner { err } => err.scope(),
+            GSSAPINegotiationError::GSSAPI { err, .. } => err.scope(),
+            GSSAPINegotiationError::BadSplit => ErrorScope::Unrecoverable
         }
     }
 }
@@ -908,7 +1810,7 @@ where
 {
     fn scope(&self) -> ErrorScope {
         match self {
-            GSSAPICredError::Inner { error } => error.scope(),
+            GSSAPICredError::Inner { err } => err.scope(),
             GSSAPICredError::GSSAPI { .. } => ErrorScope::Session
         }
     }
@@ -920,10 +1822,10 @@ impl Display for GSSAPIError {
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            GSSAPIError::IO { error } => error.fmt(f),
-            GSSAPIError::GSSAPI { error } => error.fmt(f),
-            GSSAPIError::BadSecLvl => {
-                write!(f, concat!("security level ", "was not accepted"))
+            GSSAPIError::IO { err } => err.fmt(f),
+            GSSAPIError::GSSAPI { err } => err.fmt(f),
+            GSSAPIError::BadSecLvl { seclvl } => {
+                write!(f, "security level {} was not accepted", seclvl)
             }
             GSSAPIError::BadVersion => write!(f, "bad protocol version code"),
             GSSAPIError::BadOpcode => write!(f, "bad protocol operation code")
@@ -931,7 +1833,7 @@ impl Display for GSSAPIError {
     }
 }
 
-impl<E> Display for GSSAPIConnectionError<E>
+impl<E, S> Display for GSSAPINegotiationError<E, S>
 where
     E: Display
 {
@@ -940,8 +1842,11 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            GSSAPIConnectionError::Connection { error } => error.fmt(f),
-            GSSAPIConnectionError::GSSAPI { error } => error.fmt(f)
+            GSSAPINegotiationError::Inner { err } => err.fmt(f),
+            GSSAPINegotiationError::GSSAPI { err, .. } => err.fmt(f),
+            GSSAPINegotiationError::BadSplit => {
+                write!(f, "split() returned no result")
+            }
         }
     }
 }
@@ -955,8 +1860,8 @@ where
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            GSSAPICredError::Inner { error } => error.fmt(f),
-            GSSAPICredError::GSSAPI { error } => error.fmt(f)
+            GSSAPICredError::Inner { err } => err.fmt(f),
+            GSSAPICredError::GSSAPI { err } => err.fmt(f)
         }
     }
 }

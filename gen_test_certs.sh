@@ -1,6 +1,6 @@
 #!/bin/sh
 
-CAS_DIR=test/data/certs
+CAS_DIR=tests/data/certs
 CONFIG_FILE=${CAS_DIR}/openssl.cnf
 CA_CONFIG_FILE=${CAS_DIR}/openssl-ca.cnf
 SERVER_CA_DIR=${CAS_DIR}/server

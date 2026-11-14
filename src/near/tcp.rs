@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -21,87 +21,22 @@
 //! This module provides a [NearChannel] and
 //! [NearConnector](crate::near::NearConnector) implementation over
 //! TCP sockets.  [TCPNearAcceptor]s can be used to listen on a TCP
-//! port.  [TCPNearConnector]s can be used to connect to remote TCP
+//! port.  [TCPResolvingNearConnector]s can be used to connect to remote TCP
 //! ports.
 //!
 //! Note that connections established in this way are neither
 //! authenticated nor secure inherently.
-//!
-//! # Examples
-//!
-//! The following is an example of connecting, sending, and
-//! receiving over TCP:
-//!
-//! ```
-//! # use constellation_channels::near::NearChannel;
-//! # use constellation_channels::near::NearChannelCreate;
-//! # use constellation_channels::near::NearConnector;
-//! # use constellation_channels::near::tcp::TCPNearConnector;
-//! # use constellation_channels::near::tcp::TCPNearAcceptor;
-//! # use constellation_channels::resolve::cache::SharedNSNameCaches;
-//! # use std::net::Shutdown;
-//! # use std::thread::spawn;
-//! # use std::io::Read;
-//! # use std::io::Write;
-//! #
-//! const FIRST_BYTES: [u8; 8] = [ 0x00, 0x01, 0x02, 0x03,
-//!                                0x04, 0x05, 0x06, 0x07 ];
-//! const SECOND_BYTES: [u8; 8] = [ 0x08, 0x09, 0x0a, 0x0b,
-//!                                 0x0c, 0x0d, 0x0e, 0x0f ];
-//! const SERVER_CONFIG: &'static str = concat!("addr: ::1\n",
-//!                                             "port: 8004\n");
-//! const CLIENT_CONFIG: &'static str = concat!("addr: localhost\n",
-//!                                             "port: 8004\n");
-//! let accept_config = serde_yaml::from_str(SERVER_CONFIG).unwrap();
-//! let connect_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-//! let nscaches = SharedNSNameCaches::new();
-//!
-//! let mut server_nscaches = nscaches.clone();
-//! let listen = spawn(move || {
-//!     let mut acceptor =
-//!         TCPNearAcceptor::new(&mut server_nscaches, accept_config).unwrap();
-//!     let (mut stream, _) = acceptor.take_connection().unwrap();
-//!     let mut buf = [0; FIRST_BYTES.len()];
-//!
-//!     stream.read_exact(&mut buf).unwrap();
-//!     stream.write_all(&SECOND_BYTES).expect("Expected success");
-//!     stream.shutdown(Shutdown::Both).unwrap();
-//!
-//!     assert_eq!(FIRST_BYTES, buf);
-//! });
-//!
-//! let mut client_nscaches = nscaches.clone();
-//! let send = spawn(move || {
-//!     let mut conn =
-//!         TCPNearConnector::new(&mut client_nscaches, connect_config)
-//!             .expect("expected success");
-//!     let (mut stream, _) = conn.connection().expect("expected success");
-//!
-//!     stream.write_all(&FIRST_BYTES).expect("Expected success");
-//!
-//!     let mut buf = [0; SECOND_BYTES.len()];
-//!
-//!     stream.read_exact(&mut buf).unwrap();
-//!
-//!     assert_eq!(SECOND_BYTES, buf);
-//! });
-//!
-//! listen.join().unwrap();
-//! send.join().unwrap();
-//! ```
 
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Error;
 use std::io::Read;
 use std::io::Write;
-use std::iter::repeat;
 use std::iter::Repeat;
+use std::iter::repeat;
 use std::net::Shutdown;
 use std::net::SocketAddr;
-use std::net::TcpListener;
-use std::net::TcpStream;
-use std::thread::sleep;
 use std::time::Instant;
 
 use constellation_auth::cred::Credentials;
@@ -110,20 +45,32 @@ use constellation_common::error::ErrorScope;
 use constellation_common::error::ScopedError;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::PassthruNegotiator;
+use constellation_common::net::Session;
 use constellation_common::retry::Retry;
+use constellation_common::retry::RetryResult;
 use log::debug;
 use log::info;
-use log::trace;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::event::Source;
+use mio::net::TcpListener;
+use mio::net::TcpStream;
 
 use crate::addrs::AddrMultiplexer;
 use crate::addrs::AddrsCreateError;
 use crate::config::TCPNearAcceptorConfig;
-use crate::config::TCPNearConnectorConfig;
-use crate::near::socket::NearSocketConnector;
-use crate::near::socket::NearSocketParams;
+use crate::config::TCPNearConnectorPartialConfig;
+use crate::config::TCPResolvingNearConnectorConfig;
+use crate::config::TCPResolvingNearConnectorPartialConfig;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
+use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// Server side of a TCP socket near-link channel.
@@ -154,13 +101,12 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// # use constellation_channels::near::tcp::TCPNearAcceptor;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
-/// const CONFIG: &'static str = concat!("addr: ::0\n",
-///                                      "port: 8005\n");
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// const CONFIG: &'static str = concat!("addr: '[::0]:8005'\n");
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let mut acceptor = TCPNearAcceptor::new(&mut nscaches,
-///                                         accept_config).unwrap();
+/// let mut acceptor = TCPNearAcceptor::create(&mut nscaches,
+///                                            accept_config).unwrap();
 /// ```
 ///
 /// ## Accepting Connections
@@ -174,14 +120,6 @@ pub struct TCPNearAcceptor {
     listener: TcpListener
 }
 
-/// The [NearSocketParams] instance used by [NearSocketConnector].
-#[doc(hidden)]
-pub struct TCPNearConnectorParams {
-    unsafe_allow_ip_addr_creds: bool,
-    endpoint: IPEndpoint,
-    addrs: AddrMultiplexer<Repeat<()>>
-}
-
 /// Client side of a TCP socket near-link channel.
 ///
 /// This is a [NearChannel] and
@@ -191,50 +129,62 @@ pub struct TCPNearConnectorParams {
 ///
 /// # Usage
 ///
-/// The primary use of a `TCPNearConnector` takes place through its
+/// The primary use of a `TCPResolvingNearConnector` takes place through its
 /// [NearChannel] and [NearConnector](crate::near::NearConnector) instances.
 ///
 /// ## Configuration and Creation
 ///
-/// A `TCPNearConnector` is created using the [new](NearChannelCreate::new)
-/// function from its [NearChannel] instance.  This function takes a
-/// [TCPNearConnectorConfig] as its principal argument, which supplies
-/// all configuration unformation.
+/// A `TCPResolvingNearConnector` is created using the
+/// [new](NearChannelCreate::new) function from its [NearChannel]
+/// instance.  This function takes a [TCPResolvingNearConnectorConfig]
+/// as its principal argument, which supplies all configuration
+/// unformation.
 ///
 /// ### Example
 ///
-/// The following example shows how to create a `TCPNearConnector`.
+/// The following example shows how to create a `TCPResolvingNearConnector`.
 ///
 /// ```
 /// # use constellation_channels::near::NearChannelCreate;
-/// # use constellation_channels::near::tcp::TCPNearConnector;
+/// # use constellation_channels::near::tcp::TCPResolvingNearConnector;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
-/// const CONFIG: &'static str = concat!("addr: en.wikipedia.org\n",
-///                                      "port: 443\n");
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// const CONFIG: &'static str = concat!("addr: en.wikipedia.org:443\n");
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector = TCPNearConnector::new(&mut nscaches,
-///                                       accept_config).unwrap();
+/// let connector = TCPResolvingNearConnector::create(&mut nscaches,
+///                                          accept_config).unwrap();
 /// ```
 ///
 /// ## Establishing Connections
 ///
-/// Once a `TCPNearConnector` has been created, connections can be
+/// Once a `TCPResolvingNearConnector` has been created, connections can be
 /// established using the
 /// [take_connection](NearChannel::take_connection) or
 /// [connection](crate::near::NearConnector::connection) functions.  These will
 /// block until a connection has been successfully established.  Note
 /// that depending on the circumstances, this may involve many retries
 /// and/or name resolutions.
-pub type TCPNearConnector = NearSocketConnector<TCPNearConnectorParams>;
+pub struct TCPResolvingNearConnector {
+    unsafe_allow_ip_addr_creds: bool,
+    addrs: AddrMultiplexer<Repeat<()>>,
+    endpoint: IPEndpoint,
+    nretries: usize,
+    when: Instant,
+    retry: Retry
+}
 
-/// Errors that can occur when converting a [TCPNearConnectorConfig]
-/// to [TCPNearConnectorParams].
+pub struct TCPNearConnector {
+    unsafe_allow_ip_addr_creds: bool,
+    endpoint: SocketAddr
+}
+
+/// Errors that can occur when converting a [TCPResolvingNearConnectorConfig]
+/// to [TCPResolvingNearConnectorParams].
 #[doc(hidden)]
 #[derive(Clone, Debug)]
-pub enum TCPNearConnectorError {
+pub enum TCPResolvingNearConnectorError {
     /// Error creating the [Addrs] object.
     Addrs(AddrsCreateError)
 }
@@ -284,6 +234,51 @@ impl TCPStream {
         shutdown: Shutdown
     ) -> Result<(), Error> {
         self.inner.shutdown(shutdown)
+    }
+}
+
+impl Session for TCPStream {
+    type LocalAddr = SocketAddr;
+    type PeerAddr = SocketAddr;
+
+    #[inline]
+    fn local_addr(&self) -> Result<Self::LocalAddr, Error> {
+        self.inner.local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> Result<Self::PeerAddr, Error> {
+        self.inner.peer_addr()
+    }
+}
+
+impl Source for TCPStream {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.inner.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.inner.deregister(registry)
     }
 }
 
@@ -343,10 +338,10 @@ impl Write for TCPStream {
     }
 }
 
-impl ScopedError for TCPNearConnectorError {
+impl ScopedError for TCPResolvingNearConnectorError {
     fn scope(&self) -> ErrorScope {
         match self {
-            TCPNearConnectorError::Addrs(err) => err.scope()
+            TCPResolvingNearConnectorError::Addrs(err) => err.scope()
         }
     }
 }
@@ -358,31 +353,116 @@ impl ScopedError for TCPConnectError {
     }
 }
 
-impl NearChannel for TCPNearAcceptor {
-    type Config = TCPNearAcceptorConfig;
-    type Endpoint = SocketAddr;
-    type OwnedConn = TCPStream;
-    type TakeConnectError = Error;
+impl Source for TCPNearAcceptor {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.listener.register(registry, token, interests)
+    }
 
     #[inline]
-    fn take_connection(
-        &mut self
-    ) -> Result<(Self::OwnedConn, Self::Endpoint), Error> {
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.listener.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.listener.deregister(registry)
+    }
+}
+
+impl Negotiator<(TCPStream, SocketAddr)> for TCPNearAcceptor {
+    type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (TCPStream, SocketAddr);
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for TCPNearAcceptor {
+    type Conn = TCPStream;
+    type Endpoint = SocketAddr;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = TCPStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
         let (stream, addr) = self.listener.accept()?;
-        let stream = TCPStream {
+        let mut stream = TCPStream {
             unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
             inner: stream
         };
 
-        Ok((stream, addr))
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(&self) {}
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
+        panic!("This should never be called!")
     }
 }
 
 impl NearChannelCreate for TCPNearAcceptor {
+    type Config = TCPNearAcceptorConfig;
     type CreateError = Error;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         _caches: &mut Ctx,
         config: TCPNearAcceptorConfig
     ) -> Result<Self, Error>
@@ -405,87 +485,188 @@ impl NearChannelCreate for TCPNearAcceptor {
             listener: listener
         })
     }
+
+    #[inline]
+    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr> {
+        None
+    }
 }
 
-impl TCPNearConnectorParams {
-    fn try_addrs(
+impl Negotiator<(TCPStream, SocketAddr)> for TCPResolvingNearConnector {
+    type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (TCPStream, SocketAddr);
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for TCPResolvingNearConnector {
+    type Conn = TCPStream;
+    type Endpoint = SocketAddr;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = TCPStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
         &mut self,
-        retry: &Retry,
-        until: &mut Instant,
-        nretries: &mut usize
-    ) -> Result<TcpStream, ()> {
-        while let Ok(result) = self.addrs.addr() {
-            let (addr, endpoint, _) = result.take();
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        if self.when < Instant::now() {
+            // XXX correctly deal with error scopes here.
+            while let Ok(result) = self.addrs.addr() {
+                let (addr, endpoint, _) = result.take();
 
-            debug!(target: "tcp-near",
-                   "attempting connection to {}",
-                   addr);
+                debug!(target: "tcp-near",
+                       "attempting connection to {}",
+                       addr);
 
-            match TcpStream::connect(addr) {
-                Ok(stream) => {
-                    match self.addrs.success(&addr, &endpoint) {
-                        Ok(()) => {}
-                        Err(err) => {
-                            warn!(target: "tcp-near",
-                                  "error recording success for {} ({})",
-                                  addr, err);
+                match TcpStream::connect(addr) {
+                    Ok(stream) => {
+                        match self.addrs.success(&addr, &endpoint) {
+                            Ok(()) => {}
+                            Err(err) => {
+                                warn!(target: "tcp-near",
+                                      "error recording success for {} ({})",
+                                      addr, err);
+                            }
                         }
+                        let mut stream = TCPStream {
+                            unsafe_allow_ip_addr_creds: self
+                                .unsafe_allow_ip_addr_creds,
+                            inner: stream
+                        };
+
+                        registry.register(
+                            &mut stream,
+                            token,
+                            Interest::READABLE | Interest::WRITABLE
+                        )?;
+
+                        return Ok(RetryResult::Success((stream, addr)));
                     }
+                    Err(err) => {
+                        info!(target: "tcp-near",
+                              concat!("error connecting to {} ({}): ",
+                                      "{}, trying next address"),
+                              self.endpoint, addr, err);
 
-                    return Ok(stream);
-                }
-                Err(err) => {
-                    info!(target: "tcp-near",
-                          concat!("error connecting to {} ({}): ",
-                                  "{}, trying next address"),
-                          self.endpoint, addr, err);
-
-                    match self.addrs.failure(&addr, &endpoint) {
-                        Ok(()) => {}
-                        Err(err) => {
-                            warn!(target: "tcp-near",
-                                  "error recording failure for {} ({})",
-                                  addr, err);
+                        match self.addrs.failure(&addr, &endpoint) {
+                            Ok(()) => {}
+                            Err(err) => {
+                                warn!(target: "tcp-near",
+                                      "error recording failure for {} ({})",
+                                      addr, err);
+                            }
                         }
                     }
                 }
             }
+
+            let duration = self.retry.retry_delay(self.nretries);
+            let when = Instant::now() + duration;
+
+            self.nretries += 1;
+            self.when = when;
         }
 
-        let duration = retry.retry_delay(*nretries);
-        let retry = Instant::now() + duration;
+        Ok(RetryResult::Retry(self.when))
+    }
 
-        *nretries += 1;
-        *until = retry;
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        PassthruNegotiator
+    }
 
-        Err(())
+    #[inline]
+    fn shutdown_param(&self) {}
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
+        panic!("This should never be called!")
     }
 }
 
-impl NearSocketParams for TCPNearConnectorParams {
-    type Config = TCPNearConnectorConfig;
-    type Conn = TCPStream;
-    type CreateError = TCPNearConnectorError;
-    type Endpoint = IPEndpoint;
-    type Error = TCPConnectError;
-
-    const NAME: &'static str = "TCP";
+impl NearChannelCreate for TCPResolvingNearConnector {
+    type Config = TCPResolvingNearConnectorConfig;
+    type CreateError = TCPResolvingNearConnectorError;
 
     #[inline]
     fn create<Ctx>(
         caches: &mut Ctx,
-        config: Self::Config
-    ) -> Result<(Self, Retry), Self::CreateError>
+        config: TCPResolvingNearConnectorConfig
+    ) -> Result<Self, TCPResolvingNearConnectorError>
     where
         Ctx: NSNameCachesCtx {
         let (endpoint, resolve, retry, unsafe_opts) = config.take();
+        let partial = TCPResolvingNearConnectorPartialConfig::new_with_unsafe(
+            resolve,
+            retry,
+            unsafe_opts
+        );
+
+        TCPResolvingNearConnector::create_with_endpoint(
+            caches,
+            partial,
+            endpoint,
+            ()
+        )
+    }
+
+    #[inline]
+    fn verify_endpoint(config: &Self::Config) -> Option<&IPEndpointAddr> {
+        Some(config.endpoint().ip_addr())
+    }
+}
+
+impl NearChannelCreateWithEndpoint for TCPResolvingNearConnector {
+    type Config = TCPResolvingNearConnectorPartialConfig;
+    type CreateError = TCPResolvingNearConnectorError;
+    type EndpointConfig = IPEndpoint;
+    type Param = ();
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        caches: &mut Ctx,
+        config: TCPResolvingNearConnectorPartialConfig,
+        endpoint: IPEndpoint,
+        _param: Self::Param
+    ) -> Result<Self, TCPResolvingNearConnectorError>
+    where
+        Ctx: NSNameCachesCtx {
+        let (resolve, retry, unsafe_opts) = config.take();
         let addrs = AddrMultiplexer::create(
             caches,
             vec![endpoint.clone()],
             repeat(()),
             resolve
         )
-        .map_err(TCPNearConnectorError::Addrs)?;
+        .map_err(TCPResolvingNearConnectorError::Addrs)?;
 
         if unsafe_opts.allow_ip_addr_creds() {
             warn!(target: "udp-far-channel",
@@ -495,71 +676,169 @@ impl NearSocketParams for TCPNearConnectorParams {
                   endpoint)
         }
 
-        Ok((
-            TCPNearConnectorParams {
-                unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
-                endpoint: endpoint,
-                addrs: addrs
-            },
-            retry
-        ))
+        Ok(TCPResolvingNearConnector {
+            unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
+            endpoint: endpoint,
+            addrs: addrs,
+            retry: retry,
+            nretries: 0,
+            when: Instant::now()
+        })
     }
+}
+
+impl NearConnector for TCPResolvingNearConnector {
+    /// Type of endpoint references.
+    type EndpointRef<'a>
+        = &'a IPEndpoint
+    where
+        Self: 'a;
 
     #[inline]
-    fn endpoint(&self) -> &Self::Endpoint {
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
         &self.endpoint
     }
 
     #[inline]
-    fn verify_endpoint(conf: &Self::Config) -> Option<&IPEndpointAddr> {
-        Some(conf.endpoint().ip_endpoint())
-    }
-
-    fn try_connect(
-        &mut self,
-        retry: &Retry,
-        until: &mut Instant,
-        nretries: &mut usize
-    ) -> Result<TCPStream, TCPConnectError> {
-        let now = Instant::now();
-
-        if now < *until {
-            sleep(*until - now)
-        }
-
-        trace!(target: "tcp-near",
-               "attempting to connect to {}",
-               self.endpoint);
-
-        match self.try_addrs(retry, until, nretries) {
-            Ok(stream) => {
-                let stream = TCPStream {
-                    unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
-                    inner: stream
-                };
-
-                Ok(stream)
-            }
-            Err(()) => Err(TCPConnectError)
-        }
-    }
-
-    #[inline]
-    fn shutdown(
-        &self,
-        stream: &Self::Conn
-    ) -> Result<(), Error> {
-        stream.inner.shutdown(Shutdown::Both)
+    fn shutdown(&mut self) -> Result<(), Error> {
+        Ok(())
     }
 }
 
-impl Display for TCPNearConnectorError {
+impl Negotiator<(TCPStream, SocketAddr)> for TCPNearConnector {
+    type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (TCPStream, SocketAddr);
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<(TCPStream, SocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for TCPNearConnector {
+    type Conn = TCPStream;
+    type Endpoint = SocketAddr;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = TCPStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        let mut stream = TcpStream::connect(self.endpoint)?;
+
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
+
+        let stream = TCPStream {
+            unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
+            inner: stream
+        };
+        let addr = stream.peer_addr()?;
+        let out = (stream, addr);
+
+        Ok(RetryResult::Success(out))
+    }
+
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(&self) {}
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannelCreateWithEndpoint for TCPNearConnector {
+    type Config = TCPNearConnectorPartialConfig;
+    type CreateError = Infallible;
+    type EndpointConfig = SocketAddr;
+    type Param = ();
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        _caches: &mut Ctx,
+        config: TCPNearConnectorPartialConfig,
+        endpoint: SocketAddr,
+        _param: Self::Param
+    ) -> Result<Self, Infallible>
+    where
+        Ctx: NSNameCachesCtx {
+        let unsafe_opts = config.take();
+
+        if unsafe_opts.allow_ip_addr_creds() {
+            warn!(target: "udp-far-channel",
+                  concat!("unsafe option allow_ip_addr_creds enabled for ",
+                          "TCP acceptor on {} (this allows for trivial ",
+                          "spoofing of channel credentials)"),
+                  endpoint)
+        }
+
+        Ok(TCPNearConnector {
+            unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
+            endpoint: endpoint
+        })
+    }
+}
+
+impl NearConnector for TCPNearConnector {
+    /// Type of endpoint references.
+    type EndpointRef<'a>
+        = &'a SocketAddr
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
+        &self.endpoint
+    }
+
+    #[inline]
+    fn shutdown(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl Display for TCPResolvingNearConnectorError {
     fn fmt(
         &self,
         f: &mut Formatter
     ) -> Result<(), std::fmt::Error> {
         match self {
-            TCPNearConnectorError::Addrs(err) => err.fmt(f)
+            TCPResolvingNearConnectorError::Addrs(err) => err.fmt(f)
         }
     }
 }
@@ -571,63 +850,4 @@ impl Display for TCPConnectError {
     ) -> Result<(), std::fmt::Error> {
         write!(f, "possible connection options exhausted")
     }
-}
-
-#[cfg(test)]
-use std::thread::spawn;
-
-#[cfg(test)]
-use crate::init;
-#[cfg(test)]
-use crate::near::NearConnector;
-#[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
-
-#[test]
-fn test_send_recv() {
-    init();
-
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    const SERVER_CONFIG: &'static str = concat!("addr: ::1\n", "port: 8006\n");
-    const CLIENT_CONFIG: &'static str =
-        concat!("addr: localhost\n", "port: 8006\n");
-    let accept_config = serde_yaml::from_str(SERVER_CONFIG).unwrap();
-    let connect_config = serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-    let nscaches = SharedNSNameCaches::new();
-
-    let mut server_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            TCPNearAcceptor::new(&mut server_nscaches, accept_config).unwrap();
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.write_all(&SECOND_BYTES).expect("Expected success");
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            TCPNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
 }

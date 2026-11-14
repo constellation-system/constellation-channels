@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -32,7 +32,7 @@
 //!   contexts.
 //!
 //! Each of these structures has a YAML format, which can be parsed
-//! using `serde_yaml` to load configurations from plaintext.  See the
+//! using `yaml_serde` to load configurations from plaintext.  See the
 //! documentation for each structure for examples.
 use std::convert::TryFrom;
 use std::fmt::Display;
@@ -861,7 +861,7 @@ impl TLSServerClientAuthConfig {
     ///             None
     ///         ),
     ///     ),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// )
     /// ```
     #[inline]
@@ -915,7 +915,7 @@ impl TLSClientClientAuthConfig {
     ///         Some(PathBuf::from("/etc/ssl/certs/client-cert-chain.pem")),
     ///         PathBuf::from("/etc/ssl/private/client-key.pem")
     ///     ),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// )
     /// ```
     #[inline]
@@ -1010,7 +1010,7 @@ impl TLSPeerConfig {
     ///         PathBuf::from("/etc/ssl/certs/server-cert.pem"),
     ///         PathBuf::from("/etc/ssl/private/server-key.pem")
     ///     ),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// )
     /// ```
     #[inline]
@@ -1377,7 +1377,7 @@ impl TLSClientConfig {
     ///         ),
     ///         Some(IPEndpointAddr::name(String::from("test.example.com"))),
     ///     ),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// )
     /// ```
     #[inline]
@@ -1629,7 +1629,7 @@ impl TLSServerConfig {
     ///         PathBuf::from("/etc/ssl/certs/server-cert.pem"),
     ///         PathBuf::from("/etc/ssl/private/server-key.pem")
     ///     ),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// )
     /// ```
     #[inline]
@@ -1937,7 +1937,7 @@ fn test_deserialize_server_tls_cfg_certs_dir() {
         key: PathBuf::from("/usr/local/etc/test/tls.key")
     };
 
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -1988,7 +1988,7 @@ fn test_deserialize_server_tls_cfg_certs_dir_no_ciphers() {
         cert: PathBuf::from("/usr/local/etc/test/tls.cert"),
         key: PathBuf::from("/usr/local/etc/test/tls.key")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2043,7 +2043,7 @@ fn test_deserialize_server_tls_cfg_certs_dir_no_kex() {
         cert: PathBuf::from("/usr/local/etc/test/tls.cert"),
         key: PathBuf::from("/usr/local/etc/test/tls.key")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2091,7 +2091,7 @@ fn test_deserialize_server_tls_cfg_certs_dir_no_ciphers_no_kex() {
         cert: PathBuf::from("/usr/local/etc/test/tls.cert"),
         key: PathBuf::from("/usr/local/etc/test/tls.key")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2119,7 +2119,7 @@ fn test_deserialize_tls_server_cfg_no_ciphers_no_kex_no_client_auth() {
         cert: PathBuf::from("/usr/local/etc/test/tls.cert"),
         key: PathBuf::from("/usr/local/etc/test/tls.key")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2175,7 +2175,7 @@ fn test_deserialize_client_tls_cfg_certs_dir() {
         verify_endpoint: None
     };
 
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2224,7 +2224,7 @@ fn test_deserialize_client_tls_cfg_certs_dir_no_ciphers() {
         ),
         verify_endpoint: None
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2278,7 +2278,7 @@ fn test_deserialize_client_tls_cfg_certs_dir_no_kex() {
         ),
         verify_endpoint: None
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2325,7 +2325,7 @@ fn test_deserialize_client_tls_cfg_certs_dir_no_ciphers_no_kex() {
         ),
         verify_endpoint: None
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2366,7 +2366,7 @@ fn test_deserialize_tls_client_cfg_no_ciphers_no_kex_no_client_auth() {
         ),
         verify_endpoint: None
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -2386,12 +2386,12 @@ fn test_load_server_cfg() {
         "client-auth:\n",
         "  trust-root:\n",
         "    root-certs:\n",
-        "      - test/data/certs/client/ca_cert.pem\n",
+        "      - tests/data/certs/client/ca_cert.pem\n",
         "    crls: []\n",
-        "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "key: test/data/certs/server/private/test_server_key.pem\n"
+        "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "key: tests/data/certs/server/private/test_server_key.pem\n"
     );
-    let conf: TLSServerConfig = serde_yaml::from_str(yaml).unwrap();
+    let conf: TLSServerConfig = yaml_serde::from_str(yaml).unwrap();
 
     conf.load_server(None, false).expect("Expected success");
 }
@@ -2410,12 +2410,12 @@ fn test_load_client_cfg() {
         "  - P-256\n",
         "trust-root:\n",
         "  root-certs:\n",
-        "    - test/data/certs/server/ca_cert.pem\n",
+        "    - tests/data/certs/server/ca_cert.pem\n",
         "  crls: []\n",
-        "client-cert: test/data/certs/client/certs/test_client_cert.pem\n",
-        "client-key: test/data/certs/client/private/test_client_key.pem\n"
+        "client-cert: tests/data/certs/client/certs/test_client_cert.pem\n",
+        "client-key: tests/data/certs/client/private/test_client_key.pem\n"
     );
-    let conf: TLSClientConfig = serde_yaml::from_str(yaml).unwrap();
+    let conf: TLSClientConfig = yaml_serde::from_str(yaml).unwrap();
 
     conf.load_client(None, &IPEndpointAddr::name(String::from("test")), false)
         .expect("Expected success");
@@ -2435,12 +2435,12 @@ fn test_load_peer_cfg_connector() {
         "  - P-256\n",
         "trust-root:\n",
         "  root-certs:\n",
-        "    - test/data/certs/server/ca_cert.pem\n",
+        "    - tests/data/certs/server/ca_cert.pem\n",
         "  crls: []\n",
-        "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "key: test/data/certs/server/private/test_server_key.pem\n"
+        "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "key: tests/data/certs/server/private/test_server_key.pem\n"
     );
-    let conf: TLSPeerConfig = serde_yaml::from_str(yaml).unwrap();
+    let conf: TLSPeerConfig = yaml_serde::from_str(yaml).unwrap();
 
     conf.load_client(None, &IPEndpointAddr::name(String::from("test")), false)
         .expect("Expected success");
@@ -2460,12 +2460,12 @@ fn test_load_peer_cfg_acceptor() {
         "  - P-256\n",
         "trust-root:\n",
         "  root-certs:\n",
-        "    - test/data/certs/server/ca_cert.pem\n",
+        "    - tests/data/certs/server/ca_cert.pem\n",
         "  crls: []\n",
-        "cert: test/data/certs/server/certs/test_server_cert.pem\n",
-        "key: test/data/certs/server/private/test_server_key.pem\n"
+        "cert: tests/data/certs/server/certs/test_server_cert.pem\n",
+        "key: tests/data/certs/server/private/test_server_key.pem\n"
     );
-    let conf: TLSPeerConfig = serde_yaml::from_str(yaml).unwrap();
+    let conf: TLSPeerConfig = yaml_serde::from_str(yaml).unwrap();
 
     conf.load_server(None, false).expect("Expected success");
 }

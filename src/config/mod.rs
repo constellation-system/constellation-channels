@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -20,7 +20,7 @@
 //!
 //! This module contains definitions of types that supply
 //! configuration information.  Each of these types has a YAML format,
-//! which can be parsed using `serde_yaml`, thus allowing
+//! which can be parsed using `yaml_serde`, thus allowing
 //! configurations to be easily loaded from text files.
 //!
 //! # Near-Link Configurations
@@ -52,7 +52,7 @@ use std::convert::TryFrom;
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
-use std::net::IpAddr;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::path::PathBuf;
@@ -61,11 +61,20 @@ use std::time::Duration;
 #[cfg(feature = "gssapi")]
 use constellation_common::config::authn::ClientGSSAPIConfig;
 use constellation_common::net::IPEndpoint;
+use constellation_common::net::IPEndpointAddr;
 use constellation_common::retry::Retry;
-use serde::ser::SerializeStruct;
+use constellation_common::unix::UnixSocketPath;
+use constellation_streams::config::DispatchThreadConfig;
+use constellation_streams::config::PartyConfig;
+use constellation_streams::config::PollThreadConfig;
+use constellation_streams::config::StreamMulticasterConfig;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use serde::de::MapAccess;
+use serde::de::Visitor;
+use serde::ser::SerializeStruct;
 
 use crate::config::tls::TLSClientConfig;
 use crate::config::tls::TLSLoadClient;
@@ -144,16 +153,17 @@ pub struct AddrsConfig {
 ///
 ///  - `channels`: An array of [ChannelRegistryEntryConfig] structures.
 ///
-///  - `resolve`: An [AddrsConfig] structure.  This is optional, and set to the
-///    default value if not present.
+///  - `default-resolve`: An [AddrsConfig] structure.  This is optional, and set
+///    to the default value if not present.
 ///
-///  - `flows-params`: A configuration object for creating the type of traffic
-///    splitters used for managing flows. This is optional, and set to the
-///    default value if not present.
+///  - `default-flows-params`: A configuration object for creating the type of
+///    traffic splitters used for managing flows. This is optional, and set to
+///    the default value if not present.
 ///
-///  - `context-params`: A configuration object for creating the type of base
-///    [DatagramXfrm](constellation_common::net::DatagramXfrm) used to create
-///    flows.  This is optional, and set to the default value if not present.
+///  - `default-transform-params`: A configuration object for creating the type
+///    of base [DatagramXfrm](constellation_common::net::DatagramXfrm) used to
+///    create flows.  This is optional, and set to the default value if not
+///    present.
 ///
 /// ## Examples
 ///
@@ -174,48 +184,33 @@ pub struct AddrsConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename = "channel-registry")]
 #[serde(rename_all = "kebab-case")]
-pub struct ChannelRegistryConfig<
-    Channel,
-    FlowsParams: Default,
-    ContextParams: Default
-> {
+pub struct FarChannelsConfig<Channel, AuthN, Xfrm, Enc, Dec>
+where
+    Xfrm: Default {
     /// Configuration of all channels.
-    channels: Vec<ChannelRegistryEntryConfig<Channel>>,
+    channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>>,
     /// Resolver configuration.
     #[serde(default)]
-    resolve: AddrsConfig,
+    default_resolve: AddrsConfig,
+    /// Default authentication config.
+    default_session_authn: AuthN,
     /// Context creation parameters.
     #[serde(default)]
-    #[serde(rename = "context-params")]
-    ctx_params: ContextParams,
+    default_xfrm_params: Xfrm,
     /// Flows creation parameters.
     #[serde(default)]
-    flows_params: FlowsParams
-}
-
-/// Configuration parameters for stream creation for
-/// [FarChannelRegistry](crate::far::registry::FarChannelRegistry).
-///
-/// This is a configuration object used to configure the stream
-/// creation for
-/// [FarChannelRegistry](crate::far::registry::FarChannelRegistry).
-///
-/// # YAML Format
-///
-/// The YAML format has one field:
-///
-///  - `codec`: Parameters used to create the
-///    [DatagramCodec](constellation_common::codec::DatagramCodec) instances
-///    used to encode and decode messages.
-#[derive(
-    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename = "channels")]
-#[serde(rename_all = "kebab-case")]
-pub struct ChannelRegistryChannelsConfig<Codec>
-where
-    Codec: Default {
-    codec: Codec
+    default_flows_params: FlowsConfig,
+    #[serde(default)]
+    default_encoder: Enc,
+    #[serde(default)]
+    default_decoder: Dec,
+    /// Retry configuration.
+    #[serde(
+        default = "FarChannelsConfig::<Channel, AuthN, Xfrm, Enc, Dec>::default_retry_value"
+    )]
+    default_retry: Retry,
+    #[serde(default)]
+    default_flows_size_hint: Option<usize>
 }
 
 /// Entry for a single channel in the channel registry.
@@ -242,17 +237,39 @@ where
 ///   port: 7777
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename = "entry")]
+#[serde(rename = "far-channel-entry")]
 #[serde(rename_all = "kebab-case")]
-pub struct ChannelRegistryEntryConfig<Channel> {
+pub struct FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>
+where
+    Xfrm: Default {
     /// Unique name of the channel.
     id: String,
     /// Channel configuration.
     #[serde(flatten)]
     channel: Channel,
+    /// Authenticator configuration.
+    #[serde(
+        default = "FarChannelEntryConfig::<Channel, AuthN, Xfrm, Enc, Dec>::default_authn"
+    )]
+    session_authn: Option<AuthN>,
+    /// Resolver configuration.
+    #[serde(default)]
+    resolve: Option<AddrsConfig>,
+    /// Context creation parameters.
+    #[serde(default)]
+    xfrm_params: Option<Xfrm>,
+    /// Flows creation parameters.
+    #[serde(default)]
+    flows_params: Option<FlowsConfig>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
     /// Retry configuration.
     #[serde(default)]
-    retry: Retry
+    retry: Option<Retry>,
+    #[serde(default)]
+    flows_size_hint: Option<usize>
 }
 
 /// Creation parameters for
@@ -295,6 +312,17 @@ pub struct CompoundXfrmCreateParam<Unix, UDP> {
     udp: UDP
 }
 
+#[derive(
+    Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[serde(untagged)]
+pub enum CompoundNearConnectorParam {
+    TLS {
+        tls: Box<TLSParam<Option<CompoundNearConnectorParam>>>
+    }
+}
+
 /// Endpoint for
 /// [CompoundFarChannel](crate::far::compound::CompoundFarChannel)s.
 ///
@@ -320,6 +348,47 @@ pub enum CompoundFarEndpoint {
     UDP {
         /// IP address and port
         udp: IPEndpoint
+    }
+}
+
+/// Peer addresses that can occur in [CompoundFarIPChannel]s.
+#[derive(
+    Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(untagged)]
+pub enum CompoundFarIPChannelXfrmPeerAddr {
+    UDP {
+        udp: SocketAddr
+    },
+    #[cfg(feature = "socks5")]
+    SOCKS5 {
+        socks5: IPEndpoint
+    }
+}
+
+/// Peer addresses that can occur in [CompoundFarChannel]s.
+#[derive(
+    Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(untagged)]
+pub enum CompoundFarChannelXfrmPeerAddr {
+    #[cfg(feature = "unix")]
+    Unix {
+        #[serde(rename = "unix-datagram")]
+        unix: UnixSocketPath
+    },
+    IP {
+        #[serde(flatten)]
+        ip: CompoundFarIPChannelXfrmPeerAddr
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum CompoundOutboundNegotiatorParam {
+    Basic,
+    DTLS {
+        dtls: Box<DTLSOutboundParam<CompoundOutboundNegotiatorParam>>
     }
 }
 
@@ -353,15 +422,17 @@ pub enum CompoundFarIPChannelConfig {
     #[serde(rename_all = "kebab-case")]
     DTLS {
         /// DTLS session negotiation configuration.
-        dtls: DTLSFarChannelConfig<Box<Self>>
+        dtls: Box<DTLSFarChannelConfig<Self>>
     },
     /// SOCKS5 proxy channel.
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_udp: SOCKS5AssocConfig<
-            Box<CompoundNearConnectorConfig<TLSPeerConfig>>,
-            Box<CompoundFarIPChannelConfig>
+        socks5_udp: Box<
+            SOCKS5AssocConfig<
+                CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
+                CompoundFarIPChannelConfig
+            >
         >
     }
 }
@@ -523,8 +594,7 @@ pub enum CompoundFarIPChannelConfig {
 ///           addr: proxy.example.com
 ///           port: 8888
 ///       target:
-///         addr: tor.nowhere.com
-///         port: 9050
+///         addr: tor.nowhere.com:9050
 ///       auth: gssapi
 ///   auth:
 ///     username: test
@@ -532,8 +602,7 @@ pub enum CompoundFarIPChannelConfig {
 ///   socks5-udp:
 ///     proxy:
 ///       tcp:
-///         addr: proxy.example.com
-///         port: 8888
+///         addr: proxy.example.com:8888
 ///     auth: gssapi
 ///     udp:
 ///       addr: ::0
@@ -566,16 +635,36 @@ pub enum CompoundFarChannelConfig {
     #[serde(rename_all = "kebab-case")]
     DTLS {
         /// DTLS session negotiation configuration.
-        dtls: DTLSFarChannelConfig<Box<Self>>
+        dtls: Box<DTLSFarChannelConfig<Self>>
     },
     /// SOCKS5 proxy channel.
     #[serde(rename_all = "kebab-case")]
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
-        socks5_udp: SOCKS5AssocConfig<
-            Box<CompoundNearConnectorConfig<TLSPeerConfig>>,
-            Box<CompoundFarIPChannelConfig>
+        socks5_udp: Box<
+            SOCKS5AssocConfig<
+                CompoundResolvingNearConnectorConfig<TLSPeerConfig>,
+                CompoundFarIPChannelConfig
+            >
         >
+    }
+}
+
+#[derive(
+    Clone, Debug, Eq, Deserialize, Hash, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(untagged)]
+pub enum CompoundNearEndpoint {
+    /// Unix socket address.
+    #[serde(rename_all = "kebab-case")]
+    Unix {
+        /// Path to the Unix socket.
+        unix_stream: PathBuf
+    },
+    /// TCP endpoint.
+    TCP {
+        /// IP address and port
+        tcp: IPEndpoint
     }
 }
 
@@ -701,8 +790,8 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 /// - `unix-stream`: Contains a [UnixNearConnectorConfig], and creates a
 ///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
 ///
-/// - `tcp`: Contains a [TCPNearConnectorConfig], and creates a
-///   [TCPNearConnector](crate::near::tcp::TCPNearConnector).
+/// - `tcp`: Contains a [TCPResolvingNearConnectorConfig], and creates a
+///   [TCPResolvingNearConnector](crate::near::tcp::TCPResolvingNearConnector).
 ///
 /// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
 ///   [TLSNearConnector](crate::near::tls::TLSNearConnector).  The underlying
@@ -747,9 +836,7 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 ///     proxy:
 ///       unix-stream:
 ///         path: /var/run/proxy/proxy.sock
-///     target:
-///       addr: en.wikipedia.org
-///       port: 443
+///     target: en.wikipedia.org:443
 /// ```
 ///
 /// ### TLS Over Secured Remote SOCKS5
@@ -827,7 +914,9 @@ pub enum CompoundNearAcceptorConfig<TLS: TLSLoadServer> {
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
-pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
+pub enum CompoundResolvingNearConnectorConfig<TLS>
+where
+    TLS: TLSLoadClient {
     /// UNIX socket channel.
     ///
     /// The service will run as a separate process, and will
@@ -835,7 +924,7 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     #[serde(rename_all = "kebab-case")]
     Unix {
         /// Unix socket configuration.
-        unix_stream: UnixNearConnectorConfig
+        unix_stream: UnixNearChannelConfig
     },
     /// TCP Channel.
     ///
@@ -843,7 +932,7 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     /// TCP connection.
     TCP {
         /// TCP socket configuration.
-        tcp: TCPNearConnectorConfig
+        tcp: TCPResolvingNearConnectorConfig
     },
     /// TLS channel.
     ///
@@ -859,6 +948,363 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
     SOCKS5 {
         /// SOCKS5 session negotiation configuration.
         socks5_tcp: SOCKS5ConnectConfig<Box<Self>>
+    }
+}
+
+/// Compound client-side near-link partial configuration.
+///
+/// This represents the configuration for
+/// [CompoundNearConnector](crate::near::compound::CompoundNearConnector)s.
+/// These allow any of the client-side near-link channel types
+/// provided by this package to be configured as a near-link
+/// connector.  This includes the following channel types:
+///
+/// - [UnixNearConnector](crate::near::unix::UnixNearConnector)
+/// - [TCPNearConnector](crate::near::tcp::TCPNearConnector)
+/// - [TLSNearConnector](crate::near::tls::TLSNearConnector)
+/// - [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector)
+///
+/// Compound near-links can also be configured recursively, allowing
+/// for arbitrarily-complex nested channel configurations.
+///
+/// # YAML Format
+///
+/// The YAML format has four options, each corresponding to the four
+/// different channel types:
+///
+/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and creates a
+///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
+///
+/// - `tcp`: Contains a [TCPResolvingNearConnectorPartialConfig], and creates a
+///   [TCPResolvingNearConnector](crate::near::tcp::TCPResolvingNearConnector).
+///
+/// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
+///   [TLSNearConnector](crate::near::tls::TLSNearConnector).  The underlying
+///   channel configuration of this structure is another instance of
+///   `CompoundNearConnectorPartialConfig`.
+///
+/// - `socks5-tcp`: Contains a [SOCKS5ConnectConfig], and creates a
+///   [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector). The
+///   channel configuration under the `proxy` of this structure is another
+///   instance of `CompoundNearConnectorPartialConfig`.
+///
+/// ## Examples
+///
+/// The following are examples of different possible configurations.
+/// Note that because of the recursive nature of compound near-link
+/// configurations, there are many more possibilities.
+///
+/// ### TLS Over Local SOCKS5
+///
+/// The following configuration shows a TLS connection going through a
+/// SOCKS5 proxy, which is reached via a Unix socket:
+///
+/// ```yaml
+/// tls:
+///   cipher-suites:
+///     - TLS_AES_256_GCM_SHA384
+///   key-exchange-groups:
+///     - P-521
+///     - P-384
+///   signature-algorithms:
+///     - ecdsa_secp521r1_sha512
+///     - ecdsa_secp384r1_sha384
+///   client-cert: /etc/ssl/certs/client-cert.pem
+///   client-cert-chain: /etc/ssl/certs/client-chain.pem
+///   client-key: /etc/ssl/private/client-key.pem
+///   trust-root:
+///     root-certs:
+///       - /etc/ssl/certs/server-ca-cert.pem
+///     crls:
+///       - /etc/ssl/crls/server-ca-crl.pem
+///   socks5-tcp:
+///     proxy:
+///       unix-stream:
+///         path: /var/run/proxy/proxy.sock
+/// ```
+///
+/// ### TLS Over Secured Remote SOCKS5
+///
+/// The following configuration shows a TLS connection going through a
+/// SOCKS5 proxy, which is reached via a second TLS connection over TCP:
+///
+/// ```yaml
+/// tls:
+///   cipher-suites:
+///     - TLS_AES_256_GCM_SHA384
+///   key-exchange-groups:
+///     - P-521
+///     - P-384
+///   signature-algorithms:
+///     - ecdsa_secp521r1_sha512
+///     - ecdsa_secp384r1_sha384
+///   client-cert: /etc/ssl/certs/client-cert.pem
+///   client-cert-chain: /etc/ssl/certs/client-chain.pem
+///   client-key: /etc/ssl/private/client-key.pem
+///   trust-root:
+///     dirs:
+///       - /etc/ssl/CA/
+///   socks5:
+///     proxy:
+///       tls:
+///         cipher-suites:
+///           - TLS_AES_256_GCM_SHA384
+///         key-exchange-groups:
+///           - P-521
+///           - P-384
+///         signature-algorithms:
+///           - ecdsa_secp521r1_sha512
+///           - ecdsa_secp384r1_sha384
+///         verify-endpoint: test.example.com
+///         trust-root:
+///           root-certs:
+///             - /etc/ssl/certs/proxy-ca-cert.pem
+///           crls:
+///             - /etc/ssl/crls/proxy-ca-crl.pem
+///         tcp:
+///           addr: proxy.example.com
+///           port: 9050
+/// ```
+///
+/// ### Double SOCKS5 Proxies
+///
+/// The following configuration shows a connection going through *two*
+/// SOCKS5 proxies (no TLS configurations are included here), the
+/// first layer being a GSSAPI-authenticated proxy at
+/// `proxy.example.com`, and the second being a password-authenticated
+/// proxy at `tor.nowhere.com`:
+///
+/// ```yaml
+/// socks5:
+///   proxy:
+///     socks5:
+///       proxy:
+///         tcp:
+///           addr: proxy.example.com
+///           port: 8888
+///       target:
+///         addr: tor.nowhere.com
+///         port: 9050
+///       auth: gssapi
+///   auth:
+///     username: test
+///     password: abc123
+/// ```
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize)]
+#[serde(untagged)]
+pub enum CompoundResolvingNearConnectorPartialConfig<TLS: TLSLoadClient> {
+    /// UNIX socket channel.
+    ///
+    /// The service will run as a separate process, and will
+    /// communicate via a UNIX domain socket.
+    #[serde(rename_all = "kebab-case")]
+    Unix {
+        /// Unix socket configuration.
+        unix_stream: Option<UnixNearConnectorPartialConfig>
+    },
+    /// TCP Channel.
+    ///
+    /// The service will run separately, and will communicate via a
+    /// TCP connection.
+    TCP {
+        /// TCP socket configuration.
+        tcp: Option<TCPResolvingNearConnectorPartialConfig>
+    },
+    /// TLS channel.
+    ///
+    /// The service will run separately, and will communicate via a
+    /// TLS connection.
+    #[serde(rename_all = "kebab-case")]
+    TLS {
+        /// TLS session negotiation configuration.
+        tls: TLSChannelConfig<TLS, Box<Self>>
+    },
+    /// SOCKS5 proxy channel.
+    #[serde(rename_all = "kebab-case")]
+    SOCKS5 {
+        /// SOCKS5 session negotiation configuration.
+        socks5_tcp: SOCKS5ConnectPartialConfig<
+            Box<CompoundResolvingNearConnectorConfig<TLS>>
+        >
+    }
+}
+
+/// Compound client-side near-link partial configuration.
+///
+/// This represents the configuration for
+/// [CompoundNearConnector](crate::near::compound::CompoundNearConnector)s.
+/// These allow any of the client-side near-link channel types
+/// provided by this package to be configured as a near-link
+/// connector.  This includes the following channel types:
+///
+/// - [UnixNearConnector](crate::near::unix::UnixNearConnector)
+/// - [TCPNearConnector](crate::near::tcp::TCPNearConnector)
+/// - [TLSNearConnector](crate::near::tls::TLSNearConnector)
+/// - [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector)
+///
+/// Compound near-links can also be configured recursively, allowing
+/// for arbitrarily-complex nested channel configurations.
+///
+/// # YAML Format
+///
+/// The YAML format has four options, each corresponding to the four
+/// different channel types:
+///
+/// - `unix-stream`: Contains a [UnixNearConnectorPartialConfig], and creates a
+///   [UnixNearConnector](crate::near::unix::UnixNearConnector).
+///
+/// - `tcp`: Contains a [TCPNearConnectorPartialConfig], and creates a
+///   [TCPNearConnector](crate::near::tcp::TCPNearConnector).
+///
+/// - `tls`: Contains a [TLSNearConnectorConfig], and creates a
+///   [TLSNearConnector](crate::near::tls::TLSNearConnector).  The underlying
+///   channel configuration of this structure is another instance of
+///   `CompoundNearConnectorPartialConfig`.
+///
+/// - `socks5-tcp`: Contains a [SOCKS5ConnectConfig], and creates a
+///   [SOCKS5NearConnector](crate::near::socks5::SOCKS5NearConnector). The
+///   channel configuration under the `proxy` of this structure is another
+///   instance of `CompoundNearConnectorPartialConfig`.
+///
+/// ## Examples
+///
+/// The following are examples of different possible configurations.
+/// Note that because of the recursive nature of compound near-link
+/// configurations, there are many more possibilities.
+///
+/// ### TLS Over Local SOCKS5
+///
+/// The following configuration shows a TLS connection going through a
+/// SOCKS5 proxy, which is reached via a Unix socket:
+///
+/// ```yaml
+/// tls:
+///   cipher-suites:
+///     - TLS_AES_256_GCM_SHA384
+///   key-exchange-groups:
+///     - P-521
+///     - P-384
+///   signature-algorithms:
+///     - ecdsa_secp521r1_sha512
+///     - ecdsa_secp384r1_sha384
+///   client-cert: /etc/ssl/certs/client-cert.pem
+///   client-cert-chain: /etc/ssl/certs/client-chain.pem
+///   client-key: /etc/ssl/private/client-key.pem
+///   trust-root:
+///     root-certs:
+///       - /etc/ssl/certs/server-ca-cert.pem
+///     crls:
+///       - /etc/ssl/crls/server-ca-crl.pem
+///   socks5-tcp:
+///     proxy:
+///       unix-stream:
+///         path: /var/run/proxy/proxy.sock
+/// ```
+///
+/// ### TLS Over Secured Remote SOCKS5
+///
+/// The following configuration shows a TLS connection going through a
+/// SOCKS5 proxy, which is reached via a second TLS connection over TCP:
+///
+/// ```yaml
+/// tls:
+///   cipher-suites:
+///     - TLS_AES_256_GCM_SHA384
+///   key-exchange-groups:
+///     - P-521
+///     - P-384
+///   signature-algorithms:
+///     - ecdsa_secp521r1_sha512
+///     - ecdsa_secp384r1_sha384
+///   client-cert: /etc/ssl/certs/client-cert.pem
+///   client-cert-chain: /etc/ssl/certs/client-chain.pem
+///   client-key: /etc/ssl/private/client-key.pem
+///   trust-root:
+///     dirs:
+///       - /etc/ssl/CA/
+///   socks5:
+///     proxy:
+///       tls:
+///         cipher-suites:
+///           - TLS_AES_256_GCM_SHA384
+///         key-exchange-groups:
+///           - P-521
+///           - P-384
+///         signature-algorithms:
+///           - ecdsa_secp521r1_sha512
+///           - ecdsa_secp384r1_sha384
+///         verify-endpoint: test.example.com
+///         trust-root:
+///           root-certs:
+///             - /etc/ssl/certs/proxy-ca-cert.pem
+///           crls:
+///             - /etc/ssl/crls/proxy-ca-crl.pem
+///         tcp:
+///           addr: 127.0.0.1
+///           port: 9050
+/// ```
+///
+/// ### Double SOCKS5 Proxies
+///
+/// The following configuration shows a connection going through *two*
+/// SOCKS5 proxies (no TLS configurations are included here), the
+/// first layer being a GSSAPI-authenticated proxy at
+/// `proxy.example.com`, and the second being a password-authenticated
+/// proxy at `tor.nowhere.com`:
+///
+/// ```yaml
+/// socks5:
+///   proxy:
+///     socks5:
+///       proxy:
+///         tcp:
+///           addr: proxy.example.com
+///           port: 8888
+///       target:
+///         addr: tor.nowhere.com
+///         port: 9050
+///       auth: gssapi
+///   auth:
+///     username: test
+///     password: abc123
+/// ```
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize)]
+#[serde(untagged)]
+pub enum CompoundNearConnectorPartialConfig<TLS: TLSLoadClient> {
+    /// UNIX socket channel.
+    ///
+    /// The service will run as a separate process, and will
+    /// communicate via a UNIX domain socket.
+    #[serde(rename_all = "kebab-case")]
+    Unix {
+        /// Unix socket configuration.
+        unix_stream: Option<UnixNearConnectorPartialConfig>
+    },
+    /// TCP Channel.
+    ///
+    /// The service will run separately, and will communicate via a
+    /// TCP connection.
+    #[serde(rename_all = "kebab-case")]
+    TCP {
+        /// TCP socket configuration.
+        tcp: Option<TCPNearConnectorPartialConfig>
+    },
+    /// TLS channel.
+    ///
+    /// The service will run separately, and will communicate via a
+    /// TLS connection.
+    #[serde(rename_all = "kebab-case")]
+    TLS {
+        /// TLS session negotiation configuration.
+        tls: TLSChannelConfig<TLS, Box<Self>>
+    },
+    /// SOCKS5 proxy channel.
+    #[serde(rename_all = "kebab-case")]
+    SOCKS5 {
+        /// SOCKS5 session negotiation configuration.
+        socks5_tcp: SOCKS5ConnectPartialConfig<
+            Box<CompoundResolvingNearConnectorConfig<TLS>>
+        >
     }
 }
 
@@ -929,10 +1375,167 @@ pub enum CompoundNearConnectorConfig<TLS: TLSLoadClient> {
 #[serde(rename = "dtls")]
 #[serde(rename_all = "kebab-case")]
 pub struct DTLSFarChannelConfig<Inner> {
-    #[serde(default)]
-    retry: Retry,
     #[serde(flatten)]
     tls: TLSChannelConfig<TLSPeerConfig, Inner>
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename = "dtls-param")]
+#[serde(rename_all = "kebab-case")]
+pub struct DTLSOutboundParam<Inner> {
+    verify_endpoint: IPEndpointAddr,
+    #[serde(default)]
+    inner: Inner
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "dtls")]
+#[serde(rename_all = "kebab-case")]
+pub struct FlowsConfig {
+    msg_size: usize,
+    #[serde(default)]
+    buf_size: Option<usize>,
+    #[serde(default)]
+    num_flows: Option<usize>,
+    #[serde(default)]
+    num_negotiations: Option<usize>
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-outbound-entry")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default {
+    /// Channel ID.
+    id: String,
+    /// Outbound connector configuration.
+    #[serde(flatten)]
+    connect: Out,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelOutboundEntryConfig::<Out, AuthN, Enc, Dec>::default_authn"
+    )]
+    authn: Option<AuthN>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
+    /// Retry configuration for connections.
+    #[serde(default)]
+    retry: Option<Retry>,
+    /// Size hint for number of sessions.
+    #[serde(default)]
+    num_sessions: Option<usize>
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-inbound-entry")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelInboundEntryConfig<In, AuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default {
+    /// Channel ID.
+    id: String,
+    /// Inbound acceptor configuration.
+    #[serde(flatten)]
+    listen: In,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelInboundEntryConfig::<In, AuthN, Enc, Dec>::default_authn"
+    )]
+    authn: Option<AuthN>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
+    /// Retry configuration for connections.
+    #[serde(default)]
+    retry: Option<Retry>,
+    /// Size hint for number of sessions.
+    #[serde(default)]
+    num_sessions: Option<usize>
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-duplex-entry")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default {
+    /// Channel ID.
+    id: String,
+    /// Inbound acceptor configuration.
+    listen: In,
+    /// Outbound connector configuration.
+    connect: Out,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN, Enc, Dec>::default_in_authn"
+    )]
+    inbound_authn: Option<InAuthN>,
+    /// Entry-specific authenticator configuration.
+    #[serde(
+        default = "NearChannelDuplexEntryConfig::<In, Out, InAuthN, OutAuthN, Enc, Dec>::default_out_authn"
+    )]
+    outbound_authn: Option<OutAuthN>,
+    #[serde(default)]
+    encoder: Option<Enc>,
+    #[serde(default)]
+    decoder: Option<Dec>,
+    /// Retry configuration for connections.
+    #[serde(default)]
+    retry: Option<Retry>,
+    /// Size hint for number of sessions.
+    #[serde(default)]
+    num_sessions: Option<usize>
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-entry")]
+#[serde(untagged)]
+pub enum NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default {
+    Inbound {
+        inbound: NearChannelInboundEntryConfig<In, InAuthN, Enc, Dec>
+    },
+    Outbound {
+        outbound: NearChannelOutboundEntryConfig<Out, OutAuthN, Enc, Dec>
+    },
+    Duplex {
+        duplex:
+            NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "near-channels-config")]
+#[serde(rename_all = "kebab-case")]
+pub struct NearChannelsConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default {
+    /// Configuration of all channels.
+    channels: Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
+    /// Default authentication configuration.
+    default_inbound_authn: InAuthN,
+    default_outbound_authn: OutAuthN,
+    #[serde(default)]
+    default_encoder: Enc,
+    #[serde(default)]
+    default_decoder: Dec,
+    /// Default retry configuration.
+    #[serde(
+        default = "NearChannelsConfig::<In, Out, InAuthN, OutAuthN, Enc, Dec>::default_retry_value"
+    )]
+    default_retry: Retry,
+    #[serde(default)]
+    default_num_sessions: Option<usize>
 }
 
 /// Name resolution configuration.
@@ -1320,11 +1923,8 @@ pub struct SOCKS5AssocConfig<Proxy, Datagram> {
 ///       factor: 400
 ///       exp-base: 2.0
 ///       exp-factor: 2.0
-///   addr: proxy.example.com
-///   port: 9050
-/// target:
-///   addr: en.wikipedia.org
-///   port: 443
+///   addr: proxy.example.com:9050
+/// target: en.wikipedia.org:443
 /// password:
 ///   username: user
 ///   password: abc123
@@ -1337,11 +1937,8 @@ pub struct SOCKS5AssocConfig<Proxy, Datagram> {
 ///
 /// ```yaml
 /// proxy:
-///   addr: proxy.example.com
-///   port: 9050
-/// target:
-///   addr: en.wikipedia.org
-///   port: 443
+///   addr: proxy.example.com:9050
+/// target: en.wikipedia.org:443
 /// auth:
 ///   password:
 ///     username: user
@@ -1356,6 +1953,17 @@ pub struct SOCKS5ConnectConfig<Proxy> {
     auth: SOCKS5AuthNConfig,
     /// Endpoint to of the proxied connection.
     target: IPEndpoint,
+    /// Connection to the SOCKS5 proxy itself.
+    proxy: Proxy
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[serde(rename = "socks5")]
+#[serde(rename_all = "kebab-case")]
+pub struct SOCKS5ConnectPartialConfig<Proxy> {
+    /// Authentication mechanism to use.
+    #[serde(default)]
+    auth: SOCKS5AuthNConfig,
     /// Connection to the SOCKS5 proxy itself.
     proxy: Proxy
 }
@@ -1418,6 +2026,8 @@ pub struct ThreadedNSNameCachesConfig {
     /// Interval at which the renewer thread will periodically try to
     /// refresh names.
     #[serde(default = "ThreadedNSNameCachesConfig::default_renewal")]
+    #[serde(deserialize_with = "Retry::deserialize_time")]
+    #[serde(serialize_with = "Retry::serialize_time")]
     renewal: Duration,
     /// Retry configuration for the renewer thread.
     #[serde(default)]
@@ -1437,6 +2047,7 @@ pub struct ThreadedNSNameCachesConfig {
 #[serde(rename_all = "kebab-case")]
 pub struct TCPNearChannelConfigUnsafe {
     /// Allow IP addresses as credentials on this channel.
+    #[serde(rename = "allow-ip-addr-creds")]
     unsafe_allow_ip_addr_creds: bool
 }
 
@@ -1452,22 +2063,20 @@ pub struct TCPNearChannelConfigUnsafe {
 /// - `addr`: The IP address at which to listen.  Note that this cannot be a
 ///   domain name.
 ///
-/// - `port`: The port on which to listen.
+/// - `unsafe`: Unsafe options.
 ///
 /// ## Examples
 ///
 /// The following is an example of the YAML format:
 ///
 /// ```yaml
-/// addr: 0.0.0.0
-/// port: 5004
+/// addr: 0.0.0.0:5004
 /// ```
 ///
 /// The following is an IPv6-based configuration:
 ///
 /// ```yaml
-/// addr: ::0
-/// port: 5005
+/// addr: '[::0]:5005'
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1475,8 +2084,7 @@ pub struct TCPNearAcceptorConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: TCPNearChannelConfigUnsafe,
-    addr: IpAddr,
-    port: u16
+    addr: SocketAddr
 }
 
 /// TCP socket near-link connector configuration.
@@ -1510,8 +2118,7 @@ pub struct TCPNearAcceptorConfig {
 /// represented:
 ///
 /// ```yaml
-/// addr: test.example.com
-/// port: 5006
+/// addr: test.example.com:5006
 /// retry:
 ///   factor: 100
 ///   exp-base: 2.0
@@ -1536,23 +2143,49 @@ pub struct TCPNearAcceptorConfig {
 /// The following is a minimal configuration:
 ///
 /// ```yaml
-/// addr: test.example.com
-/// port: 5007
+/// addr: test.example.com:5007
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct TCPNearConnectorConfig {
+pub struct TCPResolvingNearConnectorConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: TCPNearChannelConfigUnsafe,
-    #[serde(flatten)]
-    endpoint: IPEndpoint,
+    addr: IPEndpoint,
     /// Retry spec.
     #[serde(default)]
     retry: Retry,
     /// DNS resolution configuration.
     #[serde(default)]
     resolve: AddrsConfig
+}
+
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[serde(default)]
+pub struct TCPResolvingNearConnectorPartialConfig {
+    #[serde(rename = "unsafe")]
+    #[serde(default)]
+    unsafe_opts: TCPNearChannelConfigUnsafe,
+    /// Retry spec.
+    #[serde(default)]
+    retry: Retry,
+    /// DNS resolution configuration.
+    #[serde(default)]
+    resolve: AddrsConfig
+}
+
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[serde(default)]
+pub struct TCPNearConnectorPartialConfig {
+    #[serde(rename = "unsafe")]
+    #[serde(default)]
+    unsafe_opts: TCPNearChannelConfigUnsafe
 }
 
 /// TLS near-link channel configuration meta-type.
@@ -1569,7 +2202,19 @@ pub struct TLSChannelConfig<TLS, Underlying> {
     tls: TLS,
     #[serde(flatten)]
     /// Configuration for the underlying channel.
-    underlying: Underlying
+    underlying: Underlying,
+    /// Retry configuration for shutdown negotiations.
+    #[serde(
+        default = "TLSChannelConfig::<TLS, Underlying>::default_shutdown_retry"
+    )]
+    shutdown_retry: Retry,
+    /// Maximum duration of shutdown negotiations.
+    #[serde(
+        default = "TLSChannelConfig::<TLS, Underlying>::default_shutdown_timeout"
+    )]
+    #[serde(deserialize_with = "Retry::deserialize_time")]
+    #[serde(serialize_with = "Retry::serialize_time")]
+    shutdown_timeout: Duration
 }
 
 /// TLS server-side near-link channel configuration.
@@ -1712,6 +2357,27 @@ pub type TLSNearAcceptorConfig<Endpoint> =
 pub type TLSNearConnectorConfig<Endpoint> =
     TLSChannelConfig<TLSClientConfig, Endpoint>;
 
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[serde(default)]
+pub struct TLSParam<Inner> {
+    #[serde(default)]
+    verify_endpoint: Option<IPEndpointAddr>,
+    #[serde(default)]
+    #[serde(flatten)]
+    inner: Inner
+}
+
 /// Unsafe options for UDP far-link channels.
 ///
 /// # YAML Format
@@ -1725,6 +2391,7 @@ pub type TLSNearConnectorConfig<Endpoint> =
 #[serde(rename_all = "kebab-case")]
 pub struct UDPFarChannelConfigUnsafe {
     /// Allow IP addresses as credentials on this channel.
+    #[serde(rename = "allow-ip-addr-creds")]
     unsafe_allow_ip_addr_creds: bool
 }
 
@@ -1764,8 +2431,7 @@ pub struct UDPFarChannelConfig {
     #[serde(rename = "unsafe")]
     #[serde(default)]
     unsafe_opts: UDPFarChannelConfigUnsafe,
-    addr: IpAddr,
-    port: u16
+    addr: SocketAddr
 }
 
 /// Unix socket far-link configuration.
@@ -1822,63 +2488,423 @@ pub struct UnixNearChannelConfig {
     path: PathBuf
 }
 
-/// Unix socket near-link client-side configuration.
-///
-/// This holds configuration information for near-link clients
-/// communicating over Unix domain sockets.
-///
-/// # YAML Format
-///
-/// The YAML format has two fields, one of which is mandatory:
-///
-/// - A [UnixNearChannelConfig] flattened, so its fields will be directly
-///   incorporated.  These are:
-///
-///   - `path`: The path at which the Unix socket exists in the filesystem.
-///
-/// - `retry`: A [Retry] configuration, describing the retry delay policy when
-///   connection attempts fail.  The default values will be used if this field
-///   is not present.
-///
-/// ## Examples
-///
-/// The following are example YAML configurations.
-///
-/// ### Full Specification
-///
-/// The following is an example of the YAML format with all fields
-/// present:
-///
-/// ```yaml
-/// path: /var/run/test/test.sock
-/// retry:
-///   factor: 100
-///   exp-base: 2.0
-///   exp-factor: 1.0
-///   exp-rounds-cap: 20
-///   linear-factor: 1.0
-///   linear-rounds-cap: 50
-///   max-random: 100
-///   addend: 50
-/// ```
-///
-/// ### Minimal Specification
-///
-/// The following is a minimal YAML format:
-///
-/// ```yaml
-/// path: /var/run/test/test.sock
-/// ```
-#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Serialize)]
-#[serde(rename = "unix-connector")]
+#[derive(
+    Clone, Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename = "unix-connector-partial")]
 #[serde(rename_all = "kebab-case")]
-pub struct UnixNearConnectorConfig {
-    /// Channel configuration.
-    #[serde(flatten)]
-    channel: UnixNearChannelConfig,
-    /// Retry configuration.
-    #[serde(default)]
-    retry: Retry
+#[serde(default)]
+pub struct UnixNearConnectorPartialConfig {
+    #[serde(skip)]
+    placeholder: ()
+}
+
+pub type CompoundFarDispatchThreadConfig<AuthN, Unix, UDP, Enc, Dec, Mode> =
+    DispatchThreadConfig<
+        CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
+        Mode
+    >;
+
+pub type CompoundNearDispatchThreadConfig<InAuthN, OutAuthN, Enc, Dec, Mode> =
+    DispatchThreadConfig<
+        CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
+        Mode
+    >;
+
+pub type CompoundFarPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    Stream,
+    MsgAuthN
+> = PollThreadConfig<
+    CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec>,
+    Mode,
+    Stream,
+    MsgAuthN
+>;
+
+pub type CompoundFarSelectorPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundFarPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    CompoundFarPartyConfig<Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
+
+pub type CompoundFarMulticastPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    PartyName,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundFarPollThreadConfig<
+    AuthN,
+    Unix,
+    UDP,
+    Enc,
+    Dec,
+    Mode,
+    CompoundFarMulticasterConfig<PartyName, Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
+
+pub type CompoundNearPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    Stream,
+    MsgAuthN
+> = PollThreadConfig<
+    CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec>,
+    Mode,
+    Stream,
+    MsgAuthN
+>;
+
+pub type CompoundNearSelectorPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundNearPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    CompoundNearPartyConfig<Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
+pub type CompoundNearMulticastPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    PartyName,
+    Resolver,
+    Epochs,
+    ChanName,
+    MsgAuthN
+> = CompoundNearPollThreadConfig<
+    InAuthN,
+    OutAuthN,
+    Enc,
+    Dec,
+    Mode,
+    CompoundNearMulticasterConfig<PartyName, Resolver, Epochs, ChanName>,
+    MsgAuthN
+>;
+
+pub type CompoundFarChannelsConfig<AuthN, Unix, UDP, Enc, Dec> =
+    FarChannelsConfig<
+        CompoundFarChannelConfig,
+        AuthN,
+        CompoundXfrmCreateParam<Unix, UDP>,
+        Enc,
+        Dec
+    >;
+
+pub type CompoundNearChannelsConfig<InAuthN, OutAuthN, Enc, Dec> =
+    NearChannelsConfig<
+        CompoundNearAcceptorConfig<TLSServerConfig>,
+        CompoundNearConnectorPartialConfig<TLSClientConfig>,
+        InAuthN,
+        OutAuthN,
+        Enc,
+        Dec
+    >;
+
+pub type CompoundFarPartyConfig<Resolver, Epochs, ChanName> = PartyConfig<
+    Resolver,
+    Epochs,
+    ChanName,
+    CompoundOutboundNegotiatorParam,
+    CompoundFarEndpoint
+>;
+
+pub type CompoundNearPartyConfig<Resolver, Epochs, ChanName> = PartyConfig<
+    Resolver,
+    Epochs,
+    ChanName,
+    Option<CompoundNearConnectorParam>,
+    CompoundNearEndpoint
+>;
+
+pub type CompoundNearMulticasterConfig<PartyName, Resolver, Epochs, ChanName> =
+    StreamMulticasterConfig<
+        PartyName,
+        CompoundNearPartyConfig<Resolver, Epochs, ChanName>
+    >;
+
+pub type CompoundFarMulticasterConfig<PartyName, Resolver, Epochs, ChanName> =
+    StreamMulticasterConfig<
+        PartyName,
+        CompoundFarPartyConfig<Resolver, Epochs, ChanName>
+    >;
+
+#[derive(Clone)]
+struct CompoundNearConnectorPartialConfigVisitor<TLS>
+where
+    TLS: TLSLoadClient {
+    tls: PhantomData<TLS>
+}
+
+#[derive(Clone)]
+struct CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
+where
+    TLS: TLSLoadClient {
+    tls: PhantomData<TLS>
+}
+
+#[derive(Clone, Default)]
+struct CompoundNearChannelVariantVisitor;
+
+enum CompoundNearChannelVariant {
+    Unix,
+    TCP,
+    TLS,
+    SOCKS5
+}
+
+const COMPOUND_NEAR_CHANNEL_TYPES: &[&str] =
+    &["unix-stream", "tcp", "tls", "socks5-tcp"];
+
+impl<TLS> Default for CompoundNearConnectorPartialConfigVisitor<TLS>
+where
+    TLS: TLSLoadClient
+{
+    #[inline]
+    fn default() -> Self {
+        CompoundNearConnectorPartialConfigVisitor { tls: PhantomData }
+    }
+}
+
+impl<TLS> Default for CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
+where
+    TLS: TLSLoadClient
+{
+    #[inline]
+    fn default() -> Self {
+        CompoundResolvingNearConnectorPartialConfigVisitor { tls: PhantomData }
+    }
+}
+
+impl Default for CompoundOutboundNegotiatorParam {
+    #[inline]
+    fn default() -> Self {
+        CompoundOutboundNegotiatorParam::Basic
+    }
+}
+
+impl<'de> Visitor<'de> for CompoundNearChannelVariantVisitor {
+    type Value = CompoundNearChannelVariant;
+
+    fn expecting(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "unix-stream, tcp, tls, or socks5-tcp")
+    }
+
+    fn visit_str<E>(
+        self,
+        s: &str
+    ) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error {
+        match s {
+            "unix-stream" => Ok(CompoundNearChannelVariant::Unix),
+            "tcp" => Ok(CompoundNearChannelVariant::TCP),
+            "tls" => Ok(CompoundNearChannelVariant::TLS),
+            "socks5-tcp" => Ok(CompoundNearChannelVariant::SOCKS5),
+            _ => Err(serde::de::Error::unknown_variant(
+                s,
+                COMPOUND_NEAR_CHANNEL_TYPES
+            ))
+        }
+    }
+
+    #[inline]
+    fn visit_borrowed_str<E>(
+        self,
+        s: &'de str
+    ) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error {
+        self.visit_str(s)
+    }
+
+    #[inline]
+    fn visit_string<E>(
+        self,
+        s: String
+    ) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error {
+        self.visit_str(s.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompoundNearChannelVariant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        deserializer.deserialize_identifier(CompoundNearChannelVariantVisitor)
+    }
+}
+
+impl<'de, TLS> Visitor<'de> for CompoundNearConnectorPartialConfigVisitor<TLS>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
+{
+    type Value = CompoundNearConnectorPartialConfig<TLS>;
+
+    fn expecting(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "unix-stream, tcp, tls, or socks5-tcp and configurations")
+    }
+
+    fn visit_map<V>(
+        self,
+        mut map: V
+    ) -> Result<Self::Value, V::Error>
+    where
+        V: MapAccess<'de> {
+        match map.next_key()? {
+            Some(CompoundNearChannelVariant::Unix) => {
+                Ok(CompoundNearConnectorPartialConfig::Unix {
+                    unix_stream: map.next_value()?
+                })
+            }
+            Some(CompoundNearChannelVariant::TCP) => {
+                Ok(CompoundNearConnectorPartialConfig::TCP {
+                    tcp: map.next_value()?
+                })
+            }
+            Some(CompoundNearChannelVariant::TLS) => {
+                Ok(CompoundNearConnectorPartialConfig::TLS {
+                    tls: map.next_value()?
+                })
+            }
+            Some(CompoundNearChannelVariant::SOCKS5) => {
+                Ok(CompoundNearConnectorPartialConfig::SOCKS5 {
+                    socks5_tcp: map.next_value()?
+                })
+            }
+            None => Err(serde::de::Error::invalid_length(0, &self))
+        }
+    }
+}
+
+impl<'de, TLS> Deserialize<'de> for CompoundNearConnectorPartialConfig<TLS>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        deserializer.deserialize_struct(
+            "compound-near-connector-partial",
+            COMPOUND_NEAR_CHANNEL_TYPES,
+            CompoundNearConnectorPartialConfigVisitor::default()
+        )
+    }
+}
+
+impl<'de, TLS> Visitor<'de>
+    for CompoundResolvingNearConnectorPartialConfigVisitor<TLS>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
+{
+    type Value = CompoundResolvingNearConnectorPartialConfig<TLS>;
+
+    fn expecting(
+        &self,
+        f: &mut Formatter<'_>
+    ) -> Result<(), Error> {
+        write!(f, "unix-stream, tcp, tls, or socks5-tcp and configurations")
+    }
+
+    fn visit_map<V>(
+        self,
+        mut map: V
+    ) -> Result<Self::Value, V::Error>
+    where
+        V: MapAccess<'de> {
+        match map.next_key()? {
+            Some(CompoundNearChannelVariant::Unix) => {
+                Ok(CompoundResolvingNearConnectorPartialConfig::Unix {
+                    unix_stream: map.next_value()?
+                })
+            }
+            Some(CompoundNearChannelVariant::TCP) => {
+                Ok(CompoundResolvingNearConnectorPartialConfig::TCP {
+                    tcp: map.next_value()?
+                })
+            }
+            Some(CompoundNearChannelVariant::TLS) => {
+                Ok(CompoundResolvingNearConnectorPartialConfig::TLS {
+                    tls: map.next_value()?
+                })
+            }
+            Some(CompoundNearChannelVariant::SOCKS5) => {
+                Ok(CompoundResolvingNearConnectorPartialConfig::SOCKS5 {
+                    socks5_tcp: map.next_value()?
+                })
+            }
+            None => Err(serde::de::Error::invalid_length(0, &self))
+        }
+    }
+}
+
+impl<'de, TLS> Deserialize<'de>
+    for CompoundResolvingNearConnectorPartialConfig<TLS>
+where
+    TLS: TLSLoadClient + Deserialize<'de>
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        deserializer.deserialize_struct(
+            "compound-near-resolving-connector-partial",
+            COMPOUND_NEAR_CHANNEL_TYPES,
+            CompoundResolvingNearConnectorPartialConfigVisitor::default()
+        )
+    }
 }
 
 impl AddrsConfig {
@@ -1905,7 +2931,7 @@ impl AddrsConfig {
     ///     AddrsConfig::new(vec![ AddrKind::IPv6 ],
     ///                      ResolverConfig::new(1000 * 60 * 60,
     ///                                          Retry::default())),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -1938,7 +2964,11 @@ impl AddrsConfig {
     }
 }
 
-impl<Channel> ChannelRegistryEntryConfig<Channel> {
+impl<Channel, AuthN, Xfrm, Enc, Dec>
+    FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>
+where
+    Xfrm: Default
+{
     /// Create a new `ChannelRegistryEntryConfig` from its components.
     ///
     /// The arguments of this function correspond to similarly-named
@@ -1947,19 +2977,38 @@ impl<Channel> ChannelRegistryEntryConfig<Channel> {
     pub fn new(
         id: String,
         channel: Channel,
-        retry: Retry
+        resolve: Option<AddrsConfig>,
+        session_authn: Option<AuthN>,
+        flows_params: Option<FlowsConfig>,
+        xfrm_params: Option<Xfrm>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
+        retry: Option<Retry>,
+        flows_size_hint: Option<usize>
     ) -> Self {
-        ChannelRegistryEntryConfig {
+        FarChannelEntryConfig {
             id: id,
             channel: channel,
-            retry: retry
+            resolve: resolve,
+            session_authn: session_authn,
+            flows_params: flows_params,
+            xfrm_params: xfrm_params,
+            encoder: encoder,
+            decoder: decoder,
+            retry: retry,
+            flows_size_hint: flows_size_hint
         }
     }
 
     /// Get the name of the registry entry.
     #[inline]
-    pub fn id(&self) -> &str {
+    pub fn name(&self) -> &str {
         self.id.as_ref()
+    }
+
+    #[inline]
+    pub fn session_authn(&self) -> Option<&AuthN> {
+        self.session_authn.as_ref()
     }
 
     /// Get the channel configuration.
@@ -1968,53 +3017,84 @@ impl<Channel> ChannelRegistryEntryConfig<Channel> {
         &self.channel
     }
 
+    #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
     /// Get the retry configuration.
     #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
     }
 
-    /// Decompose a `ChannelRegistryEntryConfig` into its components.
     #[inline]
-    pub fn take(self) -> (String, Channel, Retry) {
-        (self.id, self.channel, self.retry)
+    pub fn flows_size_hint(&self) -> Option<usize> {
+        self.flows_size_hint
+    }
+
+    /// Get the resolver configuration.
+    #[inline]
+    pub fn resolve(&self) -> Option<&AddrsConfig> {
+        self.resolve.as_ref()
+    }
+
+    /// Get the [Flows] creation parameters.
+    #[inline]
+    pub fn flows_params(&self) -> Option<&FlowsConfig> {
+        self.flows_params.as_ref()
+    }
+
+    /// Get the [DatagramXfrm] creation parameters.
+    #[inline]
+    pub fn xfrm_params(&self) -> Option<&Xfrm> {
+        self.xfrm_params.as_ref()
+    }
+
+    /// Decompose a `FarChannelEntryConfig` into its components.
+    #[inline]
+    pub fn take(
+        self
+    ) -> (
+        String,
+        Channel,
+        Option<AddrsConfig>,
+        Option<AuthN>,
+        Option<FlowsConfig>,
+        Option<Xfrm>,
+        Option<Enc>,
+        Option<Dec>,
+        Option<Retry>,
+        Option<usize>
+    ) {
+        (
+            self.id,
+            self.channel,
+            self.resolve,
+            self.session_authn,
+            self.flows_params,
+            self.xfrm_params,
+            self.encoder,
+            self.decoder,
+            self.retry,
+            self.flows_size_hint
+        )
+    }
+
+    fn default_authn() -> Option<AuthN> {
+        None
     }
 }
 
-impl<Codec> ChannelRegistryChannelsConfig<Codec>
+impl<Channel, AuthN, Xfrm, Enc, Dec>
+    FarChannelsConfig<Channel, AuthN, Xfrm, Enc, Dec>
 where
-    Codec: Default
-{
-    /// Create a [ChannelRegistryChannelsConfig] from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    #[inline]
-    pub fn new(codec: Codec) -> Self {
-        ChannelRegistryChannelsConfig { codec: codec }
-    }
-
-    /// Get the configuration parameters used to create
-    /// [DatagramCodec](constellation_common::codec::DatagramCodec)s.
-    #[inline]
-    pub fn codec(&self) -> &Codec {
-        &self.codec
-    }
-
-    /// Decompose this into its components.
-    ///
-    /// This produces the codec parameters.
-    #[inline]
-    pub fn take(self) -> Codec {
-        self.codec
-    }
-}
-
-impl<Channel, FlowsParams, ContextParams>
-    ChannelRegistryConfig<Channel, FlowsParams, ContextParams>
-where
-    FlowsParams: Default,
-    ContextParams: Default
+    Xfrm: Default
 {
     /// Create a new `ChannelRegistryConfig` from its components.
     ///
@@ -2022,59 +3102,106 @@ where
     /// fields in the YAML format.  See documentation for details.
     #[inline]
     pub fn new(
-        channels: Vec<ChannelRegistryEntryConfig<Channel>>,
+        channels: Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>>,
         resolve: AddrsConfig,
-        flows_params: FlowsParams,
-        ctx_params: ContextParams
+        authn_config: AuthN,
+        flows_params: FlowsConfig,
+        xfrm_params: Xfrm,
+        encoder: Enc,
+        decoder: Dec,
+        retry: Retry,
+        flows_size_hint: Option<usize>
     ) -> Self {
-        ChannelRegistryConfig {
+        FarChannelsConfig {
             channels: channels,
-            resolve: resolve,
-            flows_params: flows_params,
-            ctx_params: ctx_params
+            default_resolve: resolve,
+            default_session_authn: authn_config,
+            default_flows_params: flows_params,
+            default_xfrm_params: xfrm_params,
+            default_encoder: encoder,
+            default_decoder: decoder,
+            default_retry: retry,
+            default_flows_size_hint: flows_size_hint
         }
     }
 
     /// Get the channel configurations.
     #[inline]
-    pub fn channels(&self) -> &[ChannelRegistryEntryConfig<Channel>] {
+    pub fn channels(
+        &self
+    ) -> &[FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>] {
         &self.channels
     }
 
     /// Get the resolver configuration.
     #[inline]
     pub fn resolve(&self) -> &AddrsConfig {
-        &self.resolve
+        &self.default_resolve
     }
 
     /// Get the flows creation parameters.
     #[inline]
-    pub fn flows_params(&self) -> &FlowsParams {
-        &self.flows_params
+    pub fn flows_params(&self) -> &FlowsConfig {
+        &self.default_flows_params
     }
 
     /// Get the context creation parameters.
     #[inline]
-    pub fn ctx_params(&self) -> &ContextParams {
-        &self.ctx_params
+    pub fn xfrm_params(&self) -> &Xfrm {
+        &self.default_xfrm_params
     }
 
-    /// Decompose a `ChannelRegistryEntryConfig` into its components.
+    #[inline]
+    pub fn encoder(&self) -> &Enc {
+        &self.default_encoder
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> &Dec {
+        &self.default_decoder
+    }
+
+    /// Get the retry configuration.
+    #[inline]
+    pub fn retry(&self) -> &Retry {
+        &self.default_retry
+    }
+
+    #[inline]
+    pub fn flows_size_hint(&self) -> Option<usize> {
+        self.default_flows_size_hint
+    }
+
+    /// Decompose a `FarChannelRegistryConfig` into its components.
     #[inline]
     pub fn take(
         self
     ) -> (
-        Vec<ChannelRegistryEntryConfig<Channel>>,
+        Vec<FarChannelEntryConfig<Channel, AuthN, Xfrm, Enc, Dec>>,
         AddrsConfig,
-        FlowsParams,
-        ContextParams
+        AuthN,
+        FlowsConfig,
+        Xfrm,
+        Enc,
+        Dec,
+        Retry,
+        Option<usize>
     ) {
         (
             self.channels,
-            self.resolve,
-            self.flows_params,
-            self.ctx_params
+            self.default_resolve,
+            self.default_session_authn,
+            self.default_flows_params,
+            self.default_xfrm_params,
+            self.default_encoder,
+            self.default_decoder,
+            self.default_retry,
+            self.default_flows_size_hint
         )
+    }
+
+    fn default_retry_value() -> Retry {
+        Retry::TERRESTRIAL_NETWORK_DEFAULT.clone()
     }
 }
 
@@ -2139,6 +3266,499 @@ impl From<IPEndpoint> for CompoundFarEndpoint {
     }
 }
 
+impl From<IPEndpoint> for CompoundNearEndpoint {
+    #[inline]
+    fn from(val: IPEndpoint) -> Self {
+        CompoundNearEndpoint::TCP { tcp: val }
+    }
+}
+
+impl<Inner> DTLSOutboundParam<Inner> {
+    #[inline]
+    pub fn new(
+        verify_endpoint: IPEndpointAddr,
+        inner: Inner
+    ) -> Self {
+        DTLSOutboundParam {
+            verify_endpoint: verify_endpoint,
+            inner: inner
+        }
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &Inner {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn verify_endpoint(&self) -> &IPEndpointAddr {
+        &self.verify_endpoint
+    }
+
+    #[inline]
+    pub fn take(self) -> (IPEndpointAddr, Inner) {
+        (self.verify_endpoint, self.inner)
+    }
+}
+
+impl Default for FlowsConfig {
+    #[inline]
+    fn default() -> Self {
+        FlowsConfig {
+            msg_size: 1500,
+            buf_size: None,
+            num_flows: None,
+            num_negotiations: None
+        }
+    }
+}
+
+impl FlowsConfig {
+    #[inline]
+    pub fn new(
+        msg_size: usize,
+        buf_size: Option<usize>,
+        num_flows: Option<usize>,
+        num_negotiations: Option<usize>
+    ) -> Self {
+        FlowsConfig {
+            num_negotiations: num_negotiations,
+            num_flows: num_flows,
+            msg_size: msg_size,
+            buf_size: buf_size
+        }
+    }
+
+    #[inline]
+    pub fn msgsize(&self) -> usize {
+        self.msg_size
+    }
+
+    #[inline]
+    pub fn bufsize(&self) -> Option<usize> {
+        self.buf_size
+    }
+
+    #[inline]
+    pub fn nflows(&self) -> Option<usize> {
+        self.num_flows
+    }
+
+    #[inline]
+    pub fn nnegos(&self) -> Option<usize> {
+        self.num_negotiations
+    }
+
+    #[inline]
+    pub fn take(self) -> (usize, Option<usize>, Option<usize>, Option<usize>) {
+        (
+            self.msg_size,
+            self.buf_size,
+            self.num_flows,
+            self.num_negotiations
+        )
+    }
+}
+
+impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default
+{
+    pub fn name(&self) -> &str {
+        match self {
+            NearChannelEntryConfig::Outbound { outbound } => outbound.id(),
+            NearChannelEntryConfig::Inbound { inbound } => inbound.id(),
+            NearChannelEntryConfig::Duplex { duplex } => duplex.id()
+        }
+    }
+}
+
+impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    NearChannelsConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default
+{
+    #[inline]
+    pub fn new(
+        channels: Vec<
+            NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+        >,
+        default_inbound_authn: InAuthN,
+        default_outbound_authn: OutAuthN,
+        default_encoder: Enc,
+        default_decoder: Dec,
+        default_retry: Retry,
+        default_num_sessions: Option<usize>
+    ) -> Self {
+        NearChannelsConfig {
+            channels: channels,
+            default_inbound_authn: default_inbound_authn,
+            default_outbound_authn: default_outbound_authn,
+            default_encoder: default_encoder,
+            default_decoder: default_decoder,
+            default_retry: default_retry,
+            default_num_sessions: default_num_sessions
+        }
+    }
+
+    #[inline]
+    pub fn channels(
+        &self
+    ) -> &[NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>] {
+        &self.channels
+    }
+
+    #[inline]
+    pub fn default_outbound_authn(&self) -> &OutAuthN {
+        &self.default_outbound_authn
+    }
+
+    #[inline]
+    pub fn default_inbound_authn(&self) -> &InAuthN {
+        &self.default_inbound_authn
+    }
+
+    #[inline]
+    pub fn default_encoder(&self) -> &Enc {
+        &self.default_encoder
+    }
+
+    #[inline]
+    pub fn default_decoder(&self) -> &Dec {
+        &self.default_decoder
+    }
+
+    #[inline]
+    pub fn default_retry(&self) -> &Retry {
+        &self.default_retry
+    }
+
+    #[inline]
+    pub fn default_num_sessions(&self) -> Option<usize> {
+        self.default_num_sessions
+    }
+
+    #[inline]
+    pub fn take(
+        self
+    ) -> (
+        Vec<NearChannelEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>>,
+        InAuthN,
+        OutAuthN,
+        Enc,
+        Dec,
+        Retry,
+        Option<usize>
+    ) {
+        (
+            self.channels,
+            self.default_inbound_authn,
+            self.default_outbound_authn,
+            self.default_encoder,
+            self.default_decoder,
+            self.default_retry,
+            self.default_num_sessions
+        )
+    }
+
+    fn default_retry_value() -> Retry {
+        Retry::TERRESTRIAL_NETWORK_DEFAULT.clone()
+    }
+}
+
+impl<In, Out, InAuthN, OutAuthN, Enc, Dec>
+    NearChannelDuplexEntryConfig<In, Out, InAuthN, OutAuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default
+{
+    #[inline]
+    pub fn new(
+        id: String,
+        listen: In,
+        connect: Out,
+        inbound_authn: Option<InAuthN>,
+        outbound_authn: Option<OutAuthN>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
+        retry: Option<Retry>,
+        num_sessions: Option<usize>
+    ) -> Self {
+        NearChannelDuplexEntryConfig {
+            id: id,
+            listen: listen,
+            connect: connect,
+            inbound_authn: inbound_authn,
+            outbound_authn: outbound_authn,
+            num_sessions: num_sessions,
+            encoder: encoder,
+            decoder: decoder,
+            retry: retry
+        }
+    }
+
+    #[inline]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[inline]
+    pub fn listen(&self) -> &In {
+        &self.listen
+    }
+
+    #[inline]
+    pub fn connect(&self) -> &Out {
+        &self.connect
+    }
+
+    #[inline]
+    pub fn inbound_authn(&self) -> Option<&InAuthN> {
+        self.inbound_authn.as_ref()
+    }
+
+    #[inline]
+    pub fn outbound_authn(&self) -> Option<&OutAuthN> {
+        self.outbound_authn.as_ref()
+    }
+
+    #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
+    #[inline]
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
+    }
+
+    #[inline]
+    pub fn num_sessions(&self) -> Option<usize> {
+        self.num_sessions
+    }
+
+    #[inline]
+    pub fn take(
+        self
+    ) -> (
+        String,
+        In,
+        Out,
+        Option<InAuthN>,
+        Option<OutAuthN>,
+        Option<Enc>,
+        Option<Dec>,
+        Option<Retry>,
+        Option<usize>
+    ) {
+        (
+            self.id,
+            self.listen,
+            self.connect,
+            self.inbound_authn,
+            self.outbound_authn,
+            self.encoder,
+            self.decoder,
+            self.retry,
+            self.num_sessions
+        )
+    }
+
+    fn default_in_authn() -> Option<InAuthN> {
+        None
+    }
+
+    fn default_out_authn() -> Option<OutAuthN> {
+        None
+    }
+}
+
+impl<In, AuthN, Enc, Dec> NearChannelInboundEntryConfig<In, AuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default
+{
+    #[inline]
+    pub fn new(
+        id: String,
+        listen: In,
+        authn: Option<AuthN>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
+        retry: Option<Retry>,
+        num_sessions: Option<usize>
+    ) -> Self {
+        NearChannelInboundEntryConfig {
+            id: id,
+            listen: listen,
+            authn: authn,
+            num_sessions: num_sessions,
+            encoder: encoder,
+            decoder: decoder,
+            retry: retry
+        }
+    }
+
+    #[inline]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[inline]
+    pub fn listen(&self) -> &In {
+        &self.listen
+    }
+
+    #[inline]
+    pub fn authn(&self) -> Option<&AuthN> {
+        self.authn.as_ref()
+    }
+
+    #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
+    #[inline]
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
+    }
+
+    #[inline]
+    pub fn num_sessions(&self) -> Option<usize> {
+        self.num_sessions
+    }
+
+    #[inline]
+    pub fn take(
+        self
+    ) -> (
+        String,
+        In,
+        Option<AuthN>,
+        Option<Enc>,
+        Option<Dec>,
+        Option<Retry>,
+        Option<usize>
+    ) {
+        (
+            self.id,
+            self.listen,
+            self.authn,
+            self.encoder,
+            self.decoder,
+            self.retry,
+            self.num_sessions
+        )
+    }
+
+    fn default_authn() -> Option<AuthN> {
+        None
+    }
+}
+
+impl<Out, AuthN, Enc, Dec> NearChannelOutboundEntryConfig<Out, AuthN, Enc, Dec>
+where
+    Enc: Default,
+    Dec: Default
+{
+    #[inline]
+    pub fn new(
+        id: String,
+        connect: Out,
+        authn: Option<AuthN>,
+        encoder: Option<Enc>,
+        decoder: Option<Dec>,
+        retry: Option<Retry>,
+        num_sessions: Option<usize>
+    ) -> Self {
+        NearChannelOutboundEntryConfig {
+            id: id,
+            connect: connect,
+            authn: authn,
+            num_sessions: num_sessions,
+            encoder: encoder,
+            decoder: decoder,
+            retry: retry
+        }
+    }
+
+    #[inline]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[inline]
+    pub fn connect(&self) -> &Out {
+        &self.connect
+    }
+
+    #[inline]
+    pub fn authn(&self) -> Option<&AuthN> {
+        self.authn.as_ref()
+    }
+
+    #[inline]
+    pub fn encoder(&self) -> Option<&Enc> {
+        self.encoder.as_ref()
+    }
+
+    #[inline]
+    pub fn decoder(&self) -> Option<&Dec> {
+        self.decoder.as_ref()
+    }
+
+    #[inline]
+    pub fn retry(&self) -> Option<&Retry> {
+        self.retry.as_ref()
+    }
+
+    #[inline]
+    pub fn num_sessions(&self) -> Option<usize> {
+        self.num_sessions
+    }
+
+    #[inline]
+    pub fn take(
+        self
+    ) -> (
+        String,
+        Out,
+        Option<AuthN>,
+        Option<Enc>,
+        Option<Dec>,
+        Option<Retry>,
+        Option<usize>
+    ) {
+        (
+            self.id,
+            self.connect,
+            self.authn,
+            self.encoder,
+            self.decoder,
+            self.retry,
+            self.num_sessions
+        )
+    }
+
+    fn default_authn() -> Option<AuthN> {
+        None
+    }
+}
+
 impl ResolverConfig {
     /// Create a new `ResolverConfig` from its components.
     ///
@@ -2159,7 +3779,7 @@ impl ResolverConfig {
     ///
     /// assert_eq!(
     ///     ResolverConfig::new(1000 * 60 * 60, Retry::default()),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -2211,7 +3831,7 @@ impl ThreadedFlowsParams {
     ///
     /// assert_eq!(
     ///     ThreadedFlowsParams::new(Some(36), 1500),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -2266,7 +3886,7 @@ impl ThreadedNSNameCachesConfig {
     /// assert_eq!(
     ///     ThreadedNSNameCachesConfig::new(Some(36), refresh,
     ///                                     Retry::default()),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     pub fn new(
@@ -2313,6 +3933,34 @@ impl ThreadedNSNameCachesConfig {
     #[inline]
     fn default_renewal() -> Duration {
         Duration::from_secs(3600)
+    }
+}
+
+impl<Inner> TLSParam<Inner> {
+    #[inline]
+    pub fn new(
+        verify_endpoint: Option<IPEndpointAddr>,
+        inner: Inner
+    ) -> Self {
+        TLSParam {
+            verify_endpoint: verify_endpoint,
+            inner: inner
+        }
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &Inner {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn verify_endpoint(&self) -> Option<&IPEndpointAddr> {
+        self.verify_endpoint.as_ref()
+    }
+
+    #[inline]
+    pub fn take(self) -> (Option<IPEndpointAddr>, Inner) {
+        (self.verify_endpoint, self.inner)
     }
 }
 
@@ -2495,14 +4143,8 @@ impl TryFrom<SOCKS5AuthNIntermediate> for SOCKS5AuthNConfig {
 
 impl<Endpoint> DTLSFarChannelConfig<Endpoint> {
     #[inline]
-    pub fn new(
-        tls: TLSChannelConfig<TLSPeerConfig, Endpoint>,
-        retry: Retry
-    ) -> Self {
-        DTLSFarChannelConfig {
-            tls: tls,
-            retry: retry
-        }
+    pub fn new(tls: TLSChannelConfig<TLSPeerConfig, Endpoint>) -> Self {
+        DTLSFarChannelConfig { tls: tls }
     }
 
     /// Get the TLS channel configuration.
@@ -2511,15 +4153,9 @@ impl<Endpoint> DTLSFarChannelConfig<Endpoint> {
         &self.tls
     }
 
-    /// Get the retry configuration.
     #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
-    }
-
-    #[inline]
-    pub fn take(self) -> (TLSChannelConfig<TLSPeerConfig, Endpoint>, Retry) {
-        (self.tls, self.retry)
+    pub fn take(self) -> TLSChannelConfig<TLSPeerConfig, Endpoint> {
+        self.tls
     }
 }
 
@@ -2543,23 +4179,20 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::SOCKS5AuthNConfig;
     /// # use constellation_channels::config::SOCKS5ConnectConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use std::path::PathBuf;
     /// #
     /// let yaml = concat!("proxy:\n",
-    ///                    "  addr: test.example.com\n",
-    ///                    "  port: 9050\n",
-    ///                    "target:\n",
-    ///                    "  addr: en.wikipedia.org\n",
-    ///                    "  port: 443\n",
+    ///                    "  addr: test.example.com:9050\n",
+    ///                    "target: en.wikipedia.org:443\n",
     ///                    "auth:\n",
     ///                    "  username: user\n",
     ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
-    /// let proxy = TCPNearConnectorConfig::new(proxy,
-    ///                                         AddrsConfig::default(),
-    ///                                         Retry::default());
+    /// let proxy = TCPResolvingNearConnectorConfig::new(proxy,
+    ///                                                  AddrsConfig::default(),
+    ///                                                  Retry::default());
     /// let target = IPEndpointAddr::name(String::from("en.wikipedia.org"));
     /// let target = IPEndpoint::new(target, 443);
     /// let auth = SOCKS5AuthNConfig::Password {
@@ -2569,7 +4202,7 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     ///
     /// assert_eq!(
     ///     SOCKS5ConnectConfig::new(auth, target, proxy),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -2619,6 +4252,88 @@ impl<Proxy> SOCKS5ConnectConfig<Proxy> {
     }
 }
 
+impl<Proxy> SOCKS5ConnectPartialConfig<Proxy> {
+    /// Create a `SOCKS5ConnectPartialConfig` from its components.
+    ///
+    /// The arguments of this function correspond to similarly-named
+    /// fields in the YAML format.  See documentation for details.
+    ///
+    /// # Examples
+    ///
+    /// The following example shows the equivalence between this
+    /// function and parsing a YAML configuration:
+    ///
+    /// ```
+    /// # use constellation_common::retry::Retry;
+    /// # use constellation_common::config::authn::ClientGSSAPIConfig;
+    /// # use constellation_common::net::IPEndpointAddr;
+    /// # use constellation_common::net::IPEndpoint;
+    /// # use constellation_channels::config::AddrKind;
+    /// # use constellation_channels::config::AddrsConfig;
+    /// # use constellation_channels::config::SOCKS5AuthNConfig;
+    /// # use constellation_channels::config::SOCKS5ConnectPartialConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
+    /// # use std::path::PathBuf;
+    /// #
+    /// let yaml = concat!("proxy:\n",
+    ///                    "  addr: test.example.com:9050\n",
+    ///                    "auth:\n",
+    ///                    "  username: user\n",
+    ///                    "  password: pass\n");
+    /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
+    /// let proxy = IPEndpoint::new(proxy, 9050);
+    /// let proxy = TCPResolvingNearConnectorConfig::new(proxy,
+    ///                                                  AddrsConfig::default(),
+    ///                                                  Retry::default());
+    /// let auth = SOCKS5AuthNConfig::Password {
+    ///     username: String::from("user"),
+    ///     password: String::from("pass")
+    /// };
+    ///
+    /// assert_eq!(
+    ///     SOCKS5ConnectPartialConfig::new(auth, proxy),
+    ///     yaml_serde::from_str(yaml).unwrap()
+    /// );
+    /// ```
+    #[inline]
+    pub fn new(
+        auth: SOCKS5AuthNConfig,
+        proxy: Proxy
+    ) -> Self {
+        SOCKS5ConnectPartialConfig {
+            auth: auth,
+            proxy: proxy
+        }
+    }
+
+    /// Get the proxy authentication configuration.
+    #[inline]
+    pub fn auth(&self) -> &SOCKS5AuthNConfig {
+        &self.auth
+    }
+
+    /// Get the channel configuration for the connection with the proxy.
+    #[inline]
+    pub fn proxy(&self) -> &Proxy {
+        &self.proxy
+    }
+
+    /// Decompose this `SOCKS5ConnectConfig` into its components.
+    ///
+    /// The components in order are:
+    ///
+    /// - The authentication configuration for authenticating to the proxy
+    ///   ([retry](SOCKS5ConnectConfig::auth))
+    /// - The [IPEndpoint] to which the proxy will attempt to connect
+    ///   ([endpoint](SOCKS5ConnectConfig::endpoint))
+    /// - The configuration for the channel for connecting to the proxy
+    ///   ([resolve](SOCKS5ConnectConfig::proxy))
+    #[inline]
+    pub(crate) fn take(self) -> (SOCKS5AuthNConfig, Proxy) {
+        (self.auth, self.proxy)
+    }
+}
+
 impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     /// Create a `SOCKS5AssocConfig` from its components.
     ///
@@ -2639,26 +4354,24 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::SOCKS5AuthNConfig;
     /// # use constellation_channels::config::SOCKS5AssocConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use constellation_channels::config::UDPFarChannelConfig;
     /// # use std::path::PathBuf;
     /// # use std::net::SocketAddr;
     /// #
-    /// let yaml = concat!("addr: 0.0.0.0\n",
-    ///                    "port: 0\n",
+    /// let yaml = concat!("addr: 0.0.0.0:0\n",
     ///                    "proxy:\n",
-    ///                    "  addr: test.example.com\n",
-    ///                    "  port: 9050\n",
+    ///                    "  addr: test.example.com:9050\n",
     ///                    "auth:\n",
     ///                    "  username: user\n",
     ///                    "  password: pass\n");
     /// let proxy = IPEndpointAddr::name(String::from("test.example.com"));
     /// let proxy = IPEndpoint::new(proxy, 9050);
-    /// let proxy = TCPNearConnectorConfig::new(proxy,
-    ///                                         AddrsConfig::default(),
-    ///                                         Retry::default());
+    /// let proxy = TCPResolvingNearConnectorConfig::new(proxy,
+    ///                                                  AddrsConfig::default(),
+    ///                                                  Retry::default());
     /// let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-    /// let bind = UDPFarChannelConfig::new(addr.ip(), addr.port());
+    /// let bind = UDPFarChannelConfig::new(addr);
     /// let auth = SOCKS5AuthNConfig::Password {
     ///     username: String::from("user"),
     ///     password: String::from("pass")
@@ -2666,7 +4379,7 @@ impl<Proxy, Datagram> SOCKS5AssocConfig<Proxy, Datagram> {
     ///
     /// assert_eq!(
     ///     SOCKS5AssocConfig::new(bind, auth, proxy),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -2748,52 +4461,36 @@ impl TCPNearAcceptorConfig {
     /// # use constellation_channels::config::TCPNearAcceptorConfig;
     /// # use std::net::IpAddr;
     /// # use std::net::Ipv6Addr;
+    /// # use std::net::SocketAddr;
     /// #
-    /// let yaml = concat!("addr: ::0\n",
-    ///                    "port: 5014\n");
+    /// let yaml = concat!("addr: '[::0]:5014'\n");
+    /// let expected = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5014);
     ///
     /// assert_eq!(
-    ///     TCPNearAcceptorConfig::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5014),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     TCPNearAcceptorConfig::new(expected),
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
-    pub fn new(
-        addr: IpAddr,
-        port: u16
-    ) -> Self {
-        Self::new_with_unsafe(addr, port, TCPNearChannelConfigUnsafe::default())
+    pub fn new(addr: SocketAddr) -> Self {
+        Self::new_with_unsafe(addr, TCPNearChannelConfigUnsafe::default())
     }
 
     #[inline]
     pub fn new_with_unsafe(
-        addr: IpAddr,
-        port: u16,
+        addr: SocketAddr,
         unsafe_opts: TCPNearChannelConfigUnsafe
     ) -> Self {
         TCPNearAcceptorConfig {
             unsafe_opts: unsafe_opts,
-            addr: addr,
-            port: port
+            addr: addr
         }
     }
 
     /// Get the listen address as a [SocketAddr].
     #[inline]
     pub fn socket_addr(&self) -> SocketAddr {
-        SocketAddr::new(self.addr, self.port)
-    }
-
-    /// Get the IP address at which this acceptor listens.
-    #[inline]
-    pub fn ip_addr(&self) -> IpAddr {
         self.addr
-    }
-
-    /// Get the port on which this acceptor listens.
-    #[inline]
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// Get the unsafe options.
@@ -2803,7 +4500,7 @@ impl TCPNearAcceptorConfig {
     }
 }
 
-impl TCPNearConnectorConfig {
+impl TCPResolvingNearConnectorConfig {
     /// Create a new `TCPNearConnectorConfig` from its components.
     ///
     /// The arguments of this function correspond to similarly-named
@@ -2821,42 +4518,46 @@ impl TCPNearConnectorConfig {
     /// # use constellation_channels::config::AddrKind;
     /// # use constellation_channels::config::AddrsConfig;
     /// # use constellation_channels::config::ResolverConfig;
-    /// # use constellation_channels::config::TCPNearConnectorConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorConfig;
     /// # use std::path::PathBuf;
+    /// # use std::time::Duration;
     /// #
-    /// let yaml = concat!("addr: test.example.com\n",
-    ///                    "port: 5015\n",
+    /// let yaml = concat!("addr: test.example.com:5015\n",
     ///                    "resolve:\n",
     ///                    "  addr-policy:\n",
     ///                    "    - ipv6\n",
     ///                    "  renewal: 10800\n",
     ///                    "  retry:\n",
-    ///                    "    factor: 400\n",
+    ///                    "    factor: 400ms\n",
     ///                    "    exp-base: 2.0\n",
     ///                    "    exp-factor: 2.0\n",
     ///                    "    exp-rounds-cap: 40\n",
     ///                    "    linear-factor: 2.0\n",
-    ///                    "    max-random: 500\n",
-    ///                    "    addend: 25\n",
+    ///                    "    max-random: 500ms\n",
+    ///                    "    addend: 25ms\n",
     ///                    "retry:\n",
-    ///                    "  factor: 100\n",
+    ///                    "  factor: 100ms\n",
     ///                    "  exp-base: 2.0\n",
     ///                    "  exp-factor: 1.0\n",
     ///                    "  exp-rounds-cap: 20\n",
     ///                    "  linear-factor: 1.0\n",
     ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100\n",
-    ///                    "  addend: 50\n");
+    ///                    "  max-random: 100ms\n",
+    ///                    "  addend: 50ms\n");
     /// let endpoint = IPEndpointAddr::name(String::from("test.example.com"));
     /// let endpoint = IPEndpoint::new(endpoint, 5015);
-    /// let retry = Retry::new(400, 2.0, 2.0, 40, 2.0, None, 500, 25);
+    /// let retry = Retry::new(Duration::from_millis(400), 2.0, 2.0,
+    ///                        40, 2.0, None, Duration::from_millis(500),
+    ///                        Duration::from_millis(25));
     /// let resolve = AddrsConfig::new(vec![ AddrKind::IPv6 ],
     ///                                ResolverConfig::new(10800, retry));
-    /// let retry = Retry::new(100, 2.0, 1.0, 20, 1.0, Some(50), 100, 50);
+    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
+    ///                        20, 1.0, Some(50), Duration::from_millis(100),
+    ///                        Duration::from_millis(50));
     ///
     /// assert_eq!(
-    ///     TCPNearConnectorConfig::new(endpoint, resolve, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     TCPResolvingNearConnectorConfig::new(endpoint, resolve, retry),
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -2875,14 +4576,14 @@ impl TCPNearConnectorConfig {
 
     #[inline]
     pub fn new_with_unsafe(
-        endpoint: IPEndpoint,
+        addr: IPEndpoint,
         resolve: AddrsConfig,
         retry: Retry,
         unsafe_opts: TCPNearChannelConfigUnsafe
     ) -> Self {
-        TCPNearConnectorConfig {
+        TCPResolvingNearConnectorConfig {
             unsafe_opts: unsafe_opts,
-            endpoint: endpoint,
+            addr: addr,
             resolve: resolve,
             retry: retry
         }
@@ -2892,7 +4593,7 @@ impl TCPNearConnectorConfig {
     /// attempts to connect.
     #[inline]
     pub fn endpoint(&self) -> &IPEndpoint {
-        &self.endpoint
+        &self.addr
     }
 
     /// Get the [AddrsConfig] for resolving names into IP addresses.
@@ -2928,7 +4629,159 @@ impl TCPNearConnectorConfig {
     pub(crate) fn take(
         self
     ) -> (IPEndpoint, AddrsConfig, Retry, TCPNearChannelConfigUnsafe) {
-        (self.endpoint, self.resolve, self.retry, self.unsafe_opts)
+        (self.addr, self.resolve, self.retry, self.unsafe_opts)
+    }
+}
+
+impl TCPResolvingNearConnectorPartialConfig {
+    /// Create a new `TCPNearConnectorPartialConfig` from its components.
+    ///
+    /// The arguments of this function correspond to similarly-named
+    /// fields in the YAML format.  See documentation for details.
+    ///
+    /// # Examples
+    ///
+    /// The following example shows the equivalence between this
+    /// function and parsing a YAML configuration:
+    ///
+    /// ```
+    /// # use constellation_common::retry::Retry;
+    /// # use constellation_channels::config::AddrKind;
+    /// # use constellation_channels::config::AddrsConfig;
+    /// # use constellation_channels::config::ResolverConfig;
+    /// # use constellation_channels::config::TCPResolvingNearConnectorPartialConfig;
+    /// # use std::path::PathBuf;
+    /// # use std::time::Duration;
+    /// #
+    /// let yaml = concat!("resolve:\n",
+    ///                    "  addr-policy:\n",
+    ///                    "    - ipv6\n",
+    ///                    "  renewal: 10800\n",
+    ///                    "  retry:\n",
+    ///                    "    factor: 400ms\n",
+    ///                    "    exp-base: 2.0\n",
+    ///                    "    exp-factor: 2.0\n",
+    ///                    "    exp-rounds-cap: 40\n",
+    ///                    "    linear-factor: 2.0\n",
+    ///                    "    max-random: 500ms\n",
+    ///                    "    addend: 25ms\n",
+    ///                    "retry:\n",
+    ///                    "  factor: 100ms\n",
+    ///                    "  exp-base: 2.0\n",
+    ///                    "  exp-factor: 1.0\n",
+    ///                    "  exp-rounds-cap: 20\n",
+    ///                    "  linear-factor: 1.0\n",
+    ///                    "  linear-rounds-cap: 50\n",
+    ///                    "  max-random: 100ms\n",
+    ///                    "  addend: 50ms\n");
+    /// let retry = Retry::new(Duration::from_millis(400), 2.0, 2.0,
+    ///                        40, 2.0, None, Duration::from_millis(500),
+    ///                        Duration::from_millis(25));
+    /// let resolve = AddrsConfig::new(vec![ AddrKind::IPv6 ],
+    ///                                ResolverConfig::new(10800, retry));
+    /// let retry = Retry::new(Duration::from_millis(100), 2.0, 1.0,
+    ///                        20, 1.0, Some(50), Duration::from_millis(100),
+    ///                        Duration::from_millis(50));
+    ///
+    /// assert_eq!(
+    ///     TCPResolvingNearConnectorPartialConfig::new(resolve, retry),
+    ///     yaml_serde::from_str(yaml).unwrap()
+    /// );
+    /// ```
+    #[inline]
+    pub fn new(
+        resolve: AddrsConfig,
+        retry: Retry
+    ) -> Self {
+        Self::new_with_unsafe(
+            resolve,
+            retry,
+            TCPNearChannelConfigUnsafe::default()
+        )
+    }
+
+    #[inline]
+    pub fn new_with_unsafe(
+        resolve: AddrsConfig,
+        retry: Retry,
+        unsafe_opts: TCPNearChannelConfigUnsafe
+    ) -> Self {
+        TCPResolvingNearConnectorPartialConfig {
+            unsafe_opts: unsafe_opts,
+            resolve: resolve,
+            retry: retry
+        }
+    }
+
+    /// Get the [AddrsConfig] for resolving names into IP addresses.
+    #[inline]
+    pub fn resolve(&self) -> &AddrsConfig {
+        &self.resolve
+    }
+
+    /// Get the [Retry] configuration for backoff delays for failed
+    /// connection attempt.
+    #[inline]
+    pub fn retry(&self) -> &Retry {
+        &self.retry
+    }
+
+    /// Get the unsafe options.
+    #[inline]
+    pub fn unsafe_opts(&self) -> &TCPNearChannelConfigUnsafe {
+        &self.unsafe_opts
+    }
+
+    /// Decompose this `TCPNearConnectorConfig` into its components.
+    ///
+    /// The components in order are:
+    ///
+    /// - The name resolution configuration
+    ///   ([resolve](TCPNearConnectorConfig::resolve))
+    /// - The retry configuration for failed connection attempts
+    ///   ([retry](TCPNearConnectorConfig::retry))
+    #[inline]
+    pub(crate) fn take(
+        self
+    ) -> (AddrsConfig, Retry, TCPNearChannelConfigUnsafe) {
+        (self.resolve, self.retry, self.unsafe_opts)
+    }
+}
+
+impl TCPNearConnectorPartialConfig {
+    /// Create a new `TCPNearConnectorPartialConfig` from its components.
+    ///
+    /// The arguments of this function correspond to similarly-named
+    /// fields in the YAML format.  See documentation for details.
+    #[inline]
+    pub fn new() -> Self {
+        Self::new_with_unsafe(TCPNearChannelConfigUnsafe::default())
+    }
+
+    #[inline]
+    pub fn new_with_unsafe(unsafe_opts: TCPNearChannelConfigUnsafe) -> Self {
+        TCPNearConnectorPartialConfig {
+            unsafe_opts: unsafe_opts
+        }
+    }
+
+    /// Get the unsafe options.
+    #[inline]
+    pub fn unsafe_opts(&self) -> &TCPNearChannelConfigUnsafe {
+        &self.unsafe_opts
+    }
+
+    /// Decompose this `TCPNearConnectorConfig` into its components.
+    ///
+    /// The components in order are:
+    ///
+    /// - The name resolution configuration
+    ///   ([resolve](TCPNearConnectorConfig::resolve))
+    /// - The retry configuration for failed connection attempts
+    ///   ([retry](TCPNearConnectorConfig::retry))
+    #[inline]
+    pub(crate) fn take(self) -> TCPNearChannelConfigUnsafe {
+        self.unsafe_opts
     }
 }
 
@@ -2942,11 +4795,15 @@ impl<TLS, Underlying> TLSChannelConfig<TLS, Underlying> {
     #[inline]
     pub fn new(
         tls: TLS,
-        underlying: Underlying
+        underlying: Underlying,
+        shutdown_retry: Retry,
+        shutdown_timeout: Duration
     ) -> Self {
         TLSChannelConfig {
             tls: tls,
-            underlying: underlying
+            underlying: underlying,
+            shutdown_retry: shutdown_retry,
+            shutdown_timeout: shutdown_timeout
         }
     }
 
@@ -2962,6 +4819,16 @@ impl<TLS, Underlying> TLSChannelConfig<TLS, Underlying> {
         &self.underlying
     }
 
+    #[inline]
+    pub fn shutdown_retry(&self) -> &Retry {
+        &self.shutdown_retry
+    }
+
+    #[inline]
+    pub fn shutdown_timeout(&self) -> Duration {
+        self.shutdown_timeout
+    }
+
     /// Decompose this `TLSChannelConfig` into its components.
     ///
     /// This will decompose into the following components, in order:
@@ -2969,8 +4836,21 @@ impl<TLS, Underlying> TLSChannelConfig<TLS, Underlying> {
     /// - The underlying channel configuration
     ///   ([endpoint](TLSChannelConfig::endpoint))
     #[inline]
-    pub(crate) fn take(self) -> (TLS, Underlying) {
-        (self.tls, self.underlying)
+    pub(crate) fn take(self) -> (TLS, Underlying, Retry, Duration) {
+        (
+            self.tls,
+            self.underlying,
+            self.shutdown_retry,
+            self.shutdown_timeout
+        )
+    }
+
+    fn default_shutdown_retry() -> Retry {
+        Retry::TERRESTRIAL_NETWORK_DEFAULT.clone()
+    }
+
+    fn default_shutdown_timeout() -> Duration {
+        Duration::from_secs(15)
     }
 }
 
@@ -3013,46 +4893,34 @@ impl UDPFarChannelConfig {
     /// # use constellation_channels::config::UDPFarChannelConfigUnsafe;
     /// # use std::net::SocketAddr;
     /// #
-    /// let yaml = concat!("addr: 0.0.0.0\n",
-    ///                    "port: 5016\n");
+    /// let yaml = concat!("addr: 0.0.0.0:5016\n");
     /// let addr: SocketAddr = "0.0.0.0:5016".parse().unwrap();
     ///
     /// assert_eq!(
-    ///     UDPFarChannelConfig::new(addr.ip(), addr.port()),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     UDPFarChannelConfig::new(addr),
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
-    pub fn new(
-        addr: IpAddr,
-        port: u16
-    ) -> Self {
-        Self::new_with_unsafe(addr, port, UDPFarChannelConfigUnsafe::default())
+    pub fn new(addr: SocketAddr) -> Self {
+        Self::new_with_unsafe(addr, UDPFarChannelConfigUnsafe::default())
     }
 
     #[inline]
     pub fn new_with_unsafe(
-        addr: IpAddr,
-        port: u16,
+        addr: SocketAddr,
         unsafe_opts: UDPFarChannelConfigUnsafe
     ) -> Self {
         UDPFarChannelConfig {
             unsafe_opts: unsafe_opts,
-            addr: addr,
-            port: port
+            addr: addr
         }
     }
 
     /// Get the IP address to which the socket will be bound.
     #[inline]
-    pub fn addr(&self) -> &IpAddr {
+    pub fn addr(&self) -> &SocketAddr {
         &self.addr
-    }
-
-    /// Get the port to which the socket will be bound.
-    #[inline]
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// Get the unsafe options.
@@ -3063,8 +4931,8 @@ impl UDPFarChannelConfig {
 
     /// Decompose this `UDPFarChannelConfig` into its components.
     #[inline]
-    pub(crate) fn take(self) -> (IpAddr, u16, UDPFarChannelConfigUnsafe) {
-        (self.addr, self.port, self.unsafe_opts)
+    pub(crate) fn take(self) -> (SocketAddr, UDPFarChannelConfigUnsafe) {
+        (self.addr, self.unsafe_opts)
     }
 }
 
@@ -3088,7 +4956,7 @@ impl UnixFarChannelConfig {
     ///
     /// assert_eq!(
     ///     UnixFarChannelConfig::new(path),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3129,7 +4997,7 @@ impl UnixNearChannelConfig {
     ///
     /// assert_eq!(
     ///     UnixNearChannelConfig::new(path),
-    ///     serde_yaml::from_str(yaml).unwrap()
+    ///     yaml_serde::from_str(yaml).unwrap()
     /// );
     /// ```
     #[inline]
@@ -3150,83 +5018,71 @@ impl UnixNearChannelConfig {
     }
 }
 
-impl UnixNearConnectorConfig {
-    /// Create a new `UnixNearConnectorConfig` from its components.
-    ///
-    /// The arguments of this function correspond to similarly-named
-    /// fields in the YAML format.  See documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// The following example shows the equivalence between this
-    /// function and parsing a YAML configuration:
-    ///
-    /// ```
-    /// # use constellation_common::retry::Retry;
-    /// # use constellation_channels::config::UnixNearChannelConfig;
-    /// # use constellation_channels::config::UnixNearConnectorConfig;
-    /// # use std::path::PathBuf;
-    /// #
-    /// let yaml = concat!("path: /var/run/test/test.sock\n",
-    ///                    "retry:\n",
-    ///                    "  factor: 100\n",
-    ///                    "  exp-base: 2.0\n",
-    ///                    "  exp-factor: 1.0\n",
-    ///                    "  exp-rounds-cap: 20\n",
-    ///                    "  linear-factor: 1.0\n",
-    ///                    "  linear-rounds-cap: 50\n",
-    ///                    "  max-random: 100\n",
-    ///                    "  addend: 50\n");
-    /// let path = PathBuf::from("/var/run/test/test.sock");
-    /// let channel = UnixNearChannelConfig::new(path);
-    /// let retry = Retry::new(100, 2.0, 1.0, 20, 1.0, Some(50), 100, 50);
-    ///
-    /// assert_eq!(
-    ///     UnixNearConnectorConfig::new(channel, retry),
-    ///     serde_yaml::from_str(yaml).unwrap()
-    /// );
-    /// ```
-    #[inline]
-    pub fn new(
-        channel: UnixNearChannelConfig,
-        retry: Retry
-    ) -> Self {
-        UnixNearConnectorConfig {
-            channel: channel,
-            retry: retry
+impl Display for CompoundFarIPChannelXfrmPeerAddr {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarIPChannelXfrmPeerAddr::UDP { udp } => {
+                write!(f, "udp://{}", udp)
+            }
+            CompoundFarIPChannelXfrmPeerAddr::SOCKS5 { socks5 } => {
+                write!(f, "socks5://{}", socks5)
+            }
         }
-    }
-
-    /// Get the underlying channel configuration.
-    #[inline]
-    pub fn channel(&self) -> &UnixNearChannelConfig {
-        &self.channel
-    }
-
-    /// Get the retry configuration
-    #[inline]
-    pub fn retry(&self) -> &Retry {
-        &self.retry
-    }
-
-    /// Decompose this `UnixNearConnectorConfig` into its components.
-    ///
-    /// This will decompose into the following components, in order:
-    /// - The channel configuration ([config](UnixNearConnectorConfig::channel))
-    /// - The retry configuration ([retry](UnixNearConnectorConfig::retry))
-    #[inline]
-    pub(crate) fn take(self) -> (UnixNearChannelConfig, Retry) {
-        (self.channel, self.retry)
     }
 }
 
+impl Display for CompoundFarChannelXfrmPeerAddr {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarChannelXfrmPeerAddr::Unix { unix } => {
+                write!(f, "unix://{}", unix)
+            }
+            CompoundFarChannelXfrmPeerAddr::IP { ip } => write!(f, "{}", ip)
+        }
+    }
+}
+
+impl Display for CompoundFarEndpoint {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundFarEndpoint::Unix { unix_datagram } => {
+                write!(f, "unix-datagram://{}", unix_datagram.to_string_lossy())
+            }
+            CompoundFarEndpoint::UDP { udp } => write!(f, "udp://{}", udp)
+        }
+    }
+}
+
+impl Display for CompoundNearEndpoint {
+    fn fmt(
+        &self,
+        f: &mut Formatter
+    ) -> Result<(), std::fmt::Error> {
+        match self {
+            CompoundNearEndpoint::Unix { unix_stream } => {
+                write!(f, "unix-stream://{}", unix_stream.to_string_lossy())
+            }
+            CompoundNearEndpoint::TCP { tcp } => write!(f, "tcp://{}", tcp)
+        }
+    }
+}
+
+#[cfg(test)]
+use std::net::IpAddr;
 #[cfg(test)]
 use std::net::Ipv4Addr;
 
 #[cfg(test)]
 use constellation_common::config::authn::GSSAPISecurity;
-#[cfg(test)]
-use constellation_common::net::IPEndpointAddr;
 
 #[test]
 fn test_deserialize_unix_cfg() {
@@ -3234,34 +5090,19 @@ fn test_deserialize_unix_cfg() {
     let expected = UnixNearChannelConfig {
         path: PathBuf::from("/var/run/test/socket.sock")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
-
-    assert_eq!(expected, actual)
-}
-
-#[test]
-fn test_deserialize_unix_connector_cfg() {
-    let yaml = concat!("path: \"/var/run/test/socket.sock\"\n");
-    let expected = UnixNearConnectorConfig {
-        channel: UnixNearChannelConfig {
-            path: PathBuf::from("/var/run/test/socket.sock")
-        },
-        retry: Retry::default()
-    };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
 
 #[test]
 fn test_deserialize_tcp_cfg() {
-    let yaml = concat!("addr: 10.10.10.10\n", "port: 6000");
+    let yaml = concat!("addr: 10.10.10.10:6000");
     let expected = TCPNearAcceptorConfig {
         unsafe_opts: TCPNearChannelConfigUnsafe::default(),
-        addr: IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10)),
-        port: 6000
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10)), 6000)
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3269,15 +5110,14 @@ fn test_deserialize_tcp_cfg() {
 #[test]
 fn test_deserialize_tcp_connector_cfg() {
     let yaml = concat!(
-        "addr: example.com\n",
-        "port: 6001\n",
+        "addr: example.com:6001\n",
         "resolve:\n",
         "  addr-policy: [ ipv6 ]\n",
         "  renewal: 3600000"
     );
-    let expected = TCPNearConnectorConfig {
+    let expected = TCPResolvingNearConnectorConfig {
         unsafe_opts: TCPNearChannelConfigUnsafe::default(),
-        endpoint: IPEndpoint::new(
+        addr: IPEndpoint::new(
             IPEndpointAddr::Name(String::from("example.com")),
             6001
         ),
@@ -3290,7 +5130,7 @@ fn test_deserialize_tcp_connector_cfg() {
         },
         retry: Retry::default()
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3305,7 +5145,7 @@ fn test_deserialize_dns_resolve() {
             retry: Retry::default()
         }
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3314,7 +5154,7 @@ fn test_deserialize_dns_resolve() {
 fn test_deserialize_none() {
     let yaml = concat!("none\n");
     let expected = SOCKS5AuthNConfig::None;
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3326,7 +5166,7 @@ fn test_deserialize_password() {
         username: String::from("user"),
         password: String::from("password")
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3338,7 +5178,7 @@ fn test_deserialize_client_gssapi_default() {
     let expected = SOCKS5AuthNConfig::GSSAPI {
         gssapi: ClientGSSAPIConfig::default()
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3355,7 +5195,7 @@ fn test_deserialize_client_gssapi_name() {
             GSSAPISecurity::default()
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3372,7 +5212,7 @@ fn test_deserialize_client_gssapi_service() {
             GSSAPISecurity::default()
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3389,7 +5229,7 @@ fn test_deserialize_client_gssapi_optional_seclvl() {
             GSSAPISecurity::optional(128)
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3406,7 +5246,7 @@ fn test_deserialize_client_gssapi_required_seclvl() {
             GSSAPISecurity::required(128)
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }
@@ -3429,7 +5269,7 @@ fn test_deserialize_client_gssapi_full() {
             GSSAPISecurity::required(128)
         )
     };
-    let actual = serde_yaml::from_str(yaml).unwrap();
+    let actual = yaml_serde::from_str(yaml).unwrap();
 
     assert_eq!(expected, actual)
 }

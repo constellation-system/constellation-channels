@@ -1,0 +1,14 @@
+channels:
+  - inbound:
+      id: example-server-tcp
+      tcp:
+        addr: '[::0]:8118'
+
+  - inbound:
+      id: example-server-unix
+      unix-stream:
+        path: near-channels-example-server-stream.sock
+
+default-inbound-authn:
+
+default-outbound-authn:

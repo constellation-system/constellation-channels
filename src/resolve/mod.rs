@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -22,6 +22,7 @@
 //! name-resolution with periodic refreshes and a backoff-delay
 //! mechanism for failed resolution.
 use std::convert::TryFrom;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
@@ -152,7 +153,7 @@ pub type RefreshResult<T> = RetryResult<Option<T>>;
 
 impl<Addr, Origin> Addrs for MixedResolver<Addr, Origin>
 where
-    Addr: Clone + Display + Eq + From<SocketAddr> + Hash,
+    Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash,
     Origin: Clone + From<IPEndpoint>,
     Resolution<Addr>: TryFrom<Origin>
 {
@@ -210,26 +211,32 @@ where
     }
 }
 
-impl<Addr, Origin, Ctx> AddrsCreate<Ctx, Vec<Origin>>
-    for MixedResolver<Addr, Origin>
+impl<Addr, Origin, Ctx> AddrsCreate<Ctx> for MixedResolver<Addr, Origin>
 where
     Ctx: NSNameCachesCtx,
-    Addr: Clone + Display + Eq + From<SocketAddr> + Hash,
+    Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash,
     Origin: Clone + From<IPEndpoint>,
     Resolution<Addr>: TryFrom<Origin>,
-    <Resolution<Addr> as TryFrom<Origin>>::Error: Display
+    <Resolution<Addr> as TryFrom<Origin>>::Error: Debug + Display
 {
     type Config = ResolverConfig;
     type CreateError =
         MixedResolverCreateError<<Resolution<Addr> as TryFrom<Origin>>::Error>;
+    type OriginConfig = Origin;
 
-    fn create(
+    fn create<I>(
         ctx: &mut Ctx,
         config: Self::Config,
-        origins: Vec<Origin>
-    ) -> Result<Self, Self::CreateError> {
-        let mut fixed = Vec::with_capacity(origins.len());
-        let mut resolved = Vec::with_capacity(origins.len());
+        origins: I
+    ) -> Result<Self, Self::CreateError>
+    where
+        I: Iterator<Item = Origin> {
+        let (mut fixed, mut resolved) =
+            if let (_, Some(hint)) = origins.size_hint() {
+                (Vec::with_capacity(hint), Vec::with_capacity(hint))
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
         for origin in origins {
             match Resolution::try_from(origin.clone())
@@ -268,7 +275,7 @@ where
 
 impl<Addr> MixedResolver<Addr, IPEndpoint>
 where
-    Addr: Clone + Display + Eq + From<SocketAddr> + Hash,
+    Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash,
     Resolution<Addr>: TryFrom<IPEndpoint>
 {
     /// Get a representation of the names being resolved that
@@ -294,7 +301,7 @@ where
 
 impl<Addr> Addrs for Resolver<Addr>
 where
-    Addr: Clone + Display + Eq + From<SocketAddr> + Hash
+    Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash
 {
     type Addr = Addr;
     type AddrsError = NSNameCacheError;
@@ -319,20 +326,22 @@ where
     }
 }
 
-impl<Addr, Ctx, I> AddrsCreate<Ctx, I> for Resolver<Addr>
+impl<Addr, Ctx> AddrsCreate<Ctx> for Resolver<Addr>
 where
     Ctx: NSNameCachesCtx,
-    I: Iterator<Item = (String, u16)>,
-    Addr: Clone + Display + Eq + From<SocketAddr> + Hash
+    Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash
 {
     type Config = ResolverConfig;
     type CreateError = NSNameCacheError;
+    type OriginConfig = (String, u16);
 
-    fn create(
+    fn create<I>(
         ctx: &mut Ctx,
         config: Self::Config,
         origin: I
-    ) -> Result<Self, Self::CreateError> {
+    ) -> Result<Self, Self::CreateError>
+    where
+        I: Iterator<Item = (String, u16)> {
         let (renewal, retry) = config.take();
         let caches = ctx.name_caches();
         let names = caches.ns_names(origin)?;
@@ -351,7 +360,7 @@ where
 
 impl<Addr> Resolver<Addr>
 where
-    Addr: Clone + Display + Eq + From<SocketAddr> + Hash
+    Addr: Clone + Debug + Display + Eq + From<SocketAddr> + Hash
 {
     /// Get a representation of the names being resolved that
     /// implements [Display].
@@ -781,7 +790,7 @@ where
         f: &mut Formatter<'_>
     ) -> Result<(), Error> {
         match self {
-            MixedResolverCreateError::Cache { err } => err.fmt(f),
+            MixedResolverCreateError::Cache { err } => write!(f, "{}", err),
             MixedResolverCreateError::Convert { err } => err.fmt(f),
             MixedResolverCreateError::Empty => {
                 write!(f, "no addresses provided")

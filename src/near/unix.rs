@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -53,94 +53,36 @@
 //! cannot be established.  In this way, Unix sockets can be easily
 //! substituted in place of TCP sockets connecting to or listening on
 //! `localhost`.
-//!
-//! # Examples
-//!
-//! The following is an example of connecting, sending, and
-//! receiving over Unix sockets:
-//!
-//! ```
-//! # use constellation_channels::config::UnixNearChannelConfig;
-//! # use constellation_channels::near::NearChannel;
-//! # use constellation_channels::near::NearChannelCreate;
-//! # use constellation_channels::near::NearConnector;
-//! # use constellation_channels::near::unix::UnixNearConnector;
-//! # use constellation_channels::near::unix::UnixNearAcceptor;
-//! # use constellation_channels::resolve::cache::SharedNSNameCaches;
-//! # use std::net::Shutdown;
-//! # use std::thread::spawn;
-//! # use std::io::Read;
-//! # use std::io::Write;
-//! #
-//! const CONFIG: &'static str = concat!("path: example.sock");
-//! const FIRST_BYTES: [u8; 8] = [ 0x00, 0x01, 0x02, 0x03,
-//!                                0x04, 0x05, 0x06, 0x07 ];
-//! const SECOND_BYTES: [u8; 8] = [ 0x08, 0x09, 0x0a, 0x0b,
-//!                                 0x0c, 0x0d, 0x0e, 0x0f ];
-//! let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-//! let accept_config: UnixNearChannelConfig =
-//!     serde_yaml::from_str(CONFIG).unwrap();
-//! let path = accept_config.path().to_path_buf();
-//! let nscaches = SharedNSNameCaches::new();
-//!
-//! let mut server_nscaches = nscaches.clone();
-//! let listen = spawn(move || {
-//!     let mut acceptor =
-//!         UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-//!             .expect("Expected success");
-//!     let (mut stream, _) = acceptor.take_connection().unwrap();
-//!     let mut buf = [0; FIRST_BYTES.len()];
-//!
-//!     stream.read_exact(&mut buf).unwrap();
-//!     stream.write_all(&SECOND_BYTES).expect("Expected success");
-//!     stream.shutdown(Shutdown::Both).unwrap();
-//!
-//!     assert_eq!(FIRST_BYTES, buf);
-//! });
-//!
-//! let mut client_nscaches = nscaches.clone();
-//! let send = spawn(move || {
-//!     let mut conn =
-//!         UnixNearConnector::new(&mut client_nscaches, connect_config)
-//!             .expect("expected success");
-//!     let (mut stream, _) = conn.connection().expect("expected success");
-//!
-//!     stream.write_all(&FIRST_BYTES).expect("Expected success");
-//!
-//!     let mut buf = [0; SECOND_BYTES.len()];
-//!
-//!     stream.read_exact(&mut buf).unwrap();
-//!
-//!     assert_eq!(SECOND_BYTES, buf);
-//! });
-//!
-//! listen.join().unwrap();
-//! send.join().unwrap();
-//! ```
 
 use std::convert::Infallible;
+use std::convert::TryFrom;
 use std::fs::remove_file;
 use std::io::Error;
-use std::net::Shutdown;
-use std::os::unix::net::UnixListener;
-use std::os::unix::net::UnixStream;
-use std::thread::sleep;
-use std::time::Instant;
 
-use constellation_common::retry::Retry;
+use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::Negotiator;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::PassthruNegotiator;
+use constellation_common::retry::RetryResult;
+use constellation_common::unix::UnixSocketAddr;
+use constellation_common::unix::UnixSocketPath;
+use log::debug;
 use log::info;
-use log::trace;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::event::Source;
+use mio::net::UnixListener;
+use mio::net::UnixStream;
 
 use crate::config::UnixNearChannelConfig;
-use crate::config::UnixNearConnectorConfig;
-use crate::near::socket::NearSocketConnector;
-use crate::near::socket::NearSocketParams;
+use crate::config::UnixNearConnectorPartialConfig;
 use crate::near::NearChannel;
 use crate::near::NearChannelCreate;
+use crate::near::NearChannelCreateWithEndpoint;
+use crate::near::NearConnector;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::unix::UnixSocketAddr;
-use crate::unix::UnixSocketPath;
 
 /// Server side of a Unix socket near-link channel.
 ///
@@ -175,10 +117,10 @@ use crate::unix::UnixSocketPath;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = "path: acceptor_example.sock";
-/// let config = serde_yaml::from_str(CONFIG).unwrap();
+/// let config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let acceptor = UnixNearAcceptor::new(&mut nscaches, config).unwrap();
+/// let acceptor = UnixNearAcceptor::create(&mut nscaches, config).unwrap();
 /// ```
 ///
 /// ## Accepting Connections
@@ -193,10 +135,7 @@ pub struct UnixNearAcceptor {
 
 /// The [NearSocketParams] instance used by [NearSocketConnector].
 #[doc(hidden)]
-pub struct UnixNearConnectorParams {
-    /// The endpoint to which this connector will try to connect.
-    path: UnixSocketPath
-}
+pub struct UnixNearConnectorParams;
 
 /// Client side of a Unix socket near-link channel.
 ///
@@ -230,10 +169,10 @@ pub struct UnixNearConnectorParams {
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
 /// #
 /// const CONFIG: &'static str = "path: /var/run/test/test.sock\n";
-/// let accept_config = serde_yaml::from_str(CONFIG).unwrap();
+/// let accept_config = yaml_serde::from_str(CONFIG).unwrap();
 /// let mut nscaches = SharedNSNameCaches::new();
 ///
-/// let connector = UnixNearConnector::new(&mut nscaches, accept_config)
+/// let connector = UnixNearConnector::create(&mut nscaches, accept_config)
 ///     .unwrap();
 /// ```
 ///
@@ -249,7 +188,9 @@ pub struct UnixNearConnectorParams {
 /// Note that if the Unix socket does not exist at the specified path,
 /// then a `UnixNearConnector` attempting to connect to it will
 /// continually retry until the socket is created.
-pub type UnixNearConnector = NearSocketConnector<UnixNearConnectorParams>;
+pub struct UnixNearConnector {
+    path: UnixSocketPath
+}
 
 impl Drop for UnixNearAcceptor {
     fn drop(&mut self) {
@@ -290,27 +231,113 @@ impl Drop for UnixNearAcceptor {
     }
 }
 
-impl NearChannel for UnixNearAcceptor {
-    type Config = UnixNearChannelConfig;
-    type Endpoint = UnixSocketAddr;
-    type OwnedConn = UnixStream;
-    type TakeConnectError = Error;
+impl Source for UnixNearAcceptor {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.listener.register(registry, token, interests)
+    }
 
     #[inline]
-    fn take_connection(
-        &mut self
-    ) -> Result<(Self::OwnedConn, Self::Endpoint), Error> {
-        let (stream, addr) = self.listener.accept()?;
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.listener.reregister(registry, token, interests)
+    }
 
-        Ok((stream, UnixSocketAddr::from(addr)))
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.listener.deregister(registry)
+    }
+}
+
+impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearAcceptor {
+    type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (UnixStream, UnixSocketAddr);
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for UnixNearAcceptor {
+    type Conn = UnixStream;
+    type Endpoint = UnixSocketAddr;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = UnixStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Self::StartError> {
+        let (mut stream, addr) = self.listener.accept()?;
+        let addr = UnixSocketAddr::from(addr);
+
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(&self) {}
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
+        panic!("This should never be called!")
     }
 }
 
 impl NearChannelCreate for UnixNearAcceptor {
+    type Config = UnixNearChannelConfig;
     type CreateError = Error;
 
     #[inline]
-    fn new<Ctx>(
+    fn create<Ctx>(
         _caches: &mut Ctx,
         config: UnixNearChannelConfig
     ) -> Result<Self, Error>
@@ -320,539 +347,147 @@ impl NearChannelCreate for UnixNearAcceptor {
 
         Ok(UnixNearAcceptor { listener: listener })
     }
+
+    #[inline]
+    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr> {
+        None
+    }
 }
 
-impl NearSocketParams for UnixNearConnectorParams {
-    type Config = UnixNearConnectorConfig;
-    type Conn = UnixStream;
-    type CreateError = Infallible;
-    type Endpoint = UnixSocketPath;
-    type Error = Error;
+impl Negotiator<(UnixStream, UnixSocketAddr)> for UnixNearConnector {
+    type NegotiateError = Infallible;
+    type Pending = Infallible;
+    type State = (UnixStream, UnixSocketAddr);
 
-    const NAME: &'static str = "unix";
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::State
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<(UnixStream, UnixSocketAddr), Infallible>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannel for UnixNearConnector {
+    type Conn = UnixStream;
+    type Endpoint = UnixSocketAddr;
+    type ShutdownNego = PassthruNegotiator;
+    type ShutdownValue = UnixStream;
+    type StartError = Error;
+
+    #[inline]
+    fn start(
+        &mut self,
+        registry: &Registry,
+        token: Token
+    ) -> Result<RetryResult<Self::State>, Error> {
+        debug!(target: "unix-near",
+               "attempting to connect to {}",
+               self.path);
+
+        let mut stream = UnixStream::connect(&self.path)?;
+        let addr = UnixSocketAddr::try_from(&self.path)?;
+
+        registry.register(
+            &mut stream,
+            token,
+            Interest::READABLE | Interest::WRITABLE
+        )?;
+
+        Ok(RetryResult::Success((stream, addr)))
+    }
+
+    #[inline]
+    fn shutdown_nego(&self) -> Self::ShutdownNego {
+        PassthruNegotiator
+    }
+
+    #[inline]
+    fn shutdown_param(&self) {}
+
+    #[inline]
+    fn cleanup(
+        &mut self,
+        _registry: &Registry,
+        _err: Self::NegotiateError
+    ) -> Result<(), Error> {
+        panic!("This should never be called!")
+    }
+}
+
+impl NearChannelCreate for UnixNearConnector {
+    type Config = UnixNearChannelConfig;
+    type CreateError = Error;
 
     #[inline]
     fn create<Ctx>(
         _caches: &mut Ctx,
-        config: Self::Config
-    ) -> Result<(Self, Retry), Infallible>
+        config: UnixNearChannelConfig
+    ) -> Result<Self, Error>
     where
         Ctx: NSNameCachesCtx {
-        let (channel, retry) = config.take();
+        let path = config.take();
 
-        Ok((
-            UnixNearConnectorParams {
-                path: UnixSocketPath::from(channel.take())
-            },
-            retry
-        ))
+        Ok(UnixNearConnector {
+            path: UnixSocketPath::from(path)
+        })
     }
 
     #[inline]
-    fn endpoint(&self) -> &Self::Endpoint {
+    fn verify_endpoint(_config: &Self::Config) -> Option<&IPEndpointAddr> {
+        None
+    }
+}
+
+impl NearChannelCreateWithEndpoint for UnixNearConnector {
+    type Config = UnixNearConnectorPartialConfig;
+    type CreateError = Error;
+    type EndpointConfig = UnixSocketAddr;
+    type Param = ();
+
+    #[inline]
+    fn create_with_endpoint<Ctx>(
+        _caches: &mut Ctx,
+        _config: UnixNearConnectorPartialConfig,
+        endpoint: UnixSocketAddr,
+        _param: Self::Param
+    ) -> Result<Self, Self::CreateError>
+    where
+        Ctx: NSNameCachesCtx {
+        let path = UnixSocketPath::try_from(&endpoint)?;
+
+        Ok(UnixNearConnector { path: path })
+    }
+}
+
+impl NearConnector for UnixNearConnector {
+    /// Type of endpoint references.
+    type EndpointRef<'a>
+        = &'a UnixSocketPath
+    where
+        Self: 'a;
+
+    #[inline]
+    fn endpoint(&self) -> Self::EndpointRef<'_> {
         &self.path
     }
 
-    fn try_connect(
-        &mut self,
-        retry: &Retry,
-        until: &mut Instant,
-        nretries: &mut usize
-    ) -> Result<UnixStream, Error> {
-        trace!(target: "unix-near",
-               "attempting to connect to {}",
-               self.path);
-
-        let now = Instant::now();
-
-        if now < *until {
-            sleep(*until - now)
-        }
-
-        match UnixStream::connect(&self.path) {
-            // Connect success.
-            Ok(stream) => Ok(stream),
-            // Connect failure.  Increment retry and loop.
-            Err(err) => {
-                let duration = retry.retry_delay(*nretries);
-                let next_retry = Instant::now() + duration;
-
-                *nretries += 1;
-                *until = next_retry;
-
-                Err(err)
-            }
-        }
-    }
-
     #[inline]
-    fn shutdown(
-        &self,
-        stream: &Self::Conn
-    ) -> Result<(), Error> {
-        stream.shutdown(Shutdown::Both)
+    fn shutdown(&mut self) -> Result<(), Error> {
+        Ok(())
     }
-}
-
-#[cfg(test)]
-use std::fs::metadata;
-#[cfg(test)]
-use std::io::Read;
-#[cfg(test)]
-use std::io::Write;
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Barrier;
-#[cfg(test)]
-use std::thread::spawn;
-
-#[cfg(test)]
-use crate::init;
-#[cfg(test)]
-use crate::near::NearConnector;
-#[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
-
-#[test]
-fn test_send_recv() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_send_recv.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.write_all(&SECOND_BYTES).expect("Expected success");
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
-
-    assert!(metadata(&path).is_err());
-}
-
-#[cfg(not(target_os = "macos"))]
-#[test]
-fn test_reconnect() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_reconnect.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let server_barrier = barrier.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf1 = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf1).unwrap();
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        server_barrier.wait();
-        server_barrier.wait();
-
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf2 = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf2).unwrap();
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf1);
-        assert_eq!(SECOND_BYTES, buf2);
-    });
-
-    let client_barrier = barrier;
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        client_barrier.wait();
-
-        let err = stream.write_all(&SECOND_BYTES);
-
-        client_barrier.wait();
-
-        assert!(err.is_err());
-
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&SECOND_BYTES).expect("Expected success");
-    });
-
-    send.join().unwrap();
-    listen.join().unwrap();
-
-    assert!(metadata(&path).is_err());
-}
-
-#[test]
-fn test_send_close() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_send_close.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-        let err = stream.read_exact(&mut buf);
-
-        assert!(err.is_err());
-
-        let err = stream.write_all(&SECOND_BYTES);
-
-        assert!(err.is_err());
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
-
-    assert!(metadata(&path).is_err());
-}
-
-#[test]
-fn test_recv_close() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_recv_close.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let server_barrier = barrier.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        server_barrier.wait();
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier;
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        client_barrier.wait();
-
-        let err = stream.write_all(&SECOND_BYTES);
-
-        assert!(err.is_err());
-
-        let mut buf = [0; SECOND_BYTES.len()];
-        let err = stream.read_exact(&mut buf);
-
-        assert!(err.is_err());
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
-
-    assert!(metadata(&path).is_err());
-}
-
-#[test]
-fn test_send_shutdown() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_send_shutdown.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let server_barrier = barrier.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        server_barrier.wait();
-
-        let _ = stream.shutdown(Shutdown::Both);
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier;
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        conn.shutdown().expect("Expected success");
-
-        client_barrier.wait();
-
-        let err = stream.write_all(&SECOND_BYTES);
-
-        assert!(err.is_err());
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
-
-    assert!(metadata(&path).is_err());
-}
-
-#[test]
-fn test_recv_shutdown() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_recv_shutdown.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let server_barrier = barrier.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf).unwrap();
-
-        server_barrier.wait();
-
-        let _ = stream.shutdown(Shutdown::Both);
-
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier;
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream, _) = conn.connection().expect("expected success");
-
-        stream.write_all(&FIRST_BYTES).expect("Expected success");
-
-        conn.shutdown().expect("Expected success");
-
-        client_barrier.wait();
-
-        let mut buf = [0; SECOND_BYTES.len()];
-        let err = stream.read_exact(&mut buf);
-
-        assert!(err.is_err());
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
-
-    assert!(metadata(&path).is_err());
-}
-
-#[test]
-fn test_send_late_shutdown() {
-    init();
-
-    const CONFIG: &'static str = concat!("path: test_send_late_shutdown.sock");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let connect_config = serde_yaml::from_str(CONFIG).unwrap();
-    let accept_config: UnixNearChannelConfig =
-        serde_yaml::from_str(CONFIG).unwrap();
-    let path = accept_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    assert!(metadata(&path).is_err());
-
-    let mut server_nscaches = nscaches.clone();
-    let server_barrier = barrier.clone();
-    let listen = spawn(move || {
-        let mut acceptor =
-            UnixNearAcceptor::new(&mut server_nscaches, accept_config)
-                .expect("Expected success");
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf1 = [0; FIRST_BYTES.len()];
-
-        stream.read_exact(&mut buf1).unwrap();
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        let (mut stream, _) = acceptor.take_connection().unwrap();
-        let mut buf2 = [0; SECOND_BYTES.len()];
-
-        stream.read_exact(&mut buf2).unwrap();
-        stream.shutdown(Shutdown::Both).unwrap();
-
-        server_barrier.wait();
-
-        assert_eq!(FIRST_BYTES, buf1);
-        assert_eq!(SECOND_BYTES, buf2);
-    });
-
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier;
-    let send = spawn(move || {
-        let mut conn =
-            UnixNearConnector::new(&mut client_nscaches, connect_config)
-                .expect("expected success");
-        let (mut stream1, _) = conn.connection().expect("expected success");
-
-        stream1.write_all(&FIRST_BYTES).expect("Expected success");
-
-        let mut buf = [0; SECOND_BYTES.len()];
-        let err = stream1.read_exact(&mut buf);
-
-        assert!(err.is_err());
-
-        let (mut stream2, _) = conn.connection().expect("expected success");
-
-        let err = stream1.write_all(&FIRST_BYTES);
-
-        assert!(err.is_err());
-
-        stream2.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
-    });
-
-    send.join().unwrap();
-    listen.join().unwrap();
-
-    assert!(metadata(&path).is_err());
 }

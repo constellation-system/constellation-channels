@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -21,166 +21,45 @@
 //! This module provides a [FarChannel] implementation over UDP
 //! sockets.  Note that traffic communicated in this way are neither
 //! authenticated nor secure inherently.
-//!
-//! # Examples
-//!
-//! The following is an example of connecting, sending, and
-//! receiving over UDP:
-//!
-//! ```
-//! # use constellation_auth::authn::PassthruSessionAuthN;
-//! # use constellation_common::net::PassthruDatagramXfrm;
-//! # use constellation_common::retry::RetryResult;
-//! # use constellation_channels::config::UDPFarChannelConfig;
-//! # use constellation_channels::far::FarChannel;
-//! # use constellation_channels::far::FarChannelBorrowFlows;
-//! # use constellation_channels::far::FarChannelCreate;
-//! # use constellation_channels::far::FarChannelNegotiator;
-//! # use constellation_channels::far::flows::BorrowedFlows;
-//! # use constellation_channels::far::flows::BorrowedFlowsCreate;
-//! # use constellation_channels::far::flows::MultiFlows;
-//! # use constellation_channels::far::flows::SingleFlow;
-//! # use constellation_channels::resolve::cache::SharedNSNameCaches;
-//! # use constellation_channels::far::udp::UDPFarChannel;
-//! # use constellation_channels::far::udp::UDPFarSocket;
-//! # use std::convert::TryFrom;
-//! # use std::io::Read;
-//! # use std::io::Write;
-//! # use std::net::SocketAddr;
-//! # use std::sync::Arc;
-//! # use std::sync::Barrier;
-//! # use std::thread::sleep;
-//! # use std::thread::spawn;
-//! # use std::time::Duration;
-//! #
-//! const CHANNEL_CONFIG: &'static str = concat!("addr: ::1\n",
-//!                                              "port: 7005\n");
-//! const CLIENT_CONFIG: &'static str = concat!("addr: ::1\n",
-//!                                             "port: 7006\n");
-//! const FIRST_BYTES: [u8; 8] = [ 0x00, 0x01, 0x02, 0x03,
-//!                                0x04, 0x05, 0x06, 0x07 ];
-//! const SECOND_BYTES: [u8; 8] = [ 0x08, 0x09, 0x0a, 0x0b,
-//!                                 0x0c, 0x0d, 0x0e, 0x0f ];
-//! let channel_config: UDPFarChannelConfig =
-//!     serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
-//! let client_config: UDPFarChannelConfig =
-//!     serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-//! let channel_addr = SocketAddr::new(channel_config.addr().clone(),
-//!                                    channel_config.port());
-//! let client_addr = SocketAddr::new(client_config.addr().clone(),
-//!                                   client_config.port());
-//! let nscaches = SharedNSNameCaches::new();
-//! # let barrier = Arc::new(Barrier::new(2));
-//!
-//! let mut client_nscaches = nscaches.clone();
-//! let client_barrier = barrier.clone();
-//! let listen = spawn(move || {
-//!     let mut listener =
-//!         UDPFarChannel::new(&mut client_nscaches, channel_config)
-//!             .expect("Expected success");
-//!     let nego = FarChannelNegotiator::negotiator(&listener);
-//!     let param = listener.acquire().unwrap();
-//!     let xfrm = PassthruDatagramXfrm::new();
-//!     let mut flows: MultiFlows<
-//!         UDPFarSocket,
-//!         PassthruDatagramXfrm<SocketAddr>
-//!     > = listener.borrowed_flows(param, xfrm, ()).unwrap();
-//!
-//! #   client_barrier.wait();
-//!
-//!     let mut buf = [0; FIRST_BYTES.len()];
-//!     let (mut flow, peer_addr, NullCred) =
-//!         match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-//!             RetryResult::Success(flow) => flow,
-//!             _ => panic!("Shouldn't see retry")
-//!         };
-//!
-//! #   client_barrier.wait();
-//!
-//!     let nbytes = flow.read(&mut buf).unwrap();
-//!
-//!     flow.write_all(&SECOND_BYTES).expect("Expected success");
-//!
-//! #   client_barrier.wait();
-//!
-//!     assert_eq!(peer_addr, client_addr);
-//!     assert_eq!(FIRST_BYTES.len(), nbytes);
-//!     assert_eq!(FIRST_BYTES, buf);
-//! });
-//!
-//! let mut channel_nscaches = nscaches.clone();
-//! let channel_barrier = barrier;
-//! let send = spawn(move || {
-//!     let mut conn = UDPFarChannel::new(&mut channel_nscaches, client_config)
-//!         .expect("expected success");
-//!     let nego = FarChannelNegotiator::negotiator(&conn);
-//!     let param = conn.acquire().unwrap();
-//!     let xfrm = PassthruDatagramXfrm::new();
-//!     let mut flows: SingleFlow<
-//!         UDPFarSocket,
-//!         PassthruDatagramXfrm<SocketAddr>
-//!     > = conn
-//!         .borrowed_flows(param, xfrm, channel_addr.clone())
-//!         .unwrap();
-//!
-//! #   channel_barrier.wait();
-//!
-//!     let (mut flow, NullCred) = match flows
-//!         .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
-//!         .unwrap()
-//!     {
-//!         RetryResult::Success(flow) => flow,
-//!         _ => panic!("Shouldn't see retry")
-//!     };
-//!
-//!     flow.write_all(&FIRST_BYTES).expect("Expected success");
-//!
-//! #   channel_barrier.wait();
-//!
-//!     let mut buf = [0; SECOND_BYTES.len()];
-//!
-//! #   channel_barrier.wait();
-//!
-//!     flow.read_exact(&mut buf).unwrap();
-//!
-//!     assert_eq!(SECOND_BYTES, buf);
-//! });
-//!
-//! listen.join().unwrap();
-//! send.join().unwrap();
-//! ```
 
 use std::convert::Infallible;
+use std::convert::TryFrom;
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::hash::Hash;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::net::UdpSocket;
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
-use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpoint;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::PassthruNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::net::TrivialNegotiator;
+use constellation_common::retry::RetryResult;
+use constellation_streams::threads::TokensCtx;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::event::Source;
+use mio::net::UdpSocket;
 
 use crate::config::UDPFarChannelConfig;
-use crate::far::flows::PassthruNegotiator;
-use crate::far::BorrowedFlowsCreate;
-use crate::far::BorrowedFlowsFlow;
 use crate::far::FarChannel;
-use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
-use crate::far::FarChannelNegotiator;
-use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
-use crate::far::OwnedFlowsCreate;
+use crate::far::flows::BufferedFlow;
 use crate::resolve::cache::NSNameCachesCtx;
 
 /// A UDP-based far-link channel.
@@ -207,18 +86,19 @@ use crate::resolve::cache::NSNameCachesCtx;
 /// The following example shows how to create a `UDPFarChannel`:
 ///
 /// ```
+/// # use std::iter::empty;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::udp::UDPFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
-///     "addr: ::1\n",
-///     "port: 7006\n",
+///     "addr: '[::1]:7006'\n",
 /// );
-/// let udp_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let udp_config = yaml_serde::from_str(CONFIG).unwrap();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
-/// let mut channel = UDPFarChannel::new(&mut nscaches, udp_config)
+/// let mut channel = UDPFarChannel::create(&mut ctx, udp_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UDPFarChannel {
@@ -237,17 +117,63 @@ pub struct UDPFarSocket {
 }
 
 /// Base-level transformer for [UDPFarChannel]s.
-pub struct UDPDatagramXfrm;
+pub struct UDPDatagramXfrm<Addr>
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send {
+    addr: PhantomData<Addr>
+}
 
-impl Default for UDPDatagramXfrm {
+impl Source for UDPFarSocket {
     #[inline]
-    fn default() -> Self {
-        UDPDatagramXfrm
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.socket.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.socket.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.socket.deregister(registry)
     }
 }
 
-impl DatagramXfrm for UDPDatagramXfrm {
-    type Error = Infallible;
+impl<Addr> Default for UDPDatagramXfrm<Addr>
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send
+{
+    #[inline]
+    fn default() -> Self {
+        UDPDatagramXfrm { addr: PhantomData }
+    }
+}
+
+impl<Addr> DatagramXfrm for UDPDatagramXfrm<Addr>
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send
+{
+    type Error = <SocketAddr as TryFrom<Addr>>::Error;
     type LocalAddr = SocketAddr;
     type PeerAddr = SocketAddr;
     type SizeError = Infallible;
@@ -289,7 +215,12 @@ impl DatagramXfrm for UDPDatagramXfrm {
     }
 }
 
-impl DatagramXfrmCreate for UDPDatagramXfrm {
+impl<Addr> DatagramXfrmCreate for UDPDatagramXfrm<Addr>
+where
+    SocketAddr: TryFrom<Addr>,
+    <SocketAddr as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<SocketAddr> + Send
+{
     type Addr = SocketAddr;
     type CreateParam = ();
 
@@ -298,27 +229,20 @@ impl DatagramXfrmCreate for UDPDatagramXfrm {
         _addr: &SocketAddr,
         _param: &()
     ) -> Self {
-        UDPDatagramXfrm
-    }
-}
-
-impl DatagramXfrmCreateParam for UDPDatagramXfrm {
-    type Param = SocketAddr;
-    type ParamError = Error;
-    type Socket = UDPFarSocket;
-
-    #[inline]
-    fn param(
-        &self,
-        socket: &Self::Socket
-    ) -> Result<Self::Param, Self::ParamError> {
-        socket.socket.local_addr()
+        UDPDatagramXfrm::default()
     }
 }
 
 impl FarChannel for UDPFarChannel {
     type AcquireError = Infallible;
+    type AcquirePending = Infallible;
+    type AcquireState = SocketAddr;
     type Acquired = SocketAddr;
+    type NegotiateError = Infallible;
+    type ShutdownError = Infallible;
+    type ShutdownNegotiateError = Infallible;
+    type ShutdownPending = Infallible;
+    type ShutdownState = ();
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -337,8 +261,68 @@ impl FarChannel for UDPFarChannel {
     }
 
     #[inline]
-    fn acquire(&mut self) -> Result<SocketAddr, Infallible> {
-        Ok(self.bind)
+    fn acquire(
+        &mut self,
+        _tokens: &mut Vec<Token>,
+        _registry: &Registry
+    ) -> Result<RetryResult<SocketAddr>, Infallible> {
+        Ok(RetryResult::Success(self.bind))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::AcquireState
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+
+    #[inline]
+    fn shutdown(
+        &self,
+        _acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        _tokens: &mut Vec<Token>,
+        _registry: &Registry,
+        _state: Self::ShutdownState
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(()))
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        _tokens: &mut Vec<Token>,
+        _registry: &Registry,
+        _err: Self::ShutdownPending
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    > {
+        panic!("This should never be called!")
     }
 }
 
@@ -352,7 +336,7 @@ impl FarChannelSocket for UDPFarChannel {
         &self,
         param: &SocketAddr
     ) -> Result<UDPFarSocket, Error> {
-        let socket = UdpSocket::bind(param)?;
+        let socket = UdpSocket::bind(*param)?;
 
         Ok(UDPFarSocket {
             unsafe_allow_ip_addr_creds: self.unsafe_allow_ip_addr_creds,
@@ -366,34 +350,36 @@ impl FarChannelCreate for UDPFarChannel {
     type CreateError = Infallible;
 
     #[inline]
-    fn new<Ctx>(
-        _caches: &mut Ctx,
-        config: UDPFarChannelConfig
-    ) -> Result<Self, Infallible>
+    fn create<Ctx>(
+        _ctx: &mut Ctx,
+        config: Self::Config
+    ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
-        let (addr, port, unsafe_opts) = config.take();
+        Ctx: NSNameCachesCtx + TokensCtx {
+        let (addr, unsafe_opts) = config.take();
 
         if unsafe_opts.allow_ip_addr_creds() {
             warn!(target: "udp-far-channel",
-                  concat!("unsafe option allow_ip_addr_creds enabled for ",
-                          "UDP far channel on {}:{} (this allows for trivial ",
-                          "spoofing of channel credentials)"),
-            addr, port)
+                  "unsafe option allow_ip_addr_creds enabled for UDP far \
+                   channel on {}:{} (this allows for trivial spoofing of \
+                   channel credentials)",
+            addr.ip(), addr.port())
         }
 
         Ok(UDPFarChannel {
             unsafe_allow_ip_addr_creds: unsafe_opts.allow_ip_addr_creds(),
-            bind: SocketAddr::new(addr, port)
+            bind: addr
         })
     }
 }
 
-impl<Xfrm> FarChannelXfrm<Xfrm> for UDPFarChannel
+impl<Xfrm> FarChannelXfrm<Xfrm, Xfrm> for UDPFarChannel
 where
+    SocketAddr: TryFrom<Xfrm::LocalAddr>,
+    <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<SocketAddr>,
     Xfrm: DatagramXfrm
 {
-    type Xfrm = Xfrm;
     type XfrmError = Infallible;
 
     #[inline]
@@ -406,30 +392,47 @@ where
     }
 }
 
-impl FarChannelNegotiator<PassthruNegotiator> for UDPFarChannel {
+impl<Xfrm> FarChannelFlows<Xfrm, Xfrm> for UDPFarChannel
+where
+    SocketAddr: TryFrom<Xfrm::LocalAddr>,
+    <SocketAddr as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<SocketAddr>,
+    Xfrm: DatagramXfrm
+{
+    type Flow = BufferedFlow<Self::Socket, Xfrm>;
+    type InboundNego = PassthruNegotiator;
+    type InboundNegoError = Infallible;
+    type OutboundNego = PassthruNegotiator;
+    type OutboundNegoError = Infallible;
+    type ShutdownNego = TrivialNegotiator;
+    type ShutdownNegoError = Infallible;
+
     #[inline]
-    fn negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
+        Ok(PassthruNegotiator)
     }
-}
 
-impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm> for UDPFarChannel
-where
-    InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, UDPFarSocket, InnerXfrm> + BorrowedFlowsFlow
-{
-    type Nego = PassthruNegotiator;
-}
+    #[inline]
+    fn inbound_nego_param(&self) {}
 
-impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for UDPFarChannel
-where
-    InnerXfrm: DatagramXfrm,
-    AuthN: SessionAuthN<F::Flow>,
-    F: OwnedFlowsCreate<UDPFarSocket, PassthruNegotiator, AuthN, InnerXfrm>,
-    F::Flow: Send
-{
-    type Nego = PassthruNegotiator;
+    #[inline]
+    fn outbound_negotiator(
+        &self
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
+        Ok(PassthruNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_negotiator(
+        &self
+    ) -> Result<Self::ShutdownNego, Self::ShutdownNegoError> {
+        Ok(TrivialNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_nego_param(&self) {}
 }
 
 impl Socket for UDPFarSocket {
@@ -476,7 +479,7 @@ impl Sender for UDPFarSocket {
         addr: &Self::Addr,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        self.socket.send_to(buf, addr)
+        self.socket.send_to(buf, *addr)
     }
 
     fn send_to_vectored(
@@ -547,144 +550,4 @@ impl Receiver for UDPFarSocket {
 
         Ok((nbytes, addr, cred))
     }
-
-    #[inline]
-    fn peek_from(
-        &self,
-        buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
-        let (nbytes, addr) = self.socket.peek_from(buf)?;
-
-        Ok((nbytes, addr))
-    }
-}
-
-#[cfg(test)]
-use std::io::Read;
-#[cfg(test)]
-use std::io::Write;
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Barrier;
-#[cfg(test)]
-use std::thread::spawn;
-
-#[cfg(test)]
-use constellation_auth::authn::PassthruSessionAuthN;
-#[cfg(test)]
-use constellation_auth::cred::NullCred;
-#[cfg(test)]
-use constellation_common::net::PassthruDatagramXfrm;
-#[cfg(test)]
-use constellation_common::retry::RetryResult;
-
-#[cfg(test)]
-use crate::far::flows::BorrowedFlows;
-#[cfg(test)]
-use crate::far::flows::MultiFlows;
-#[cfg(test)]
-use crate::far::flows::SingleFlow;
-#[cfg(test)]
-use crate::init;
-#[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
-
-#[test]
-fn test_send_recv() {
-    init();
-
-    const CHANNEL_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7007\n");
-    const CLIENT_CONFIG: &'static str = concat!("addr: ::1\n", "port: 7008\n");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let channel_config: UDPFarChannelConfig =
-        serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
-    let client_config: UDPFarChannelConfig =
-        serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-    let channel_addr =
-        SocketAddr::new(channel_config.addr().clone(), channel_config.port());
-    let client_addr =
-        SocketAddr::new(client_config.addr().clone(), client_config.port());
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    let mut client_nscaches = nscaches.clone();
-    let client_barrier = barrier.clone();
-    let listen = spawn(move || {
-        let mut listener =
-            UDPFarChannel::new(&mut client_nscaches, channel_config)
-                .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = listener.acquire().unwrap();
-        let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: MultiFlows<
-            UDPFarSocket,
-            PassthruDatagramXfrm<SocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
-        let mut buf = [0; FIRST_BYTES.len()];
-
-        client_barrier.wait();
-
-        let (mut flow, peer_addr, NullCred) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-
-        client_barrier.wait();
-
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
-
-        assert_eq!(peer_addr, client_addr);
-        assert_eq!(FIRST_BYTES.len(), nbytes);
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let mut channel_nscaches = nscaches.clone();
-    let channel_barrier = barrier;
-    let send = spawn(move || {
-        let mut conn = UDPFarChannel::new(&mut channel_nscaches, client_config)
-            .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = conn.acquire().unwrap();
-        let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: SingleFlow<
-            UDPFarSocket,
-            PassthruDatagramXfrm<SocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
-
-        channel_barrier.wait();
-
-        let (mut flow, NullCred) = match flows
-            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
-        };
-
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
-
-        channel_barrier.wait();
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        channel_barrier.wait();
-
-        flow.read_exact(&mut buf).unwrap();
-
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
 }

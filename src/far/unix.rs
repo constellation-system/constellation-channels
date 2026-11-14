@@ -1,4 +1,4 @@
-// Copyright © 2024-25 The Johns Hopkins Applied Physics Laboratory LLC.
+// Copyright © 2024-26 The Johns Hopkins Applied Physics Laboratory LLC.
 //
 // This program is free software: you can redistribute it and/or
 // modify it under the terms of the GNU Affero General Public License,
@@ -51,171 +51,50 @@
 //! `UnixFarChannel`s.  In this way, Unix sockets can be easily
 //! substituted in place of UDP sockets connecting to or listening on
 //! `localhost`.
-//!
-//! # Examples
-//!
-//! The following is an example of connecting, sending, and
-//! receiving over Unix sockets:
-//!
-//! ```
-//! # use constellation_auth::authn::PassthruSessionAuthN;
-//! # use constellation_common::net::PassthruDatagramXfrm;
-//! # use constellation_common::retry::RetryResult;
-//! # use constellation_channels::config::UnixFarChannelConfig;
-//! # use constellation_channels::far::FarChannel;
-//! # use constellation_channels::far::FarChannelBorrowFlows;
-//! # use constellation_channels::far::FarChannelCreate;
-//! # use constellation_channels::far::FarChannelNegotiator;
-//! # use constellation_channels::far::flows::BorrowedFlows;
-//! # use constellation_channels::far::flows::BorrowedFlowsCreate;
-//! # use constellation_channels::far::flows::MultiFlows;
-//! # use constellation_channels::far::flows::SingleFlow;
-//! # use constellation_channels::far::unix::UnixDatagramSocket;
-//! # use constellation_channels::far::unix::UnixFarChannel;
-//! # use constellation_channels::resolve::cache::SharedNSNameCaches;
-//! # use constellation_channels::unix::UnixSocketAddr;
-//! # use std::convert::TryFrom;
-//! # use std::io::Read;
-//! # use std::io::Write;
-//! # use std::sync::Arc;
-//! # use std::sync::Barrier;
-//! # use std::thread::sleep;
-//! # use std::thread::spawn;
-//! # use std::time::Duration;
-//! #
-//! const CHANNEL_CONFIG: &'static str = "path: example_server.sock\n";
-//! const CLIENT_CONFIG: &'static str = "path: example_client.sock\n";
-//! const FIRST_BYTES: [u8; 8] = [ 0x00, 0x01, 0x02, 0x03,
-//!                                0x04, 0x05, 0x06, 0x07 ];
-//! const SECOND_BYTES: [u8; 8] = [ 0x08, 0x09, 0x0a, 0x0b,
-//!                                 0x0c, 0x0d, 0x0e, 0x0f ];
-//! let client_config: UnixFarChannelConfig =
-//!     serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-//! let channel_config: UnixFarChannelConfig =
-//!     serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
-//! let channel_path = channel_config.path().to_path_buf();
-//! let client_path = client_config.path().to_path_buf();
-//! let nscaches = SharedNSNameCaches::new();
-//! let barrier = Arc::new(Barrier::new(2));
-//!
-//! let client_addr = UnixSocketAddr::try_from(&client_path).unwrap();
-//! # let client_barrier = barrier.clone();
-//! let mut client_nscaches = nscaches.clone();
-//! let listen = spawn(move || {
-//!     let mut listener =
-//!         UnixFarChannel::new(&mut client_nscaches, channel_config)
-//!             .expect("Expected success");
-//!     let nego = FarChannelNegotiator::negotiator(&listener);
-//!     let param = listener.acquire().unwrap();
-//!     let xfrm = PassthruDatagramXfrm::new();
-//!     let mut flows: MultiFlows<
-//!         UnixDatagramSocket,
-//!         PassthruDatagramXfrm<UnixSocketAddr>
-//!     > = listener.borrowed_flows(param, xfrm, ()).unwrap();
-//!
-//! #   client_barrier.wait();
-//!
-//!     let mut buf = [0; FIRST_BYTES.len()];
-//!     let (mut flow, peer_addr, NullCred) =
-//!         match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-//!             RetryResult::Success(flow) => flow,
-//!             _ => panic!("Shouldn't see retry")
-//!         };
-//!
-//! #   client_barrier.wait();
-//!
-//!     let nbytes = flow.read(&mut buf).unwrap();
-//!
-//!     flow.write_all(&SECOND_BYTES).expect("Expected success");
-//!
-//! #   client_barrier.wait();
-//!
-//!     assert_eq!(peer_addr, client_addr);
-//!     assert_eq!(FIRST_BYTES.len(), nbytes);
-//!     assert_eq!(FIRST_BYTES, buf);
-//! });
-//!
-//! let channel_addr = UnixSocketAddr::try_from(&channel_path).unwrap();
-//! let channel_barrier = barrier;
-//! let mut channel_nscaches = nscaches.clone();
-//! let send = spawn(move || {
-//!     let mut conn =
-//!         UnixFarChannel::new(&mut channel_nscaches, client_config)
-//!             .expect("expected success");
-//!     let nego = FarChannelNegotiator::negotiator(&conn);
-//!     let param = conn.acquire().unwrap();
-//!     let xfrm = PassthruDatagramXfrm::new();
-//!     let mut flows: SingleFlow<
-//!         UnixDatagramSocket,
-//!         PassthruDatagramXfrm<UnixSocketAddr>
-//!     > = conn
-//!         .borrowed_flows(param, xfrm, channel_addr.clone())
-//!         .unwrap();
-//!
-//! #   channel_barrier.wait();
-//!
-//!     let (mut flow, NullCred) = match flows
-//!         .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
-//!         .unwrap()
-//!     {
-//!         RetryResult::Success(flow) => flow,
-//!         _ => panic!("Shouldn't see retry")
-//!     };
-//!
-//!     flow.write_all(&FIRST_BYTES).expect("Expected success");
-//!
-//! #   channel_barrier.wait();
-//!
-//!     let mut buf = [0; SECOND_BYTES.len()];
-//!
-//! #   channel_barrier.wait();
-//!
-//!     flow.read_exact(&mut buf).unwrap();
-//!
-//!     assert_eq!(SECOND_BYTES, buf);
-//! });
-//!
-//! listen.join().unwrap();
-//! send.join().unwrap();
-//! ```
 
 use std::convert::Infallible;
 use std::convert::TryFrom;
+use std::convert::TryInto;
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::fs::remove_file;
+use std::hash::Hash;
 use std::io::Error;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::os::unix::net::UCred;
-use std::os::unix::net::UnixDatagram;
 
-use constellation_auth::authn::SessionAuthN;
 use constellation_common::net::DatagramXfrm;
 use constellation_common::net::DatagramXfrmCreate;
-use constellation_common::net::DatagramXfrmCreateParam;
 use constellation_common::net::IPEndpoint;
 use constellation_common::net::IPEndpointAddr;
+use constellation_common::net::NegotiatorResult;
+use constellation_common::net::PassthruNegotiator;
 use constellation_common::net::Receiver;
 use constellation_common::net::Sender;
 use constellation_common::net::Socket;
+use constellation_common::net::TrivialNegotiator;
+use constellation_common::retry::RetryResult;
+use constellation_common::unix::UnixSocketPath;
+use constellation_streams::threads::TokensCtx;
 use log::info;
 use log::warn;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use mio::event::Source;
+use mio::net::UnixDatagram;
 
 use crate::config::UnixFarChannelConfig;
-use crate::far::flows::PassthruNegotiator;
-use crate::far::BorrowedFlowsCreate;
-use crate::far::BorrowedFlowsFlow;
 use crate::far::FarChannel;
-use crate::far::FarChannelBorrowFlows;
 use crate::far::FarChannelCreate;
-use crate::far::FarChannelNegotiator;
-use crate::far::FarChannelOwnedFlows;
+use crate::far::FarChannelFlows;
 use crate::far::FarChannelSocket;
 use crate::far::FarChannelXfrm;
-use crate::far::OwnedFlowsCreate;
+use crate::far::flows::BufferedFlow;
 use crate::resolve::cache::NSNameCachesCtx;
-use crate::unix::UnixSocketAddr;
 
 /// Unix socket far-link channel.
 ///
@@ -245,22 +124,24 @@ use crate::unix::UnixSocketAddr;
 /// The following example shows how to create a `UnixFarChannel`:
 ///
 /// ```
+/// # use std::iter::empty;
 /// # use constellation_channels::far::FarChannelCreate;
 /// # use constellation_channels::far::unix::UnixFarChannel;
 /// # use constellation_channels::resolve::cache::SharedNSNameCaches;
+/// # use constellation_streams::threads::WithTokens;
 /// #
 /// const CONFIG: &'static str = concat!(
 ///     "path: example.sock\n",
 /// );
-/// let unix_config = serde_yaml::from_str(CONFIG).unwrap();
-/// let mut nscaches = SharedNSNameCaches::new();
+/// let unix_config = yaml_serde::from_str(CONFIG).unwrap();
+/// let mut ctx = WithTokens::new(SharedNSNameCaches::new());
 ///
-/// let mut channel = UnixFarChannel::new(&mut nscaches, unix_config)
+/// let mut channel = UnixFarChannel::create(&mut ctx, unix_config)
 ///     .expect("Expected success");
 /// ```
 pub struct UnixFarChannel {
     /// The address to which to bind.
-    bind: UnixSocketAddr
+    bind: UnixSocketPath
 }
 
 /// Wrapper around a [UnixDatagram].
@@ -273,19 +154,35 @@ pub struct UnixDatagramSocket {
 }
 
 /// Base-level transformer for [UnixFarChannel]s.
-pub struct UnixDatagramXfrm;
+pub struct UnixDatagramXfrm<Addr>
+where
+    UnixSocketPath: TryFrom<Addr>,
+    <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send {
+    addr: PhantomData<Addr>
+}
 
-impl Default for UnixDatagramXfrm {
+impl<Addr> Default for UnixDatagramXfrm<Addr>
+where
+    UnixSocketPath: TryFrom<Addr>,
+    <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send
+{
     #[inline]
     fn default() -> Self {
-        UnixDatagramXfrm
+        UnixDatagramXfrm { addr: PhantomData }
     }
 }
 
-impl DatagramXfrm for UnixDatagramXfrm {
-    type Error = Infallible;
-    type LocalAddr = UnixSocketAddr;
-    type PeerAddr = UnixSocketAddr;
+impl<Addr> DatagramXfrm for UnixDatagramXfrm<Addr>
+where
+    UnixSocketPath: TryFrom<Addr>,
+    <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send
+{
+    type Error = <UnixSocketPath as TryFrom<Addr>>::Error;
+    type LocalAddr = Addr;
+    type PeerAddr = UnixSocketPath;
     type SizeError = Infallible;
 
     #[inline]
@@ -311,50 +208,50 @@ impl DatagramXfrm for UnixDatagramXfrm {
         &mut self,
         _msg: &[u8],
         addr: Self::PeerAddr
-    ) -> Result<(Option<Vec<u8>>, Self::PeerAddr), Self::Error> {
-        Ok((None, addr))
+    ) -> Result<(Option<Vec<u8>>, Self::LocalAddr), Self::Error> {
+        Ok((None, addr.into()))
     }
 
     #[inline]
     fn unwrap(
         &mut self,
         buf: &mut [u8],
-        addr: Self::PeerAddr
+        addr: Addr
     ) -> Result<(usize, Self::PeerAddr), Self::Error> {
+        let addr = addr.try_into()?;
+
         Ok((buf.len(), addr))
     }
 }
 
-impl DatagramXfrmCreate for UnixDatagramXfrm {
-    type Addr = UnixSocketAddr;
+impl<Addr> DatagramXfrmCreate for UnixDatagramXfrm<Addr>
+where
+    UnixSocketPath: TryFrom<Addr>,
+    <UnixSocketPath as TryFrom<Addr>>::Error: Debug + Display,
+    Addr: Clone + Debug + Display + Eq + Hash + From<UnixSocketPath> + Send
+{
+    type Addr = UnixSocketPath;
     type CreateParam = ();
 
     #[inline]
     fn create(
-        _addr: &UnixSocketAddr,
+        _addr: &UnixSocketPath,
         _param: &()
     ) -> Self {
-        UnixDatagramXfrm
-    }
-}
-
-impl DatagramXfrmCreateParam for UnixDatagramXfrm {
-    type Param = UnixSocketAddr;
-    type ParamError = Error;
-    type Socket = UnixDatagramSocket;
-
-    #[inline]
-    fn param(
-        &self,
-        socket: &Self::Socket
-    ) -> Result<Self::Param, Self::ParamError> {
-        socket.socket.local_addr().map(UnixSocketAddr::from)
+        UnixDatagramXfrm::default()
     }
 }
 
 impl FarChannel for UnixFarChannel {
     type AcquireError = Infallible;
-    type Acquired = UnixSocketAddr;
+    type AcquirePending = Infallible;
+    type AcquireState = UnixSocketPath;
+    type Acquired = UnixSocketPath;
+    type NegotiateError = Infallible;
+    type ShutdownError = Infallible;
+    type ShutdownNegotiateError = Infallible;
+    type ShutdownPending = Infallible;
+    type ShutdownState = ();
 
     #[cfg(feature = "socks5")]
     #[inline]
@@ -366,22 +263,83 @@ impl FarChannel for UnixFarChannel {
     }
 
     #[inline]
-    fn acquire(&mut self) -> Result<UnixSocketAddr, Infallible> {
-        Ok(self.bind.clone())
+    fn acquire(
+        &mut self,
+        _tokens: &mut Vec<Token>,
+        _registry: &Registry
+    ) -> Result<RetryResult<UnixSocketPath>, Infallible> {
+        Ok(RetryResult::Success(self.bind.clone()))
+    }
+
+    #[inline]
+    fn negotiate(
+        &self,
+        state: Self::AcquireState
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(state))
+    }
+
+    #[inline]
+    fn complete_negotiate(
+        &self,
+        _err: Infallible
+    ) -> Result<
+        NegotiatorResult<Self::Acquired, Self::AcquirePending>,
+        Self::NegotiateError
+    > {
+        panic!("This should never be called!")
+    }
+
+    #[inline]
+    fn shutdown(
+        &self,
+        _acquired: Self::Acquired
+    ) -> Result<Self::ShutdownState, Self::ShutdownError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn shutdown_negotiate(
+        &self,
+        _tokens: &mut Vec<Token>,
+        _registry: &Registry,
+        _state: Self::ShutdownState
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    > {
+        Ok(NegotiatorResult::Complete(()))
+    }
+
+    #[inline]
+    fn complete_shutdown_negotiate(
+        &self,
+        _tokens: &mut Vec<Token>,
+        _registry: &Registry,
+        _err: Self::ShutdownPending
+    ) -> Result<
+        NegotiatorResult<(), Self::ShutdownPending>,
+        Self::ShutdownNegotiateError
+    > {
+        panic!("This should never be called!")
     }
 }
 
 impl FarChannelSocket for UnixFarChannel {
-    type Param = UnixSocketAddr;
+    type Param = UnixSocketPath;
     type Socket = UnixDatagramSocket;
     type SocketError = Error;
 
     #[inline]
     fn socket(
         &self,
-        param: &UnixSocketAddr
+        param: &UnixSocketPath
     ) -> Result<UnixDatagramSocket, Error> {
-        let socket = UnixDatagram::bind_addr(param.into())?;
+        let addr = param.try_into()?;
+        let socket = UnixDatagram::bind_addr(&addr)?;
 
         Ok(UnixDatagramSocket { socket: socket })
     }
@@ -392,23 +350,25 @@ impl FarChannelCreate for UnixFarChannel {
     type CreateError = Error;
 
     #[inline]
-    fn new<Ctx>(
-        _caches: &mut Ctx,
-        config: UnixFarChannelConfig
-    ) -> Result<Self, Error>
+    fn create<Ctx>(
+        _ctx: &mut Ctx,
+        config: Self::Config
+    ) -> Result<Self, Self::CreateError>
     where
-        Ctx: NSNameCachesCtx {
-        let addr = UnixSocketAddr::try_from(config.path())?;
+        Ctx: NSNameCachesCtx + TokensCtx {
+        let addr = UnixSocketPath::from(config.path());
 
         Ok(UnixFarChannel { bind: addr })
     }
 }
 
-impl<Xfrm> FarChannelXfrm<Xfrm> for UnixFarChannel
+impl<Xfrm> FarChannelXfrm<Xfrm, Xfrm> for UnixFarChannel
 where
+    UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
+    <UnixSocketPath as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<UnixSocketPath>,
     Xfrm: DatagramXfrm
 {
-    type Xfrm = Xfrm;
     type XfrmError = Infallible;
 
     #[inline]
@@ -421,37 +381,47 @@ where
     }
 }
 
-impl FarChannelNegotiator<PassthruNegotiator> for UnixFarChannel {
+impl<Xfrm> FarChannelFlows<Xfrm, Xfrm> for UnixFarChannel
+where
+    UnixSocketPath: TryFrom<Xfrm::LocalAddr>,
+    <UnixSocketPath as TryFrom<Xfrm::LocalAddr>>::Error: Debug + Display,
+    Xfrm::LocalAddr: From<UnixSocketPath>,
+    Xfrm: DatagramXfrm
+{
+    type Flow = BufferedFlow<Self::Socket, Xfrm>;
+    type InboundNego = PassthruNegotiator;
+    type InboundNegoError = Infallible;
+    type OutboundNego = PassthruNegotiator;
+    type OutboundNegoError = Infallible;
+    type ShutdownNego = TrivialNegotiator;
+    type ShutdownNegoError = Infallible;
+
     #[inline]
-    fn negotiator(&self) -> PassthruNegotiator {
-        PassthruNegotiator
+    fn inbound_negotiator(
+        &self
+    ) -> Result<Self::InboundNego, Self::InboundNegoError> {
+        Ok(PassthruNegotiator)
     }
-}
 
-impl<'a, F, InnerXfrm> FarChannelBorrowFlows<'a, F, InnerXfrm>
-    for UnixFarChannel
-where
-    InnerXfrm: DatagramXfrm,
-    F: BorrowedFlowsCreate<'a, UnixDatagramSocket, InnerXfrm>
-        + BorrowedFlowsFlow
-{
-    type Nego = PassthruNegotiator;
-}
+    #[inline]
+    fn inbound_nego_param(&self) {}
 
-impl<F, AuthN, InnerXfrm> FarChannelOwnedFlows<F, AuthN, InnerXfrm>
-    for UnixFarChannel
-where
-    InnerXfrm: DatagramXfrm,
-    AuthN: SessionAuthN<F::Flow>,
-    F: OwnedFlowsCreate<
-        UnixDatagramSocket,
-        PassthruNegotiator,
-        AuthN,
-        InnerXfrm
-    >,
-    F::Flow: Send
-{
-    type Nego = PassthruNegotiator;
+    #[inline]
+    fn outbound_negotiator(
+        &self
+    ) -> Result<Self::OutboundNego, Self::OutboundNegoError> {
+        Ok(PassthruNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_negotiator(
+        &self
+    ) -> Result<Self::ShutdownNego, Self::OutboundNegoError> {
+        Ok(TrivialNegotiator)
+    }
+
+    #[inline]
+    fn shutdown_nego_param(&self) {}
 }
 
 impl Drop for UnixDatagramSocket {
@@ -485,14 +455,44 @@ impl Drop for UnixDatagramSocket {
     }
 }
 
+impl Source for UnixDatagramSocket {
+    #[inline]
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.socket.register(registry, token, interests)
+    }
+
+    #[inline]
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest
+    ) -> Result<(), Error> {
+        self.socket.reregister(registry, token, interests)
+    }
+
+    #[inline]
+    fn deregister(
+        &mut self,
+        registry: &Registry
+    ) -> Result<(), Error> {
+        self.socket.deregister(registry)
+    }
+}
+
 impl Socket for UnixDatagramSocket {
-    type Addr = UnixSocketAddr;
+    type Addr = UnixSocketPath;
 
     #[inline]
     fn local_addr(&self) -> Result<Self::Addr, Error> {
         let addr = self.socket.local_addr()?;
 
-        Ok(UnixSocketAddr::from(addr))
+        UnixSocketPath::try_from(addr)
     }
 
     #[inline]
@@ -508,7 +508,7 @@ impl Sender for UnixDatagramSocket {
         addr: &Self::Addr,
         buf: &[u8]
     ) -> Result<usize, Error> {
-        self.socket.send_to_addr(buf, addr.as_ref())
+        self.socket.send_to(buf, addr.as_ref())
     }
 
     fn send_to_vectored(
@@ -540,7 +540,7 @@ impl Sender for UnixDatagramSocket {
 }
 
 impl Receiver for UnixDatagramSocket {
-    type MsgCred = UCred;
+    type MsgCred = ();
 
     #[inline]
     fn recv_from(
@@ -548,8 +548,9 @@ impl Receiver for UnixDatagramSocket {
         buf: &mut [u8]
     ) -> Result<(usize, Self::Addr, Option<Self::MsgCred>), Error> {
         let (nbytes, addr) = self.socket.recv_from(buf)?;
+        let addr = UnixSocketPath::try_from(addr)?;
 
-        Ok((nbytes, UnixSocketAddr::from(addr), None))
+        Ok((nbytes, addr, None))
     }
 
     fn recv_from_vectored(
@@ -576,155 +577,4 @@ impl Receiver for UnixDatagramSocket {
 
         Ok((nbytes, addr, cred))
     }
-
-    #[inline]
-    fn peek_from(
-        &self,
-        buf: &mut [u8]
-    ) -> Result<(usize, Self::Addr), Error> {
-        let (nbytes, addr) = self.socket.peek_from(buf)?;
-
-        Ok((nbytes, UnixSocketAddr::from(addr)))
-    }
-}
-
-#[cfg(test)]
-use std::fs::metadata;
-#[cfg(test)]
-use std::io::Read;
-#[cfg(test)]
-use std::io::Write;
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Barrier;
-#[cfg(test)]
-use std::thread::spawn;
-
-#[cfg(test)]
-use constellation_auth::authn::PassthruSessionAuthN;
-#[cfg(test)]
-use constellation_auth::cred::NullCred;
-#[cfg(test)]
-use constellation_common::net::PassthruDatagramXfrm;
-#[cfg(test)]
-use constellation_common::retry::RetryResult;
-
-#[cfg(test)]
-use crate::far::flows::BorrowedFlows;
-#[cfg(test)]
-use crate::far::flows::MultiFlows;
-#[cfg(test)]
-use crate::far::flows::SingleFlow;
-#[cfg(test)]
-use crate::init;
-#[cfg(test)]
-use crate::resolve::cache::SharedNSNameCaches;
-
-#[test]
-fn test_send_recv() {
-    init();
-
-    const CHANNEL_CONFIG: &'static str =
-        concat!("path: test_far_send_recv_channel.sock\n",);
-    const CLIENT_CONFIG: &'static str =
-        concat!("path: test_far_send_recv_client.sock\n");
-    const FIRST_BYTES: [u8; 8] =
-        [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-    const SECOND_BYTES: [u8; 8] =
-        [0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
-    let client_config: UnixFarChannelConfig =
-        serde_yaml::from_str(CLIENT_CONFIG).unwrap();
-    let channel_config: UnixFarChannelConfig =
-        serde_yaml::from_str(CHANNEL_CONFIG).unwrap();
-    let channel_path = channel_config.path().to_path_buf();
-    let client_path = client_config.path().to_path_buf();
-    let nscaches = SharedNSNameCaches::new();
-    let barrier = Arc::new(Barrier::new(2));
-
-    assert!(metadata(&channel_path).is_err());
-    assert!(metadata(&client_path).is_err());
-
-    let client_addr = UnixSocketAddr::try_from(&client_path).unwrap();
-    let client_barrier = barrier.clone();
-    let mut client_nscaches = nscaches.clone();
-    let listen = spawn(move || {
-        let mut listener =
-            UnixFarChannel::new(&mut client_nscaches, channel_config)
-                .expect("Expected success");
-        let nego = FarChannelNegotiator::negotiator(&listener);
-        let param = listener.acquire().unwrap();
-        let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: MultiFlows<
-            UnixDatagramSocket,
-            PassthruDatagramXfrm<UnixSocketAddr>
-        > = listener.borrowed_flows(param, xfrm, ()).unwrap();
-
-        client_barrier.wait();
-
-        let mut buf = [0; FIRST_BYTES.len()];
-        let (mut flow, peer_addr, NullCred) =
-            match flows.listen(&nego, &PassthruSessionAuthN).unwrap() {
-                RetryResult::Success(flow) => flow,
-                _ => panic!("Shouldn't see retry")
-            };
-
-        client_barrier.wait();
-
-        let nbytes = flow.read(&mut buf).unwrap();
-
-        flow.write_all(&SECOND_BYTES).expect("Expected success");
-
-        client_barrier.wait();
-
-        assert_eq!(peer_addr, client_addr);
-        assert_eq!(FIRST_BYTES.len(), nbytes);
-        assert_eq!(FIRST_BYTES, buf);
-    });
-
-    let channel_addr = UnixSocketAddr::try_from(&channel_path).unwrap();
-    let channel_barrier = barrier;
-    let mut channel_nscaches = nscaches.clone();
-    let send = spawn(move || {
-        let mut conn =
-            UnixFarChannel::new(&mut channel_nscaches, client_config)
-                .expect("expected success");
-        let nego = FarChannelNegotiator::negotiator(&conn);
-        let param = conn.acquire().unwrap();
-        let xfrm = PassthruDatagramXfrm::new();
-        let mut flows: SingleFlow<
-            UnixDatagramSocket,
-            PassthruDatagramXfrm<UnixSocketAddr>
-        > = conn
-            .borrowed_flows(param, xfrm, channel_addr.clone())
-            .unwrap();
-
-        channel_barrier.wait();
-
-        let (mut flow, NullCred) = match flows
-            .flow(&nego, &PassthruSessionAuthN, channel_addr.clone(), None)
-            .unwrap()
-        {
-            RetryResult::Success(flow) => flow,
-            _ => panic!("Shouldn't see retry")
-        };
-
-        flow.write_all(&FIRST_BYTES).expect("Expected success");
-
-        channel_barrier.wait();
-
-        let mut buf = [0; SECOND_BYTES.len()];
-
-        channel_barrier.wait();
-
-        flow.read_exact(&mut buf).unwrap();
-
-        assert_eq!(SECOND_BYTES, buf);
-    });
-
-    listen.join().unwrap();
-    send.join().unwrap();
-
-    assert!(metadata(&channel_path).is_err());
-    assert!(metadata(&client_path).is_err());
 }
