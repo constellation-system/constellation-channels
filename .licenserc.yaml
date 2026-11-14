@@ -26,10 +26,11 @@ header:
   paths-ignore:
     - '.github/**'
     - 'target/**'
-    - 'test/data/certs/*'
+    - 'tests/data/certs/*'
     - 'gen_test_certs.sh'
     - 'build.rs'
     - '**/*.asn1'
+    - '**/*.yml'
     - '*.md'
     - '.gitignore'
     - '.licenserc.yaml'
